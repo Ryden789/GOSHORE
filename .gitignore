@@ -1,10 +1,9 @@
-# 敏感信息与本地数据
+# 敏感信息与本地数据（goshor.db 含个人作答记录且体积大，settings.json 含密钥，不分发）
 data/settings.json
 data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
-data/cards/
 
 # Python
 __pycache__/
