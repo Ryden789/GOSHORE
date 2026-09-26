@@ -1290,13 +1290,13 @@ def wordfill_stats() -> dict:
 # ---------------- 难度标记（按真实作答正确率） ----------------
 
 def _recompute_difficulty(doc_id: int) -> None:
-    """作答 ≥5 次后按错误率定难度：≥50% 难★★★，≥25% 中★★，其余 易★。"""
+    """作答 ≥2 次后按错误率定难度：≥50% 难★★★，≥25% 中★★，其余 易★。"""
     conn = connect()
     r = conn.execute(
         "SELECT COUNT(*) n, SUM(correct=0) w FROM answers WHERE doc_id=?",
         (doc_id,)).fetchone()
     n, w = r["n"] or 0, r["w"] or 0
-    if n >= 5:
+    if n >= 2:
         rate = w / n
         diff = "hard" if rate >= 0.5 else ("mid" if rate >= 0.25 else "easy")
         conn.execute("UPDATE documents SET difficulty=? WHERE id=?", (diff, doc_id))
