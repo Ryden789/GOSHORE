@@ -22,11 +22,35 @@ MODULES = ["常识判断", "言语理解", "数量关系", "判断推理", "资�
 
 # ---------------- 题目规范化 ----------------
 
+# 乱码特征：替换符 / 控制字符 / GBK-UTF8 互转的连续产物（须整串匹配，避免误杀"斤""烫"等正常字）
+_MOJIBAKE_RE = re.compile(r"[\ufffd\x00-\x08\x0b\x0c\x0e-\x1f]")
+_MOJIBAKE_SEQS = ("锟斤拷", "烫烫烫", "å¥", "çš„", "ä¸")
+
+
+def check_mojibake(text: str) -> bool:
+    """检测文本是否含乱码特征（替换符/控制字符/典型转码连串）。"""
+    if not text:
+        return False
+    if _MOJIBAKE_RE.search(text):
+        return True
+    return any(seq in text for seq in _MOJIBAKE_SEQS)
+
+
 def normalize_item(raw: dict, idx: int = 0) -> tuple[dict | None, str]:
     """把一条原始题目数据规范化为内部结构。返回 (item, 错误原因)。"""
     stem = str(raw.get("stem") or raw.get("题干") or "").strip()
     if len(stem) < 5:
         return None, f"第{idx}题：题干缺失或过短"
+
+    _fields = [("题干", stem), ("解析", str(raw.get("analysis") or raw.get("解析") or ""))]
+    for o in (raw.get("options") or raw.get("选项") or []):
+        if isinstance(o, dict):
+            _fields.append((f"选项{o.get('label', '')}", str(o.get("text") or "")))
+        else:
+            _fields.append(("选项", str(o)))
+    for field, val in _fields:
+        if check_mojibake(val):
+            return None, f"第{idx}题：{field}含乱码字符，已拒绝入库"
 
     opts_raw = raw.get("options") or raw.get("选项") or []
     options: list[dict] = []

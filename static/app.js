@@ -129,37 +129,84 @@ function pieSvg(data) {
 
 /* ---------- 路由 ---------- */
 
+let navSeq = 0;   // 导航序号：慢请求返回后校验，防止旧页覆盖新页
+
 function setActive(name) {
   $$(".nav a").forEach(a => a.classList.toggle("active", a.dataset.route === name));
 }
 
 function route() {
+  const seq = ++navSeq;
   document.onkeydown = null;  // 各页自行绑定键盘操作，切页即清除
   const h = location.hash || "#/home";
   const parts = h.replace(/^#\//, "").split("/");
   const name = parts[0] || "home";
   setActive(name);
-  if (name === "doc") renderDoc(+parts[1], parts[2] || "answer");
-  else if (parts[0] === "wordfill") renderWordfill();
-  else if (parts[0] === "speed") renderSpeed();
-  else if (parts[0] === "settings") renderSettings();
-  else if (name === "wrong") renderWrong();
-  else if (name === "marks") renderMarks();
-  else if (name === "paper") renderPaper();
-  else if (name === "search") renderSearch();
-  else if (name === "cards") renderCards();
-  else if (name === "import") renderImport();
-  else if (name === "doubts") renderDoubts();
-  else renderHome();
+  window.scrollTo(0, 0);
+  const dispatch = fn => Promise.resolve().then(fn).catch(err => {
+    if (seq !== navSeq) return;   // 已切走，忽略旧页报错
+    view.innerHTML = `<div class="panel" style="margin-top:24px">
+      <h3>页面加载出错</h3>
+      <p style="color:var(--ink-2);font-size:14px">${esc(String((err && err.message) || err))}</p>
+      <button class="btn btn-primary" onclick="location.reload()">刷新重试</button>
+    </div>`;
+  });
+  if (name === "doc") dispatch(() => renderDoc(+parts[1], parts[2] || "answer"));
+  else if (parts[0] === "wordfill") dispatch(renderWordfill);
+  else if (parts[0] === "speed") dispatch(renderSpeed);
+  else if (parts[0] === "settings") dispatch(renderSettings);
+  else if (name === "wrong") dispatch(renderWrong);
+  else if (name === "marks") dispatch(renderMarks);
+  else if (name === "paper") dispatch(renderPaper);
+  else if (name === "search") dispatch(renderSearch);
+  else if (name === "cards") dispatch(renderCards);
+  else if (name === "import") dispatch(renderImport);
+  else if (name === "doubts") dispatch(renderDoubts);
+  else if (name === "review") dispatch(renderReview);
+  else if (name === "shizheng") dispatch(renderShizheng);
+  else if (name === "essay") dispatch(renderEssay);
+  else dispatch(renderHome);
 }
 window.addEventListener("hashchange", route);
+
+// 点击当前页自己的锚点时浏览器不触发 hashchange（表现为"点了没反应"）——手动重渲染
+document.addEventListener("click", e => {
+  const a = e.target.closest && e.target.closest("a[href^='#/']");
+  if (!a) return;
+  const href = a.getAttribute("href");
+  const cur = location.hash || "#/home";
+  if (href === cur) { e.preventDefault(); route(); }
+}, true);
+
+/* ---------- 作答队列：从列表进入题目后，「下一题」沿队列走 ---------- */
+
+function setQueue(ids) {
+  try { sessionStorage.setItem("goshore_pq", JSON.stringify({ ids, ts: Date.now() })); } catch (e) {}
+}
+
+function queueNext(id) {
+  try {
+    const q = JSON.parse(sessionStorage.getItem("goshore_pq") || "null");
+    if (!q || !Array.isArray(q.ids)) return null;
+    const i = q.ids.indexOf(id);
+    return i >= 0 ? (q.ids[i + 1] ?? null) : null;
+  } catch (e) { return null; }
+}
+
+/* 难度标记 */
+const DIFF_LABEL = { easy: "易", mid: "中", hard: "难" };
+function diffBadge(diff) {
+  if (!diff || !DIFF_LABEL[diff]) return "";
+  const stars = diff === "hard" ? "★★★" : diff === "mid" ? "★★" : "★";
+  return `<span class="tag diff-tag diff-${diff}">难度 ${DIFF_LABEL[diff]}${stars}</span>`;
+}
 
 /* =====================================================
    首页 Dashboard
 ===================================================== */
 
 async function renderHome() {
-  const s = await api("/api/stats");
+  const [s, st] = await Promise.all([api("/api/stats"), api("/api/study-time")]);
   const rate = s.answers_total ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
   const lt = new Date();
   const dateStr = `${lt.getFullYear()} 年 ${lt.getMonth() + 1} 月 ${lt.getDate()} 日`;
@@ -211,7 +258,7 @@ async function renderHome() {
       <div class="stat-card" style="--accent:var(--indigo)"><div class="v">${s.streak}<small>天</small></div><div class="k">连续学习</div></div>
       <div class="stat-card" style="--accent:var(--bamboo)"><div class="v">${rate}<small>%</small></div><div class="k">总正确率 · ${s.answers_total} 次作答</div></div>
       <div class="stat-card link" data-go="wrong" style="--accent:var(--cinnabar)"><div class="v">${s.wrong_count}<small>道</small></div><div class="k">待消灭错题</div></div>
-      <div class="stat-card link" data-go="cards" style="--accent:var(--amber)"><div class="v">${s.review_due + s.card_due}<small>项</small></div><div class="k">今日待复习（题 ${s.review_due} + 卡 ${s.card_due}）</div></div>
+      <div class="stat-card link" data-go="review" style="--accent:var(--amber)"><div class="v">${s.review_due + s.card_due}<small>项</small></div><div class="k">今日待复习（题 ${s.review_due} + 卡 ${s.card_due}）</div></div>
     </div>
 
     <div class="dash-grid rise rise-2">
@@ -244,12 +291,22 @@ async function renderHome() {
           ${svg}
         </div>
         <div class="panel">
+          <h3>学习时长 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">今日 ${st.today_minutes} 分钟 · 日均 ${st.avg_daily} 分钟 · 累计 ${st.total_minutes} 分钟</span></h3>
+          <div class="bar-chart bar-chart-thin">
+            ${st.daily.map((d, i) => `
+              <div class="bar-col" title="${d.date}：${d.minutes} 分钟">
+                <div class="bar ${i === st.daily.length - 1 ? "today" : ""}" style="height:${Math.max(2, Math.round(d.minutes / Math.max(1, ...st.daily.map(x => x.minutes)) * 100))}%"></div>
+                <span class="bar-lbl">${i % 2 ? "" : d.date.slice(3)}</span>
+              </div>`).join("")}
+          </div>
+        </div>
+        <div class="panel">
           <h3>开始学习</h3>
           <div class="quick-entries">
             <a class="qe" href="#/paper"><div class="qe-ico">✎</div><div class="qe-t">随机组卷</div><div class="qe-d">整卷计时，模拟实战</div></a>
-            <a class="qe" href="#/wrong"><div class="qe-ico">✗</div><div class="qe-t">错题重做</div><div class="qe-d">${s.wrong_count} 道待复习</div></a>
+            <a class="qe" href="#/review"><div class="qe-ico">◌</div><div class="qe-t">今日复习</div><div class="qe-d">艾宾浩斯到期 ${s.review_due + s.card_due} 项</div></a>
             <a class="qe" href="#/cards"><div class="qe-ico">▦</div><div class="qe-t">辨析卡</div><div class="qe-d">${s.card_due ? `今日到期 ${s.card_due} 张` : "词语辨析记忆训练"}</div></a>
-            <a class="qe" href="#/speed"><div class="qe-ico">⚡</div><div class="qe-t">速算训练</div><div class="qe-d">把计算练成肌肉记忆</div></a>
+            <a class="qe" href="#/essay"><div class="qe-ico">文</div><div class="qe-t">申论 · 综应</div><div class="qe-d">题型方法与提分要点</div></a>
           </div>
         </div>
       </div>
@@ -326,7 +383,11 @@ async function renderSearch() {
           </div>`).join("")
       : `<div class="empty">没有符合条件的结果</div>`;
     $$("#list .doc-item").forEach(el =>
-      el.onclick = () => (location.hash = `#/doc/${el.dataset.id}`)
+      el.onclick = () => {
+        const ids = res.items.map(it => it.id);
+        setQueue(ids);
+        location.hash = `#/doc/${el.dataset.id}`;
+      }
     );
     const pages = Math.ceil(res.total / 20);
     $("#pager").innerHTML = pages > 1
@@ -357,11 +418,27 @@ async function renderSearch() {
 ===================================================== */
 
 async function renderDoc(id, tabName) {
+  const mySeq = navSeq;
   const doc = await api(`/api/doc/${id}`);
+  if (mySeq !== navSeq) return;   // 已切到别的页面，丢弃本次渲染
   const d = doc.data;
   const isZhenti = doc.kind === "真题";
   const tab = isZhenti ? tabName : "didao";
   const startedAt = Date.now();
+
+  // 同一材料的全部小题（含本题），供底部连续作答条使用
+  const mgIds = [id, ...(doc.material_group || []).map(g => g.id)].sort((a, b) => a - b);
+  const mgPos = mgIds.indexOf(id);
+  const matPager = mgIds.length > 1 ? `
+    <div class="mat-pager">
+      ${mgPos > 0
+        ? `<a class="btn btn-sm" href="#/doc/${mgIds[mgPos - 1]}/answer">← 上一小题</a>`
+        : `<span class="btn btn-sm mat-pager-off">← 上一小题</span>`}
+      <span class="mat-pager-pos">本材料第 ${mgPos + 1} / ${mgIds.length} 题 · 依次作答不用回顶部</span>
+      ${mgPos < mgIds.length - 1
+        ? `<a class="btn btn-sm btn-primary" href="#/doc/${mgIds[mgPos + 1]}/answer">下一小题 →</a>`
+        : `<span class="btn btn-sm mat-pager-off">下一小题 →</span>`}
+    </div>` : "";
 
   const kindBadge = `<span class="doc-kind ${esc(doc.kind)}" style="flex-shrink:0">${esc(doc.kind)}</span>`;
   view.innerHTML = `
@@ -371,6 +448,7 @@ async function renderDoc(id, tabName) {
         <h2>${esc(doc.title)}</h2>
         <div class="doc-tags">
           ${[doc.kaodian, doc.exam, doc.region, doc.year].filter(Boolean).map(t => `<span class="tag">${esc(t)}</span>`).join("")}
+          ${diffBadge(doc.difficulty)}
         </div>
       </div>
       <button class="btn btn-sm" id="back">← 返回</button>
@@ -387,7 +465,8 @@ async function renderDoc(id, tabName) {
       <span class="mat-group-cur">本 题</span>
       ${doc.material_group.map(g => `<a class="mat-group-item" href="#/doc/${g.id}/${tab}">${esc(g.title.slice(0, 18))}</a>`).join("")}
     </div>` : ""}
-    <div id="tabContent" class="rise rise-2"></div>`;
+    <div id="tabContent" class="rise rise-2"></div>
+    ${matPager}`;
 
   $("#back").onclick = () => history.length > 1 ? history.back() : (location.hash = "#/search");
   if (isZhenti) $$(".tab").forEach(t => t.onclick = () => (location.hash = `#/doc/${id}/${t.dataset.tab}`));
@@ -427,12 +506,16 @@ async function renderDoc(id, tabName) {
     let answered = false;
     document.onkeydown = e => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-      if (answered) return;
+      if (answered) {
+        if (e.key === "Enter") { const nb = $("#nextQ"); if (nb) nb.click(); }
+        return;
+      }
       const opts = $$(".option", el);
       const keyMap = { "1": 0, "2": 1, "3": 2, "4": 3, a: 0, b: 1, c: 2, d: 3 };
       const k = e.key.toLowerCase();
       if (k in keyMap && opts[keyMap[k]]) { opts[keyMap[k]].click(); e.preventDefault(); }
     };
+    const nextBtnHtml = `<button class="btn btn-sm" id="nextQ">下一题 →</button>`;
     $$(".option", el).forEach(op => {
       op.onclick = async () => {
         if (answered) return;
@@ -454,7 +537,8 @@ async function renderDoc(id, tabName) {
           <button class="btn btn-sm" id="showDraft">📄 看底稿解析</button>
           <button class="btn btn-sm btn-primary" id="askAi"${!online ? ' disabled title="当前离线，可看底稿解析"' : ''}>让 AI 讲这道题</button>
           <button class="btn btn-sm" id="variantBtn"${!online ? ' disabled title="当前离线"' : ''}>🧬 变式题</button>
-          <button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>`;
+          <button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>
+          ${nextBtnHtml}`;
         $("#askAi").onclick = () => (location.hash = `#/doc/${id}/ai`);
         $("#variantBtn").onclick = async () => {
           const b = $("#variantBtn");
@@ -511,10 +595,31 @@ async function renderDoc(id, tabName) {
       };
     });
 
-    // 未作答也提供收藏
+    // 就地跳下一题：同材料小题 → 作答队列 → 同卷下一题
+    function bindNextBtn() {
+      const b = $("#nextQ");
+      if (!b) return;
+      b.onclick = async () => {
+        const grp = doc.material_group || [];
+        const nxInGroup = grp.map(g => g.id).filter(gid => gid > id).sort((a, b2) => a - b2)[0];
+        const qNext = queueNext(id);
+        const target = nxInGroup || qNext;
+        if (target) { location.hash = `#/doc/${target}/answer`; return; }
+        b.disabled = true; b.textContent = "跳转中…";
+        try {
+          const r = await api(`/api/next-doc/${id}`);
+          if (r.doc_id) location.hash = `#/doc/${r.doc_id}/answer`;
+          else { alert("已经是最后一题，去错题本或题库继续吧"); b.disabled = false; b.textContent = "下一题 →"; }
+        } catch (e) { b.disabled = false; b.textContent = "下一题 →"; }
+      };
+    }
+    bindNextBtn();
+
+    // 未作答也提供收藏 / 下一题
     if (!doc.last_answer) {
-      $("#answerBar").innerHTML = `<button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>`;
+      $("#answerBar").innerHTML = `<button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>${nextBtnHtml}`;
       bindMark();
+      bindNextBtn();
     }
 
     function bindMark() {
@@ -770,6 +875,7 @@ async function renderWrong() {
   $$("#list .doc-item").forEach(el =>
     el.onclick = e => {
       if (e.target.classList.contains("reason-chip")) return;
+      setQueue(items.map(i => i.id));
       location.hash = `#/doc/${el.dataset.id}/answer`;
     }
   );
@@ -810,7 +916,10 @@ async function renderMarks() {
         </div>`).join("")
     : `<div class="empty">还没有收藏 —— 在题目「作答」页点 ☆ 收藏</div>`;
   $$("#list .doc-item").forEach(el =>
-    el.onclick = () => (location.hash = `#/doc/${el.dataset.id}`)
+    el.onclick = () => {
+      setQueue(items.map(i => i.id));
+      location.hash = `#/doc/${el.dataset.id}`;
+    }
   );
 }
 
@@ -852,7 +961,44 @@ async function renderPaper() {
         </div>
       </div>
     </div>
+    <div class="panel rise rise-2">
+      <div class="speed-config">
+        <div class="cfg-group">
+          <div class="cfg-label">真题套卷（按当年卷面顺序整卷练，自动计时）</div>
+          <div class="cfg-inline" id="examRow">
+            <select id="examSel" style="min-width:280px"><option value="">加载中…</option></select>
+            <button class="btn btn-primary" id="examStart" disabled>开始整卷</button>
+          </div>
+          <div id="examMsg" style="font-size:13px;color:var(--ink-3);margin-top:6px"></div>
+        </div>
+      </div>
+    </div>
     <div id="paperBody"></div>`;
+
+  // 真题套卷下拉
+  api("/api/exams").then(r => {
+    const sel = $("#examSel");
+    if (!r.items.length) {
+      sel.innerHTML = `<option value="">题库中暂无成套试卷</option>`;
+      return;
+    }
+    sel.innerHTML = r.items.map(e =>
+      `<option value="${esc(e.exam)}">${esc(e.exam)}（${e.c} 题）</option>`).join("");
+    $("#examStart").disabled = false;
+    $("#examMsg").textContent = `共 ${r.items.length} 套可选 · 每题约 53 秒的实战节奏自动计时`;
+  });
+  $("#examStart").onclick = async () => {
+    const exam = $("#examSel").value;
+    if (!exam) return;
+    $("#examStart").disabled = true; $("#examStart").textContent = "组卷中…";
+    try {
+      const r = await api("/api/exam-paper", { exam });
+      if (!r.ids.length) return alert("该套卷没有可用题目");
+      runPaper(r.ids, { title: r.name, minutes: r.minutes });
+    } finally {
+      $("#examStart").disabled = false; $("#examStart").textContent = "开始整卷";
+    }
+  };
 
   $$(".tpl-btn").forEach(b => b.onclick = async () => {
     const res = await api("/api/exam-template", { key: b.dataset.tpl });
@@ -1520,7 +1666,30 @@ async function renderSettings() {
         </div>
         <div class="status-msg" id="status"></div>
       </div>
+    </div>
+    <div class="panel rise rise-2">
+      <h3 style="margin:0 0 10px">题库导出 PDF</h3>
+      <p class="hint" style="margin:0 0 10px">按筛选条件生成可打印页面，在浏览器里 Ctrl+P 另存为 PDF（题库在前、答案解析在后）</p>
+      <div class="cfg-inline">
+        <span>模块 <select id="expModule"><option value="">全部</option>${["常识判断","言语理解与表达","数量关系","判断推理","资料分析"].map(m => `<option>${m}</option>`).join("")}</select></span>
+        <span>地区 <input id="expRegion" placeholder="如：国家" style="width:90px"/></span>
+        <span>年份 <input id="expYear" placeholder="如：2024" style="width:80px"/></span>
+        <span>题量 <select id="expLimit"><option>50</option><option selected>100</option><option>200</option><option>500</option></select></span>
+        <span><label style="font-size:13px"><input type="checkbox" id="expAns" checked/> 附答案解析</label></span>
+        <button class="btn btn-primary" id="expGo">生成导出页</button>
+      </div>
     </div>`;
+
+  $("#expGo").onclick = () => {
+    const p = new URLSearchParams({
+      module: $("#expModule").value,
+      region: $("#expRegion").value.trim(),
+      year: $("#expYear").value.trim(),
+      limit: $("#expLimit").value,
+      with_answer: $("#expAns").checked ? "1" : "0",
+    });
+    window.open("/api/export/print?" + p.toString(), "_blank");
+  };
 
   const status = (t, cls) => {
     const el = $("#status");
@@ -1722,16 +1891,25 @@ async function renderCards() {
   }
 
   const cats = fc.categorys || [];
-  const dueRes = await api("/api/due-cards");
+  const [dueRes, prog] = await Promise.all([api("/api/due-cards"), api("/api/cards/progress")]);
   const dueCards = dueRes.items;
+  const pct = prog.total ? Math.round(prog.learned / prog.total * 100) : 0;
 
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">辨析卡</h1>
-      <p class="page-desc">词语辨析 + 错题考点卡 · 点击卡片翻转 · 自评"模糊/不会"将按 1/3/7 天安排复习</p>
+      <p class="page-desc">词语 · 成语 · 实词辨析 + 错题考点卡 · 翻转自评，"模糊/不会"按艾宾浩斯 1→2→4→7→15→30 天安排复习</p>
     </div>
     <div class="panel rise rise-1">
-      <div class="speed-config">
+      <div class="card-progress">
+        <div class="cp-item"><span class="cp-num">${prog.total}</span><span class="cp-lbl">总卡片</span></div>
+        <div class="cp-item"><span class="cp-num">${prog.learned}</span><span class="cp-lbl">已学</span></div>
+        <div class="cp-item"><span class="cp-num">${prog.mastered}</span><span class="cp-lbl">已巩固</span></div>
+        <div class="cp-item"><span class="cp-num" style="color:var(--cinnabar)">${prog.due}</span><span class="cp-lbl">今日到期</span></div>
+        <div class="cp-bar"><div class="cp-bar-fill" style="width:${pct}%"></div></div>
+        <span class="cp-pct">${pct}%</span>
+      </div>
+      <div class="speed-config" style="margin-top:12px">
         <div class="cfg-inline">
           <span>类型 <select id="cType">
             <option value="word_card">词语辨析卡</option>
@@ -1744,9 +1922,37 @@ async function renderCards() {
         </div>
       </div>
     </div>
+    <div class="panel rise rise-2">
+      <div class="cfg-inline">
+        <input id="cSearch" placeholder="🔍 搜词语 / 成语 / 辨析要点，如：不刊之论、差强人意" style="flex:1"/>
+        <button class="btn" id="cSearchBtn">查询词库</button>
+      </div>
+      <div id="cBrowse"></div>
+    </div>
     <div id="cardBody"></div>`;
 
   const body = $("#cardBody");
+
+  async function browse(kw) {
+    if (!kw) { $("#cBrowse").innerHTML = ""; return; }
+    const all = await api("/api/cards");
+    const k = kw.trim().toLowerCase();
+    const hits = all.items.filter(c =>
+      (c.stem || "").toLowerCase().includes(k) ||
+      (c.analysis || "").toLowerCase().includes(k) ||
+      (c.tags || []).some(t => (t || "").toLowerCase().includes(k))
+    ).slice(0, 40);
+    $("#cBrowse").innerHTML = hits.length ? `
+      <div class="c-browse-meta">找到 ${hits.length} 张相关卡片（最多显示 40）</div>
+      ${hits.map(c => `
+        <details class="c-browse-item">
+          <summary>${esc(c.stem)}<span class="c-browse-cat">${esc(c.category || "")}${c.subtype ? " · " + esc(c.subtype) : ""}</span></summary>
+          <div class="c-browse-body">${md(c.analysis || c.answer || "")}</div>
+        </details>`).join("")}`
+      : `<div class="empty" style="padding:12px">词库中没有匹配的卡片——可去「开始记忆」里刷卡补充</div>`;
+  }
+  $("#cSearchBtn").onclick = () => browse($("#cSearch").value);
+  $("#cSearch").addEventListener("keydown", e => { if (e.key === "Enter") browse($("#cSearch").value); });
 
   async function startList(cards) {
     if (!cards.length) { body.innerHTML = `<div class="panel empty">该范围没有卡片</div>`; return; }
@@ -1781,10 +1987,10 @@ async function renderCards() {
             <div class="fc-inner">
               <div class="fc-face fc-front">
                 <div class="fc-word">${esc(c.stem)}</div>
-                <div class="fc-hint">点击翻转查看${isWord ? "辨析" : "错因"}</div>
+                <div class="fc-hint">点击翻转查看${isWord ? "释义 · 对比 · 搭配 · 侧重" : "错因"}</div>
               </div>
               <div class="fc-face fc-back">
-                <div class="fc-detail">${isWord ? esc(c.analysis) : `<b>正解 ${esc(c.answer)}</b>${c.user_answer ? `（当时错选 ${esc(c.user_answer)}）` : ""}<br><br>${esc(c.analysis)}`}</div>
+                <div class="fc-detail">${isWord ? md(c.analysis) : `<b>正解 ${esc(c.answer)}</b>${c.user_answer ? `（当时错选 ${esc(c.user_answer)}）` : ""}<br><br>${md(c.analysis)}`}</div>
                 ${c.source ? `<div class="fc-hint">${esc(c.source)}</div>` : ""}
               </div>
             </div>
@@ -1794,6 +2000,7 @@ async function renderCards() {
             <button class="btn btn-sm" style="color:var(--bamboo)" data-lv="2">认识</button>
             <button class="btn btn-sm" style="color:var(--amber)" data-lv="1">模糊</button>
             <button class="btn btn-sm" style="color:var(--cinnabar)" data-lv="0">不会</button>
+            <button class="btn btn-sm" id="cSkip" style="color:var(--ink-3)">跳过 →</button>
           </div>
         </div>`;
       $("#fc").onclick = () => $("#fc").classList.toggle("flip");
@@ -1803,6 +2010,8 @@ async function renderCards() {
         await api("/api/card-review", { card_id: c.id, level: lv });
         idx++; showCard();
       });
+      const skip = $("#cSkip");
+      if (skip) skip.onclick = () => { idx++; showCard(); };
     }
   }
 
@@ -1820,6 +2029,160 @@ async function renderCards() {
   };
   const dueBtn = $("#cDue");
   if (dueBtn) dueBtn.onclick = () => startList(dueCards);
+}
+
+/* =====================================================
+   今日复习（艾宾浩斯）
+===================================================== */
+
+const EBB_STAGES = ["1 天后", "2 天后", "4 天后", "7 天后", "15 天后", "30 天后"];
+
+async function renderReview() {
+  const [res, dueCards, prog] = await Promise.all([
+    api("/api/reviews"), api("/api/due-cards"), api("/api/cards/progress"),
+  ]);
+  const items = res.items;
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">今日复习</h1>
+      <p class="page-desc">按艾宾浩斯记忆曲线安排：答错 1 天后重现，答对依次 2→4→7→15→30 天后巩固，走完 6 档即记牢毕业</p>
+    </div>
+    <div class="panel rise rise-1">
+      <div class="review-head">
+        <div>
+          <div class="review-num">${items.length}</div>
+          <div class="review-lbl">到期真题</div>
+        </div>
+        <div>
+          <div class="review-num">${dueCards.length}</div>
+          <div class="review-lbl">到期辨析卡</div>
+        </div>
+        <div>
+          <div class="review-num">${prog.learned}<span class="review-sub">/${prog.total}</span></div>
+          <div class="review-lbl">卡片已学</div>
+        </div>
+        ${items.length ? `<button class="btn btn-primary" id="startReview" style="margin-left:auto">开始复习真题（${items.length}）</button>` : ""}
+        ${dueCards.length ? `<a class="btn" href="#/cards" style="border-color:var(--cinnabar);color:var(--cinnabar)">去复习卡片（${dueCards.length}）</a>` : ""}
+      </div>
+      ${items.length ? `
+      <div class="doc-list" style="margin-top:14px">
+        ${items.map(it => `
+          <div class="doc-item" data-id="${it.id}">
+            <div class="doc-main">
+              <div class="doc-title">${esc(it.title)}</div>
+              <div class="doc-sub">${esc([it.kaodian, it.module].filter(Boolean).join(" · "))}</div>
+            </div>
+            <div class="doc-side"><span class="tag">第 ${it.stage} 轮 · ${EBB_STAGES[Math.min(it.stage - 1, 5)]}前到期</span></div>
+          </div>`).join("")}
+      </div>` : `<div class="empty" style="padding:20px">今天没有到期的真题复习——保持节奏，做新题错题都会自动进入复习计划</div>`}
+    </div>`;
+
+  const startBtn = $("#startReview");
+  if (startBtn) startBtn.onclick = () => {
+    setQueue(items.map(i => i.id));
+    location.hash = `#/doc/${items[0].id}/answer`;
+  };
+  $$(".doc-list .doc-item").forEach(el =>
+    el.onclick = () => {
+      setQueue(items.map(i => i.id));
+      location.hash = `#/doc/${el.dataset.id}/answer`;
+    });
+}
+
+/* =====================================================
+   半月时政
+===================================================== */
+
+let shizhengGenerating = false;
+
+async function renderShizheng() {
+  const r = await api("/api/shizheng");
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">时政常识</h1>
+      <p class="page-desc">每半月一期 · 进入新月期自动生成当期积累（AI 整理，考前请以权威时政资料核对）</p>
+    </div>
+    <div id="szBody"></div>`;
+
+  const body = $("#szBody");
+
+  function drawList(items, current) {
+    body.innerHTML = items.length ? items.map((it, i) => `
+      <div class="panel rise rise-${Math.min(i + 1, 3)}" style="${it.period === current ? "border-left:4px solid var(--cinnabar)" : ""}">
+        <details ${i === 0 ? "open" : ""}>
+          <summary style="cursor:pointer;font-weight:700">${it.period === current ? "🔴 " : ""}${esc(it.period)}<span style="font-weight:400;color:var(--ink-3);font-size:12px;margin-left:8px">${new Date(it.created_at * 1000).toLocaleDateString("zh-CN")} 生成</span></summary>
+          <div class="sz-content" style="margin-top:10px">${md(it.content)}</div>
+        </details>
+      </div>`).join("")
+      : `<div class="panel empty">还没有时政积累</div>`;
+  }
+
+  drawList(r.items, r.current);
+
+  if (!r.current_exists && !shizhengGenerating) {
+    shizhengGenerating = true;
+    body.insertAdjacentHTML("afterbegin", `
+      <div class="panel" id="szGen">⏳ 正在生成本期（${esc(r.current)}）时政常识，约需 1 分钟…</div>`);
+    try {
+      const g = await api("/api/shizheng/generate", { period: r.current });
+      $("#szGen")?.remove();
+      if (g.ok) {
+        const fresh = await api("/api/shizheng");
+        drawList(fresh.items, fresh.current);
+      } else {
+        body.insertAdjacentHTML("afterbegin", `
+          <div class="panel" style="border-left:4px solid var(--cinnabar)">
+            本期生成失败：${esc(g.error || "未知错误")}
+            <button class="btn btn-sm" id="szRetry" style="margin-left:10px">重试</button>
+          </div>`);
+        $("#szRetry").onclick = renderShizheng;
+      }
+    } catch (e) {
+      $("#szGen")?.remove();
+    } finally {
+      shizhengGenerating = false;
+    }
+  }
+}
+
+/* =====================================================
+   申论 · 综应
+===================================================== */
+
+async function renderEssay() {
+  const k = await api("/api/knowledge/essay");
+  let cur = "shenlun";
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">申论 · 综应方法论</h1>
+      <p class="page-desc">题型拆解与提分要点 · 主观题的本质是「从材料找点、按题干组装」</p>
+    </div>
+    <div class="tabs rise rise-1" id="essayTabs">
+      ${Object.entries(k).map(([key, v]) =>
+        `<div class="tab ${key === cur ? "active" : ""}" data-k="${key}">${esc(v.name)}</div>`).join("")}
+    </div>
+    <div id="essayBody"></div>`;
+
+  function draw() {
+    const v = k[cur];
+    $("#essayBody").innerHTML = `
+      <div class="panel rise rise-1" style="border-left:4px solid var(--indigo)">
+        <b>总体思路</b><div style="margin-top:6px;color:var(--ink-2);line-height:1.8">${esc(v.intro)}</div>
+      </div>
+      ${v.sections.map((sec, i) => `
+        <div class="panel rise rise-${Math.min(i + 2, 3)}">
+          <h3 style="margin:0 0 8px">${esc(sec.title)}</h3>
+          <ul style="margin:0;padding-left:20px;line-height:2">
+            ${sec.points.map(p => `<li style="margin-bottom:4px">${esc(p)}</li>`).join("")}
+          </ul>
+        </div>`).join("")}`;
+  }
+  draw();
+  $$("#essayTabs .tab").forEach(t => t.onclick = () => {
+    cur = t.dataset.k;
+    $$("#essayTabs .tab").forEach(x => x.classList.toggle("active", x === t));
+    draw();
+  });
 }
 
 route();

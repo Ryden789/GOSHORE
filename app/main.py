@@ -14,8 +14,14 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, importer, speedcalc, variant, wordfill
+from . import ai, db, importer, knowledge, speedcalc, variant, wordfill
 from .config import STATIC_DIR, load_settings, save_settings
+
+import html as _html
+
+
+def esc(s) -> str:
+    return _html.escape(str(s or ""))
 
 
 @asynccontextmanager
@@ -559,6 +565,175 @@ class ExamTemplateIn(BaseModel):
 @app.post("/api/exam-template")
 def api_exam_template(b: ExamTemplateIn):
     return db.template_paper(b.key)
+
+
+# ---------------- 就地跳下一题 / 学习时长 ----------------
+
+@app.get("/api/next-doc/{doc_id}")
+def api_next_doc(doc_id: int):
+    return {"doc_id": db.next_doc_id(doc_id)}
+
+
+@app.get("/api/study-time")
+def api_study_time():
+    return db.study_time_stats()
+
+
+# ---------------- 半月时政 ----------------
+
+def _shizheng_period(now=None) -> tuple[str, str]:
+    import datetime
+    dt = now or datetime.datetime.now()
+    half = "上半月" if dt.day <= 15 else "下半月"
+    return f"{dt.year}年{dt.month}月{half}", f"{dt.year}年{dt.month}月"
+
+
+@app.get("/api/shizheng")
+def api_shizheng_list():
+    period, month = _shizheng_period()
+    return {
+        "items": db.list_shizheng(),
+        "current": period,
+        "current_exists": db.get_shizheng(period) is not None,
+    }
+
+
+class ShizhengGenIn(BaseModel):
+    period: str = ""
+
+
+@app.post("/api/shizheng/generate")
+async def api_shizheng_generate(b: ShizhengGenIn):
+    period = b.period or _shizheng_period()[0]
+    existed = db.get_shizheng(period)
+    if existed:
+        return {"ok": True, "item": existed, "cached": True}
+    m = __import__("re").search(r"(\d{4})年(\d{1,2})月(上|下)半月", period)
+    if not m:
+        return {"ok": False, "error": "期次格式错误"}
+    year, month, half = m.group(1), m.group(2), ("1-15日" if m.group(3) == "上" else "16-月末")
+    prompt = (
+        f"你是公务员考试时政辅导老师。请整理 {year}年{month}月{half} 的时政常识积累，"
+        "面向事业单位/公务员考试考生。若该时段在你的知识截止日期之后，请基于最近一次可确认的时事动态"
+        "与长期高频考点（重要会议精神、科技成就、民生政策、纪念日、国际组织等）整理，并在开头注明"
+        "「内容基于模型知识整理，考前请以权威时政资料核对」。"
+        "输出 Markdown，结构如下：\n"
+        "# {期次}时政常识\n"
+        "## 一、国内要闻（10-14条，每条一行：**事件**——一句考点式说明）\n"
+        "## 二、科技与民生（5-8条）\n"
+        "## 三、国际要闻（4-6条）\n"
+        "## 四、自测小测（5道单选题，题目后用「答案：X」标注）"
+    )
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        content = await ai.chat_once(messages, temperature=0.3)
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
+    if not content.strip():
+        return {"ok": False, "error": "生成内容为空，请重试"}
+    db.save_shizheng(period, f"{period}时政常识", content)
+    return {"ok": True, "item": db.get_shizheng(period)}
+
+
+# ---------------- 申论 / 综应知识 ----------------
+
+@app.get("/api/knowledge/essay")
+def api_knowledge_essay():
+    return knowledge.ESSAY_KNOWLEDGE
+
+
+# ---------------- 真题套卷 ----------------
+
+@app.get("/api/exams")
+def api_exams():
+    return {"items": db.list_exams()}
+
+
+class ExamPaperIn(BaseModel):
+    exam: str
+
+
+@app.post("/api/exam-paper")
+def api_exam_paper(b: ExamPaperIn):
+    ids = db.exam_paper_ids(b.exam)
+    n = len(ids)
+    minutes = max(10, round(n * 0.89)) if n else 0
+    return {"ids": ids, "minutes": minutes, "name": b.exam}
+
+
+# ---------------- 辨析卡进度 ----------------
+
+@app.get("/api/cards/progress")
+def api_cards_progress():
+    return db.cards_progress()
+
+
+# ---------------- 题库导出（打印为 PDF） ----------------
+
+@app.get("/api/export/print")
+def api_export_print(
+    q: str = "", kind: str = "真题", module: str = "", daclass: str = "",
+    region: str = "", year: str = "", limit: int = 100, with_answer: int = 1,
+):
+    limit = max(1, min(500, limit))
+    rows, total = db.search_docs(
+        q=q, kind=kind, module=module, daclass=daclass,
+        region=region, year=year, page=1, page_size=limit,
+    )
+    items = []
+    for r in rows:
+        d = db.get_doc(r["id"])
+        if not d:
+            continue
+        data = d["data"]
+        answer = next((o["label"] for o in (data.get("options") or []) if o.get("correct")), "")
+        items.append({
+            "title": d["title"], "module": d["module"], "exam": d["exam"],
+            "stem": data.get("stem", ""), "options": data.get("options") or [],
+            "answer": answer, "analysis": data.get("official") or data.get("reasoning") or "",
+        })
+
+    def block(it, idx, show_ans):
+        opts = "".join(
+            f"<div class='opt'>{esc(o.get('label',''))}. {esc(o.get('text',''))}</div>"
+            for o in it["options"])
+        ans = ""
+        if show_ans:
+            ans = (f"<div class='ans'>【答案】{esc(it['answer'])}</div>"
+                   + (f"<div class='ana'>{esc(it['analysis'])[:600]}</div>" if it["analysis"] else ""))
+        return (f"<div class='q'><div class='qt'>{idx}. {esc(it['title'])}"
+                f"<span class='meta'>{esc(it['exam'])} · {esc(it['module'])}</span></div>"
+                f"<div class='qs'>{esc(it['stem'])}</div>{opts}{ans}</div>")
+
+    questions = "".join(block(it, i + 1, False) for i, it in enumerate(items))
+    answers = "".join(block(it, i + 1, True) for i, it in enumerate(items)) if with_answer else ""
+    html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>题库导出 · {total} 题（本次 {len(items)} 题）</title>
+<style>
+  body {{ font-family: "Noto Serif SC", "SimSun", serif; margin: 0; color: #1a1a1a; }}
+  .wrap {{ max-width: 800px; margin: 0 auto; padding: 32px 24px; }}
+  h1 {{ font-size: 20px; }} .sub {{ color: #666; font-size: 13px; margin-bottom: 20px; }}
+  .q {{ margin-bottom: 18px; page-break-inside: avoid; }}
+  .qt {{ font-weight: 700; }} .meta {{ color: #888; font-size: 12px; margin-left: 8px; font-weight: 400; }}
+  .qs {{ margin: 6px 0; line-height: 1.7; }}
+  .opt {{ margin: 2px 0 2px 1.5em; }}
+  .ans {{ margin-top: 4px; color: #b3352b; font-weight: 700; }}
+  .ana {{ color: #555; font-size: 13px; line-height: 1.6; }}
+  .pagebreak {{ page-break-before: always; }}
+  h2 {{ font-size: 16px; border-bottom: 2px solid #333; padding-bottom: 4px; }}
+  @media print {{ .noprint {{ display: none; }} }}
+  .tip {{ background: #fdf6e3; border: 1px solid #e0d5b0; padding: 10px 14px; border-radius: 6px; font-size: 13px; }}
+</style></head><body><div class="wrap">
+<div class="noprint tip">打印为 PDF：按 <b>Ctrl + P</b> → 目标选「另存为 PDF」→ 勾选背景图形。共匹配 {total} 题，本次导出前 {len(items)} 题（可在地址栏调 limit，最大 500）。</div>
+<h1>题库导出（{esc(kind or "全部")}）</h1>
+<div class="sub">筛选：{esc(q or "无关键词")} / {esc(module or "全模块")} / {esc(region or "全地区")} / {esc(year or "全年份")} · 生成于 {__import__("time").strftime("%Y-%m-%d %H:%M")}</div>
+<h2>第一部分 · 试题</h2>
+{questions or "<p>没有匹配的题目</p>"}
+<h2 class="pagebreak">第二部分 · 答案与解析</h2>
+{answers or "<p>未包含答案</p>"}
+</div></body></html>"""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(html)
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

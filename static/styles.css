@@ -504,3 +504,43 @@ input, select, textarea { font-family: var(--sans); }
 .imp-area { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: 13px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 6px; background: #fff; resize: vertical; }
 .imp-item { padding: 8px 4px; border-bottom: 1px dashed var(--line-soft); font-size: 14px; }
 .imp-meta { display: block; color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+
+/* ===== 材料/套题连续作答条 ===== */
+.mat-pager { position: sticky; bottom: 0; z-index: 20; display: flex; align-items: center; gap: 12px; justify-content: center; margin-top: 14px; padding: 10px 14px; background: rgba(246, 241, 231, 0.96); border-top: 1px solid var(--line-soft); box-shadow: 0 -4px 14px rgba(90, 83, 72, 0.08); border-radius: 8px 8px 0 0; }
+.mat-pager-pos { color: var(--ink-3); font-size: 12.5px; }
+.mat-pager-off { opacity: 0.35; pointer-events: none; }
+
+/* ===== 难度标记 ===== */
+.diff-tag { font-weight: 700; }
+.diff-easy { color: var(--bamboo); border-color: var(--bamboo); }
+.diff-mid { color: var(--amber); border-color: var(--amber); }
+.diff-hard { color: var(--cinnabar); border-color: var(--cinnabar); }
+
+/* ===== 今日复习 ===== */
+.review-head { display: flex; align-items: center; gap: 34px; flex-wrap: wrap; }
+.review-num { font-size: 30px; font-weight: 900; font-family: var(--mono); color: var(--ink); line-height: 1.1; }
+.review-num .review-sub { font-size: 15px; color: var(--ink-3); }
+.review-lbl { font-size: 12.5px; color: var(--ink-3); }
+
+/* ===== 辨析卡进度 ===== */
+.card-progress { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+.cp-item { display: flex; flex-direction: column; align-items: center; min-width: 52px; }
+.cp-num { font-size: 24px; font-weight: 900; font-family: var(--mono); line-height: 1.1; }
+.cp-lbl { font-size: 12px; color: var(--ink-3); }
+.cp-bar { flex: 1; min-width: 140px; height: 10px; border-radius: 5px; background: var(--line-soft); overflow: hidden; }
+.cp-bar-fill { height: 100%; background: linear-gradient(90deg, var(--bamboo), var(--amber)); border-radius: 5px; transition: width 0.4s; }
+.cp-pct { font-family: var(--mono); font-weight: 700; color: var(--ink-2); font-size: 14px; }
+
+/* ===== 卡片浏览 ===== */
+.c-browse-meta { color: var(--ink-3); font-size: 12.5px; margin: 8px 0; }
+.c-browse-item { border: 1px solid var(--line-soft); border-radius: 8px; padding: 8px 14px; margin-bottom: 8px; background: #fff; }
+.c-browse-item summary { cursor: pointer; font-weight: 600; }
+.c-browse-cat { float: right; color: var(--ink-3); font-size: 12px; font-weight: 400; }
+.c-browse-body { margin-top: 8px; line-height: 1.9; font-size: 14px; color: var(--ink-2); }
+
+/* ===== 时政内容 ===== */
+.sz-content { line-height: 1.9; font-size: 14.5px; }
+.sz-content h4 { margin: 14px 0 6px; }
+
+/* ===== 学习时长紧凑柱图 ===== */
+.bar-chart-thin { height: 80px; }

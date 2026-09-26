@@ -184,6 +184,58 @@ def build_first_messages(doc: dict, mode: str, stuck: dict | None) -> list[dict]
     ]
 
 
+async def chat_once(messages: list[dict], temperature: float = 0.3) -> str:
+    """非流式调用：返回完整回复文本，失败抛 RuntimeError。"""
+    buf = []
+    async for kind, payload in stream_chat_with_temp(messages, temperature):
+        if kind == "delta":
+            buf.append(payload)
+        elif kind == "error":
+            raise RuntimeError(payload)
+    return "".join(buf)
+
+
+async def stream_chat_with_temp(messages: list[dict], temperature: float):
+    """同 stream_chat，但温度可调。"""
+    s = load_settings()
+    if not s["deepseek_api_key"]:
+        yield "error", "未配置 DeepSeek API Key，请到「设置」中填写。"
+        return
+    payload = {
+        "model": s["deepseek_model"],
+        "messages": messages,
+        "stream": True,
+        "temperature": temperature,
+    }
+    headers = {"Authorization": f"Bearer {s['deepseek_api_key']}"}
+    url = s["deepseek_base_url"].rstrip("/") + "/chat/completions"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
+            async with client.stream(
+                "POST", url, json=payload, headers=headers
+            ) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    yield "error", f"API 返回 {resp.status_code}：{body.decode('utf-8','ignore')[:500]}"
+                    return
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    if delta.get("content"):
+                        yield "delta", delta["content"]
+    except httpx.HTTPError as e:
+        yield "error", f"网络请求失败：{e}"
+        return
+
+
 async def stream_chat(messages: list[dict]):
     """yield ('delta'|'think'|'error'|'done', payload)。"""
     s = load_settings()

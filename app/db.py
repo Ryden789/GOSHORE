@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS documents (
     exam      TEXT DEFAULT '',
     kaodian   TEXT DEFAULT '',
     tags      TEXT DEFAULT '',
+    difficulty TEXT DEFAULT '',
     mtime     REAL DEFAULT 0,
     data      TEXT DEFAULT '{}',
     search_text TEXT DEFAULT ''
@@ -122,7 +123,17 @@ CREATE TABLE IF NOT EXISTS card_plan (
     stage INTEGER DEFAULT 1,
     due_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS shizheng (
+    period TEXT PRIMARY KEY,
+    title TEXT DEFAULT '',
+    content TEXT DEFAULT '',
+    created_at REAL
+);
 """
+
+# 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
+EBBINGHAUS_DAYS = [1, 2, 4, 7, 15, 30]
 
 
 def connect() -> sqlite3.Connection:
@@ -137,6 +148,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     # 补充列：material_fp（材料指纹，用于资料分析同材料归组）
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(documents)")]
+    if "difficulty" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN difficulty TEXT DEFAULT ''")
+        conn.commit()
     # 补充列：wordfill_questions.verified（生成题是否通过校验）
     wcols = [r["name"] for r in conn.execute("PRAGMA table_info(wordfill_questions)")]
     if "verified" not in wcols:
@@ -284,7 +298,7 @@ def reindex(progress=None) -> dict:
 # ---------------- 查询 ----------------
 
 _LIST_COLS = (
-    "id,path,kind,qid,title,module,daclass,region,year,exam,kaodian"
+    "id,path,kind,qid,title,module,daclass,region,year,exam,kaodian,difficulty"
 )
 
 
@@ -358,7 +372,8 @@ def get_doc(doc_id: int) -> dict | None:
     if d.get("module") == "资料分析" and d.get("material_fp"):
         rows2 = conn.execute(
             "SELECT id,title FROM documents "
-            "WHERE kind='真题' AND module='资料分析' AND id!=? AND material_fp=?",
+            "WHERE kind='真题' AND module='资料分析' AND id!=? AND material_fp=? "
+            "ORDER BY id",
             (doc_id, d["material_fp"]),
         ).fetchall()
         for r2 in rows2:
@@ -574,22 +589,27 @@ def add_answer(doc_id: int, selected: str, correct: bool, ms: int) -> None:
 
 
 def _schedule_review(doc_id: int, correct: bool) -> None:
-    """F7 间隔复习：答错进计划 1 天后；计划内答对升档 3→7 天，答错回 1 天。"""
+    """艾宾浩斯间隔复习：答错回 1 天档；答对升档 1→2→4→7→15→30 天，毕业出计划。"""
     DAY = 86400.0
     conn = connect()
     r = conn.execute("SELECT stage FROM review_plan WHERE doc_id=?", (doc_id,)).fetchone()
     if correct:
         if r:
-            stage = min(r["stage"] + 1, 3)
-            due = time.time() + (3 if stage == 2 else 7) * DAY
-            conn.execute("UPDATE review_plan SET stage=?, due_at=? WHERE doc_id=?",
-                         (stage, due, doc_id))
+            stage = r["stage"] + 1
+            if stage > len(EBBINGHAUS_DAYS):
+                conn.execute("DELETE FROM review_plan WHERE doc_id=?", (doc_id,))
+            else:
+                due = time.time() + EBBINGHAUS_DAYS[stage - 1] * DAY
+                conn.execute("UPDATE review_plan SET stage=?, due_at=? WHERE doc_id=?",
+                             (stage, due, doc_id))
     else:
         conn.execute(
             "INSERT OR REPLACE INTO review_plan(doc_id,stage,due_at) VALUES(?,?,?)",
-            (doc_id, 1, time.time() + DAY),
+            (doc_id, 1, time.time() + EBBINGHAUS_DAYS[0] * DAY),
         )
     conn.commit()
+    # 顺手重算本题难度
+    _recompute_difficulty(doc_id)
     conn.close()
 
 
@@ -992,7 +1012,7 @@ def import_cards() -> dict:
             obj = json.loads(fp.read_text(encoding="utf-8"))
         except Exception:
             continue
-        for q in obj.get("questions", []):
+        for q in obj.get("questions", []) + obj.get("cards", []):
             try:
                 conn.execute(
                     """INSERT OR IGNORE INTO cards
@@ -1050,7 +1070,7 @@ def card_facets() -> dict:
 
 
 def card_review(card_id: str, level: int) -> None:
-    """卡片自评：2认识/1模糊/0不会。模糊不会进 1 天计划，认识升档 3→7 天。"""
+    """卡片自评：2认识/1模糊/0不会。按艾宾浩斯 1→2→4→7→15→30 天升档，模糊不会回 1 天。"""
     DAY = 86400.0
     conn = connect()
     conn.execute(
@@ -1060,14 +1080,17 @@ def card_review(card_id: str, level: int) -> None:
     if level >= 2:
         r = conn.execute("SELECT stage FROM card_plan WHERE card_id=?", (card_id,)).fetchone()
         if r:
-            stage = min(r["stage"] + 1, 3)
-            due = time.time() + (3 if stage == 2 else 7) * DAY
-            conn.execute("UPDATE card_plan SET stage=?, due_at=? WHERE card_id=?",
-                         (stage, due, card_id))
+            stage = r["stage"] + 1
+            if stage > len(EBBINGHAUS_DAYS):
+                conn.execute("DELETE FROM card_plan WHERE card_id=?", (card_id,))
+            else:
+                due = time.time() + EBBINGHAUS_DAYS[stage - 1] * DAY
+                conn.execute("UPDATE card_plan SET stage=?, due_at=? WHERE card_id=?",
+                             (stage, due, card_id))
     else:
         conn.execute(
             "INSERT OR REPLACE INTO card_plan(card_id,stage,due_at) VALUES(?,?,?)",
-            (card_id, 1, time.time() + DAY),
+            (card_id, 1, time.time() + EBBINGHAUS_DAYS[0] * DAY),
         )
     conn.commit()
     conn.close()
@@ -1262,3 +1285,166 @@ def wordfill_stats() -> dict:
         "total_correct": ok_a,
         "wrong_count": wrong_q,
     }
+
+
+# ---------------- 难度标记（按真实作答正确率） ----------------
+
+def _recompute_difficulty(doc_id: int) -> None:
+    """作答 ≥5 次后按错误率定难度：≥50% 难★★★，≥25% 中★★，其余 易★。"""
+    conn = connect()
+    r = conn.execute(
+        "SELECT COUNT(*) n, SUM(correct=0) w FROM answers WHERE doc_id=?",
+        (doc_id,)).fetchone()
+    n, w = r["n"] or 0, r["w"] or 0
+    if n >= 5:
+        rate = w / n
+        diff = "hard" if rate >= 0.5 else ("mid" if rate >= 0.25 else "easy")
+        conn.execute("UPDATE documents SET difficulty=? WHERE id=?", (diff, doc_id))
+        conn.commit()
+    conn.close()
+
+
+def difficulty_map(doc_ids: list[int]) -> dict[int, str]:
+    if not doc_ids:
+        return {}
+    conn = connect()
+    qs = ",".join("?" * len(doc_ids))
+    rows = conn.execute(
+        f"SELECT id, difficulty FROM documents WHERE id IN ({qs})", doc_ids).fetchall()
+    conn.close()
+    return {r["id"]: r["difficulty"] for r in rows if r["difficulty"]}
+
+
+# ---------------- 就地跳下一题 ----------------
+
+def next_doc_id(doc_id: int) -> int | None:
+    """同套卷的下一题（id 顺序即导入顺序），到卷尾则返回 None。"""
+    conn = connect()
+    row = conn.execute(
+        """SELECT id FROM documents
+           WHERE kind='真题' AND exam=(SELECT exam FROM documents WHERE id=?)
+             AND id>? ORDER BY id LIMIT 1""",
+        (doc_id, doc_id)).fetchone()
+    if not row:
+        row = conn.execute(
+            "SELECT id FROM documents WHERE kind='真题' AND id>? ORDER BY id LIMIT 1",
+            (doc_id,)).fetchone()
+    conn.close()
+    return row["id"] if row else None
+
+
+# ---------------- 半月时政 ----------------
+
+def list_shizheng() -> list[dict]:
+    conn = connect()
+    rows = conn.execute("SELECT period, title, content, created_at FROM shizheng ORDER BY period DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_shizheng(period: str) -> dict | None:
+    conn = connect()
+    row = conn.execute("SELECT * FROM shizheng WHERE period=?", (period,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def save_shizheng(period: str, title: str, content: str) -> None:
+    conn = connect()
+    conn.execute(
+        "INSERT OR REPLACE INTO shizheng(period,title,content,created_at) VALUES(?,?,?,?)",
+        (period, title, content, time.time()))
+    conn.commit()
+    conn.close()
+
+
+# ---------------- 真题套卷 ----------------
+
+def list_exams() -> list[dict]:
+    """可用真题套卷：同 exam 名 ≥15 题才算一套。"""
+    conn = connect()
+    rows = conn.execute(
+        """SELECT exam, COUNT(*) c FROM documents
+           WHERE kind='真题' AND exam!='' AND module NOT IN ('申论','综合分析')
+           GROUP BY exam HAVING c>=15 ORDER BY exam DESC LIMIT 60""").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+MODULE_ORDER = ["常识判断", "言语理解与表达", "数量关系", "判断推理", "资料分析", "综合分析"]
+
+
+def exam_paper_ids(exam: str) -> list[int]:
+    """整卷题目 id，按模块固定顺序 + id 排序。"""
+    conn = connect()
+    ids: list[int] = []
+    for mod in MODULE_ORDER:
+        rows = conn.execute(
+            "SELECT id FROM documents WHERE kind='真题' AND exam=? AND module=? ORDER BY id",
+            (exam, mod)).fetchall()
+        ids.extend(r["id"] for r in rows)
+    # 兜底：不在常规模块里的题
+    rows = conn.execute(
+        """SELECT id FROM documents WHERE kind='真题' AND exam=? AND id NOT IN
+           (SELECT id FROM documents WHERE kind='真题' AND exam=? AND module IN
+            ('常识判断','言语理解与表达','数量关系','判断推理','资料分析','综合分析'))
+           ORDER BY id""", (exam, exam)).fetchall()
+    ids.extend(r["id"] for r in rows)
+    conn.close()
+    return ids
+
+
+# ---------------- 学习时长统计 ----------------
+
+def study_time_stats() -> dict:
+    """按天统计学习分钟数：做题(ms) + 词填(ms) + 速算(题数×均耗时)。"""
+    conn = connect()
+    lt = time.localtime()
+    day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    per_day: dict[str, int] = {}
+
+    def add(ts, ms):
+        key = time.strftime("%Y-%m-%d", time.localtime(ts))
+        per_day[key] = per_day.get(key, 0) + int(ms or 0)
+
+    for r in conn.execute("SELECT created_at, ms FROM answers"):
+        add(r["created_at"], r["ms"])
+    for r in conn.execute("SELECT created_at, ms FROM wordfill_answers"):
+        add(r["created_at"], r["ms"])
+    for r in conn.execute("SELECT created_at, total, avg_ms FROM speed_rounds"):
+        add(r["created_at"], (r["total"] or 0) * (r["avg_ms"] or 0))
+    total_ms = conn.execute("SELECT COALESCE(SUM(ms),0) s FROM answers").fetchone()["s"]
+    total_ms += conn.execute("SELECT COALESCE(SUM(ms),0) s FROM wordfill_answers").fetchone()["s"]
+    for r in conn.execute("SELECT total, avg_ms FROM speed_rounds"):
+        total_ms += (r["total"] or 0) * (r["avg_ms"] or 0)
+    conn.close()
+
+    daily = []
+    for i in range(13, -1, -1):
+        ds = day_start - i * 86400
+        key = time.strftime("%Y-%m-%d", time.localtime(ds))
+        daily.append({
+            "date": time.strftime("%m-%d", time.localtime(ds)),
+            "minutes": round(per_day.get(key, 0) / 60000, 1),
+        })
+    today = daily[-1]["minutes"]
+    return {
+        "today_minutes": today,
+        "total_minutes": round(total_ms / 60000),
+        "daily": daily,
+        "avg_daily": round(sum(d["minutes"] for d in daily) / 14, 1),
+    }
+
+
+# ---------------- 辨析卡学习进度 ----------------
+
+def cards_progress() -> dict:
+    """已学 = 有自评记录的卡；待复习 = 计划到期。"""
+    conn = connect()
+    total = conn.execute("SELECT COUNT(*) c FROM cards").fetchone()["c"]
+    learned = conn.execute("SELECT COUNT(DISTINCT card_id) c FROM card_reviews").fetchone()["c"]
+    due = conn.execute("SELECT COUNT(*) c FROM card_plan WHERE due_at<=?", (time.time(),)).fetchone()["c"]
+    mastered = conn.execute(
+        """SELECT COUNT(*) c FROM card_plan WHERE stage>=4""").fetchone()["c"]
+    conn.close()
+    return {"total": total, "learned": learned, "due": due, "mastered": mastered}
