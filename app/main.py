@@ -14,7 +14,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, importer, knowledge, speedcalc, variant, wordfill
+from . import ai, db, essay_rubric, importer, knowledge, speedcalc, variant, wordfill
 from .config import STATIC_DIR, load_settings, save_settings
 
 import html as _html
@@ -683,6 +683,85 @@ async def api_shizheng_generate(b: ShizhengGenIn):
 @app.get("/api/knowledge/essay")
 def api_knowledge_essay():
     return knowledge.ESSAY_KNOWLEDGE
+
+
+# ---------------- 申论 / 综应 AI 批改 ----------------
+
+@app.get("/api/essay/rubrics")
+def api_essay_rubrics():
+    return {"items": [
+        {"key": k, "name": v["name"], "hint": v["hint"], "default_score": v["default_score"]}
+        for k, v in essay_rubric.RUBRICS.items()
+    ]}
+
+
+class EssayGradeIn(BaseModel):
+    category: str
+    question: str
+    material: str = ""
+    answer: str
+    total_score: int = 0      # 0 = 用题型默认满分
+
+
+@app.post("/api/essay/grade")
+async def api_essay_grade(b: EssayGradeIn):
+    r = essay_rubric.RUBRICS.get(b.category)
+    if not r:
+        raise HTTPException(400, "未知题型")
+    if not b.question.strip() or not b.answer.strip():
+        raise HTTPException(400, "题目与作答均不能为空")
+    total = b.total_score if 10 <= b.total_score <= 100 else r["default_score"]
+
+    user = (
+        f"请批改下面这份作答。题型：{r['name']}，满分 {total} 分。\n\n"
+        f"【评分细则】\n{r['rubric']}\n\n"
+        f"{essay_rubric.OUTPUT_SPEC.replace('{total}', str(total))}\n\n"
+        f"【题目】\n{b.question.strip()[:3000]}\n\n"
+    )
+    if b.material.strip():
+        user += f"【给定材料】\n{b.material.strip()[:8000]}\n\n"
+    else:
+        user += "【给定材料】（考生未提供，请基于题目与作答本身批改，并在总评中注明缺材料可能影响要点判定）\n\n"
+    user += f"【考生作答】\n{b.answer.strip()[:8000]}"
+
+    messages = [
+        {"role": "system", "content": essay_rubric.SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+
+    buffer: list[str] = []
+
+    async def gen():
+        async for kind, payload in ai.stream_chat_with_temp(messages, 0.2):
+            if kind == "delta":
+                buffer.append(payload)
+            yield f"data: {json.dumps({'type': kind, 'text': payload}, ensure_ascii=False)}\n\n"
+        result = "".join(buffer).strip()
+        if result:
+            gid = db.save_essay_grade(b.category, b.question, b.answer, total, result)
+            yield f"data: {json.dumps({'type': 'saved', 'text': str(gid)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/essay/history")
+def api_essay_history():
+    items = db.list_essay_grades()
+    # 列表只带总分摘要（结果第一行），不返回全文
+    for it in items:
+        first = (it["result"] or "").split("\n", 1)[0][:60]
+        it["summary"] = first
+        it.pop("result", None)
+        it.pop("answer", None)
+    return {"items": items}
+
+
+@app.get("/api/essay/history/{gid}")
+def api_essay_history_detail(gid: int):
+    it = db.get_essay_grade(gid)
+    if not it:
+        raise HTTPException(404)
+    return it
 
 
 # ---------------- 真题套卷 ----------------

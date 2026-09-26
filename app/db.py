@@ -130,6 +130,16 @@ CREATE TABLE IF NOT EXISTS shizheng (
     content TEXT DEFAULT '',
     created_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS essay_grades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT DEFAULT '',
+    question TEXT DEFAULT '',
+    answer TEXT DEFAULT '',
+    total_score INTEGER DEFAULT 0,
+    result TEXT DEFAULT '',
+    created_at REAL
+);
 """
 
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
@@ -1444,6 +1454,37 @@ def save_shizheng(period: str, title: str, content: str) -> None:
         (period, title, content, time.time()))
     conn.commit()
     conn.close()
+
+
+# ---------------- 申论/综应 批改记录 ----------------
+
+def save_essay_grade(category: str, question: str, answer: str,
+                     total_score: int, result: str) -> int:
+    conn = connect()
+    cur = conn.execute(
+        "INSERT INTO essay_grades(category,question,answer,total_score,result,created_at)"
+        " VALUES(?,?,?,?,?,?)",
+        (category, question[:2000], answer[:8000], total_score, result, time.time()))
+    conn.commit()
+    gid = cur.lastrowid
+    conn.close()
+    return gid
+
+
+def list_essay_grades(limit: int = 50) -> list[dict]:
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id, category, question, total_score, result, created_at"
+        " FROM essay_grades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_essay_grade(gid: int) -> dict | None:
+    conn = connect()
+    row = conn.execute("SELECT * FROM essay_grades WHERE id=?", (gid,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 # ---------------- 真题套卷 ----------------

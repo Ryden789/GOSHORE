@@ -165,6 +165,7 @@ function route() {
   else if (name === "review") dispatch(renderReview);
   else if (name === "shizheng") dispatch(renderShizheng);
   else if (name === "essay") dispatch(renderEssay);
+  else if (name === "grade") dispatch(renderGrade);
   else if (name === "history") dispatch(renderHistory);
   else dispatch(renderHome);
 }
@@ -2268,6 +2269,119 @@ async function renderHistory() {
     el.onmouseenter = () => el.style.transform = "translateX(4px)";
     el.onmouseleave = () => el.style.transform = "";
   });
+}
+
+/* =====================================================
+   AI 批改（申论 / 综应）
+===================================================== */
+
+async function renderGrade() {
+  const [rub, hist] = await Promise.all([
+    api("/api/essay/rubrics"),
+    api("/api/essay/history"),
+  ]);
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">AI 批改 · 申论 / 综应</h1>
+      <p class="page-desc">按真实阅卷规则批改：小题踩点给分、作文按档赋分 · 粘贴题目与作答即可</p>
+    </div>
+    <div class="panel rise rise-1">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <select id="gCat" style="padding:8px 10px;font-size:14px">
+          ${rub.items.map(r => `<option value="${r.key}">${esc(r.name)}（${esc(r.hint)}）</option>`).join("")}
+        </select>
+        <label style="font-size:13px;color:var(--ink-2)">满分 <input id="gTotal" type="number" min="10" max="100" style="width:64px;padding:6px"> </label>
+        <span style="font-size:12px;color:var(--ink-3)">留空/0 用题型默认满分</span>
+      </div>
+      <textarea id="gQ" rows="3" placeholder="【题目】粘贴题干，含作答要求与字数限制（必填）" style="width:100%;margin-bottom:8px"></textarea>
+      <textarea id="gM" rows="5" placeholder="【给定材料】粘贴题目对应的材料（建议提供，没有材料无法判要点命中）" style="width:100%;margin-bottom:8px"></textarea>
+      <textarea id="gA" rows="8" placeholder="【你的作答】粘贴你的答案（必填）" style="width:100%;margin-bottom:8px"></textarea>
+      <div style="display:flex;gap:10px;align-items:center">
+        <button class="btn btn-primary" id="gGo">开始批改</button>
+        <span id="gTip" style="font-size:12.5px;color:var(--ink-3)"></span>
+      </div>
+    </div>
+    <div id="gOut"></div>
+    <div class="panel rise rise-2" style="margin-top:18px">
+      <h3 style="margin:0 0 8px">批改记录</h3>
+      <div id="gHist"></div>
+    </div>`;
+
+  const catSel = $("#gCat"), totalIn = $("#gTotal");
+  const setDef = () => {
+    const r = rub.items.find(x => x.key === catSel.value);
+    totalIn.placeholder = r ? r.default_score : "";
+  };
+  catSel.onchange = setDef; setDef();
+
+  function drawHist() {
+    $("#gHist").innerHTML = hist.items.length ? hist.items.map(it => `
+      <div class="gh-item" data-id="${it.id}" style="padding:8px 4px;border-top:1px solid var(--line);cursor:pointer">
+        <span class="tag">${esc((rub.items.find(r => r.key === it.category) || {}).name || it.category)}</span>
+        <b style="margin-left:6px">${esc(it.summary.replace(/^#+\s*/, ""))}</b>
+        <span style="float:right;color:var(--ink-3);font-size:12px">${new Date(it.created_at * 1000).toLocaleString("zh-CN")}</span>
+        <div style="font-size:12.5px;color:var(--ink-3);margin-top:2px">${esc(it.question.slice(0, 50))}…</div>
+      </div>`).join("")
+      : `<div style="color:var(--ink-3);font-size:13px">暂无批改记录</div>`;
+    $$(".gh-item").forEach(el => el.onclick = async () => {
+      const d = await api("/api/essay/history/" + el.dataset.id);
+      $("#gOut").innerHTML = `<div class="panel" style="border-left:4px solid var(--indigo);margin-top:14px">
+        <div style="font-size:12.5px;color:var(--ink-3);margin-bottom:6px">历史批改 · ${new Date(d.created_at * 1000).toLocaleString("zh-CN")}</div>
+        <div class="sz-content">${md(d.result)}</div></div>`;
+      window.scrollTo({ top: $("#gOut").offsetTop - 70, behavior: "smooth" });
+    });
+  }
+  drawHist();
+
+  let busy = false;
+  $("#gGo").onclick = async () => {
+    if (busy) return;
+    const question = $("#gQ").value.trim(), answer = $("#gA").value.trim();
+    if (!question || !answer) { $("#gTip").textContent = "题目与作答必填"; return; }
+    busy = true; $("#gGo").disabled = true; $("#gTip").textContent = "批改中，约 30-60 秒…";
+    $("#gOut").innerHTML = `<div class="panel" style="margin-top:14px;border-left:4px solid var(--cinnabar)"><div class="sz-content" id="gRes"></div></div>`;
+    const box = $("#gRes");
+    box.classList.add("cursor-blink");
+    let full = "";
+    try {
+      const r = await fetch("/api/essay/grade", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category: catSel.value, question, answer,
+          material: $("#gM").value.trim(),
+          total_score: parseInt(totalIn.value) || 0,
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const frames = buf.split("\n\n");
+        buf = frames.pop();
+        for (const f of frames) {
+          const line = f.split("\n").find(l => l.startsWith("data:"));
+          if (!line) continue;
+          const ev = JSON.parse(line.slice(5).trim());
+          if (ev.type === "delta") { full += ev.text; box.innerHTML = md(full); }
+          else if (ev.type === "error") { full += `\n\n**⚠ ${ev.text}**`; box.innerHTML = md(full); }
+          else if (ev.type === "saved") {
+            hist.items.unshift({ id: +ev.text, category: catSel.value, question, total_score: 0,
+              summary: full.split("\n")[0].slice(0, 60), created_at: Date.now() / 1000 });
+            drawHist();
+          }
+        }
+      }
+      $("#gTip").textContent = "批改完成，已存入记录";
+    } catch (e) {
+      box.innerHTML = md(full + `\n\n**⚠ 请求失败：${esc(e.message)}**`);
+      $("#gTip").textContent = "批改失败，可重试";
+    }
+    box.classList.remove("cursor-blink");
+    busy = false; $("#gGo").disabled = false;
+  };
 }
 
 route();
