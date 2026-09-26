@@ -1,0 +1,13 @@
+{
+  "name": "上岸自习室",
+  "short_name": "上岸自习室",
+  "description": "事业单位联考C类备考 · 手机刷题",
+  "start_url": "/m/",
+  "scope": "/m/",
+  "display": "standalone",
+  "background_color": "#f4efe6",
+  "theme_color": "#8c2b21",
+  "icons": [
+    { "src": "/m/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

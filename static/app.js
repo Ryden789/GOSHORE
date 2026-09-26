@@ -30,10 +30,12 @@ async function api(path, body) {
   const opt = body
     ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
     : {};
+  if (abortCtl) opt.signal = abortCtl.signal;
   let r;
   try {
     r = await fetch(path, opt);
   } catch (e) {
+    if (e.name === "AbortError") throw e;  // 切页导致的取消，不提示
     toast("网络异常：请确认本机服务正在运行（http://127.0.0.1:8765）");
     throw e;
   }
@@ -150,13 +152,30 @@ function pieSvg(data) {
 /* ---------- 路由 ---------- */
 
 let navSeq = 0;   // 导航序号：慢请求返回后校验，防止旧页覆盖新页
+let abortCtl = null;  // 当前导航的在途请求控制器，切页即 abort，防止旧回调操作已移除的元素
 
 function setActive(name) {
-  $$(".nav a").forEach(a => a.classList.toggle("active", a.dataset.route === name));
+  document.querySelectorAll(".nav a").forEach(
+    a => a.classList.toggle("active", a.dataset.route === name));
+  syncNavGroup(name);
 }
+
+function syncNavGroup(name) {
+  // 手风琴：只展开当前路由所在分组，其余折叠（导航在 #view 之外，需用 document）
+  document.querySelectorAll(".nav-group").forEach(g => {
+    const here = !!g.querySelector(`a[data-route="${name}"]`);
+    g.classList.toggle("collapsed", !here);
+  });
+}
+
+// 点击组名手动展开/收起（静态 DOM，绑定一次）
+document.querySelectorAll(".nav-group-title").forEach(t => t.onclick = () =>
+  t.closest(".nav-group").classList.toggle("collapsed"));
 
 function route() {
   const seq = ++navSeq;
+  if (abortCtl) abortCtl.abort();
+  abortCtl = new AbortController();
   document.onkeydown = null;  // 各页自行绑定键盘操作，切页即清除
   const h = location.hash || "#/home";
   const parts = h.replace(/^#\//, "").split("/");
@@ -436,7 +455,7 @@ async function renderSearch() {
     if (e.key === "Enter") { searchState.q = e.target.value.trim(); doSearch(1); }
   });
   $("#go").onclick = () => { searchState.q = $("#q").value.trim(); doSearch(1); };
-  doSearch(searchState.page);
+  await doSearch(searchState.page);
 }
 
 /* =====================================================
@@ -1047,6 +1066,7 @@ async function renderPaper() {
   // 真题套卷下拉
   api("/api/exams").then(r => {
     const sel = $("#examSel");
+    if (!sel) return;   // 已切到其他页面，旧回调放弃（元素随旧视图一起移除）
     if (!r.items.length) {
       sel.innerHTML = `<option value="">题库中暂无成套试卷</option>`;
       return;
@@ -1059,13 +1079,15 @@ async function renderPaper() {
   $("#examStart").onclick = async () => {
     const exam = $("#examSel").value;
     if (!exam) return;
-    $("#examStart").disabled = true; $("#examStart").textContent = "组卷中…";
+    const btn = $("#examStart");
+    btn.disabled = true; btn.textContent = "组卷中…";
     try {
       const r = await api("/api/exam-paper", { exam });
       if (!r.ids.length) return alert("该套卷没有可用题目");
       runPaper(r.ids, { title: r.name, minutes: r.minutes });
     } finally {
-      $("#examStart").disabled = false; $("#examStart").textContent = "开始整卷";
+      const b = $("#examStart");
+      if (b) { b.disabled = false; b.textContent = "开始整卷"; }
     }
   };
 
@@ -1121,7 +1143,13 @@ async function renderPaper() {
 
 async function runPaper(ids, opt = {}) {
   // 批量加载：1 次请求代替 N 次，消除组卷延迟
-  const res = await api("/api/docs/batch", { ids });
+  let res;
+  try {
+    res = await api("/api/docs/batch", { ids });
+  } catch (e) {
+    if (e.name === "AbortError") return;  // 加载期间已切走，静默退出
+    throw e;
+  }
   const docs = res.items || [];
   if (!docs.length) { $("#paperBody").innerHTML = `<div class="panel">题目加载失败</div>`; return; }
   const answers = new Array(docs.length).fill(null);   // {sel, correct, ms}
