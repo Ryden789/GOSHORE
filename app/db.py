@@ -416,6 +416,48 @@ def doc_id_by_qid(qid: str) -> int | None:
     return row["id"] if row else None
 
 
+def get_docs_batch(doc_ids: list[int]) -> list[dict]:
+    """批量获取题目（轻量版，不含 material_group/related 等关联查询）。"""
+    if not doc_ids:
+        return []
+    conn = connect()
+    qs = ",".join("?" * len(doc_ids))
+    rows = conn.execute(
+        f"SELECT * FROM documents WHERE id IN ({qs})", doc_ids
+    ).fetchall()
+    by_id = {r["id"]: dict(r) for r in rows}
+    # 批量查 marks 和 last_answer
+    marks = {
+        r["doc_id"]: r["mark"]
+        for r in conn.execute(
+            f"SELECT doc_id, mark FROM marks WHERE doc_id IN ({qs})", doc_ids
+        ).fetchall()
+    }
+    lasts = {}
+    for r in conn.execute(
+        f"""SELECT doc_id, selected, correct, ms, created_at FROM answers
+            WHERE id IN (SELECT MAX(id) FROM answers WHERE doc_id IN ({qs}) GROUP BY doc_id)""",
+        doc_ids,
+    ).fetchall():
+        lasts[r["doc_id"]] = {
+            "selected": r["selected"], "correct": r["correct"],
+            "ms": r["ms"], "created_at": r["created_at"],
+        }
+    result = []
+    for did in doc_ids:
+        d = by_id.get(did)
+        if not d:
+            continue
+        d["data"] = json.loads(d.get("data") or "{}")
+        d["tags"] = json.loads(d.get("tags") or "[]")
+        d["mark"] = marks.get(did, "")
+        d["last_answer"] = lasts.get(did)
+        d["material_group"] = []
+        result.append(d)
+    conn.close()
+    return result
+
+
 # ---------------- 疑点复核工作台 ----------------
 
 _DOUBT_RE = _re.compile(
@@ -849,6 +891,19 @@ def random_paper(module: str = "", kaodian: str = "", n: int = 10) -> list[int]:
         tuple(args) + (n - len(ids),),
     ).fetchall()
     ids.extend(r["id"] for r in rows)
+
+    # 按考试模块顺序排序（常识→言语→数量→判断→资料→综合）
+    if ids:
+        qs = ",".join("?" * len(ids))
+        mod_map = {
+            r["id"]: r["module"]
+            for r in conn.execute(
+                f"SELECT id, module FROM documents WHERE id IN ({qs})", ids
+            ).fetchall()
+        }
+        order = {m: i for i, m in enumerate(MODULE_ORDER)}
+        ids.sort(key=lambda x: (order.get(mod_map.get(x, ""), 99), x))
+
     conn.close()
     return ids[:n]
 
@@ -997,6 +1052,39 @@ def stats_overview() -> dict:
     }
 
 
+def answer_history(limit: int = 100, offset: int = 0) -> dict:
+    """获取做题历史记录（含题目信息），按时间倒序。"""
+    conn = connect()
+    total = conn.execute("SELECT COUNT(*) c FROM answers").fetchone()["c"]
+    rows = conn.execute(
+        """SELECT a.id, a.doc_id, a.selected, a.correct, a.ms, a.created_at,
+                  d.title, d.module, d.kaodian, d.region, d.year, d.exam
+           FROM answers a
+           JOIN documents d ON d.id = a.doc_id
+           ORDER BY a.created_at DESC
+           LIMIT ? OFFSET ?""",
+        (limit, offset),
+    ).fetchall()
+    items = []
+    for r in rows:
+        items.append({
+            "id": r["id"],
+            "doc_id": r["doc_id"],
+            "title": r["title"],
+            "module": r["module"],
+            "kaodian": r["kaodian"],
+            "region": r["region"],
+            "year": r["year"],
+            "exam": r["exam"],
+            "selected": r["selected"],
+            "correct": bool(r["correct"]),
+            "ms": r["ms"],
+            "created_at": r["created_at"],
+        })
+    conn.close()
+    return {"items": items, "total": total}
+
+
 # ---------------- F9 辨析卡（词语卡 + 错题考点卡） ----------------
 
 def import_cards() -> dict:
@@ -1119,13 +1207,13 @@ EXAM_TEMPLATES = {
     "guokao": {
         "name": "国考行测（副省级）",
         "minutes": 120,
-        "parts": [("常识判断", 20), ("言语理解与表达", 40), ("数量关系", 15),
+        "parts": [("常识判断", 20), ("言语理解", 40), ("数量关系", 15),
                   ("判断推理", 40), ("资料分析", 20)],
     },
     "shiye_c": {
         "name": "事业单位C类职测",
         "minutes": 90,
-        "parts": [("常识判断", 20), ("言语理解与表达", 25), ("数量关系", 15),
+        "parts": [("常识判断", 20), ("言语理解", 25), ("数量关系", 15),
                   ("判断推理", 30), ("综合分析", 10)],
     },
 }
@@ -1371,7 +1459,7 @@ def list_exams() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-MODULE_ORDER = ["常识判断", "言语理解与表达", "数量关系", "判断推理", "资料分析", "综合分析"]
+MODULE_ORDER = ["常识判断", "言语理解", "数量关系", "判断推理", "资料分析", "综合分析"]
 
 
 def exam_paper_ids(exam: str) -> list[int]:
@@ -1387,7 +1475,7 @@ def exam_paper_ids(exam: str) -> list[int]:
     rows = conn.execute(
         """SELECT id FROM documents WHERE kind='真题' AND exam=? AND id NOT IN
            (SELECT id FROM documents WHERE kind='真题' AND exam=? AND module IN
-            ('常识判断','言语理解与表达','数量关系','判断推理','资料分析','综合分析'))
+            ('常识判断','言语理解','数量关系','判断推理','资料分析','综合分析'))
            ORDER BY id""", (exam, exam)).fetchall()
     ids.extend(r["id"] for r in rows)
     conn.close()

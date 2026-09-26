@@ -74,6 +74,16 @@ def api_doc(doc_id: int):
     return d
 
 
+class BatchDocsIn(BaseModel):
+    ids: list[int]
+
+
+@app.post("/api/docs/batch")
+def api_docs_batch(b: BatchDocsIn):
+    """批量获取题目详情（用于组卷/套卷加载，减少并发请求）"""
+    return {"items": db.get_docs_batch(b.ids)}
+
+
 @app.get("/api/doc-by-qid/{qid}")
 def api_doc_by_qid(qid: str):
     did = db.doc_id_by_qid(qid)
@@ -220,6 +230,12 @@ def api_speed_history():
 @app.get("/api/stats")
 def api_stats():
     return db.stats_overview()
+
+
+@app.get("/api/history")
+def api_history(limit: int = 100, offset: int = 0):
+    """做题历史记录（含题目信息）"""
+    return db.answer_history(min(500, limit), offset)
 
 
 @app.get("/api/wrong-book")
@@ -588,13 +604,40 @@ def _shizheng_period(now=None) -> tuple[str, str]:
     return f"{dt.year}年{dt.month}月{half}", f"{dt.year}年{dt.month}月"
 
 
+def _shizheng_recent_periods(n=12) -> list[str]:
+    """返回最近 n 个半月期次（含当期），倒序排列。"""
+    import datetime
+    dt = datetime.datetime.now()
+    periods = []
+    # 当期
+    half = "上半月" if dt.day <= 15 else "下半月"
+    periods.append(f"{dt.year}年{dt.month}月{half}")
+    # 往期
+    year, month = dt.year, dt.month
+    for _ in range(n - 1):
+        if half == "下半月":
+            half = "上半月"
+        else:
+            half = "下半月"
+            month -= 1
+            if month == 0:
+                month = 12
+                year -= 1
+        periods.append(f"{year}年{month}月{half}")
+    return periods
+
+
 @app.get("/api/shizheng")
 def api_shizheng_list():
     period, month = _shizheng_period()
+    recent = _shizheng_recent_periods(12)  # 近半年=12期
+    existing = {item["period"] for item in db.list_shizheng()}
     return {
         "items": db.list_shizheng(),
         "current": period,
         "current_exists": db.get_shizheng(period) is not None,
+        "recent_periods": recent,
+        "missing_periods": [p for p in recent if p not in existing],
     }
 
 
@@ -674,24 +717,45 @@ def api_cards_progress():
 def api_export_print(
     q: str = "", kind: str = "真题", module: str = "", daclass: str = "",
     region: str = "", year: str = "", limit: int = 100, with_answer: int = 1,
+    doc_ids: str = "",  # 逗号分隔的 doc_id 列表（用于单题/多题导出）
 ):
     limit = max(1, min(500, limit))
-    rows, total = db.search_docs(
-        q=q, kind=kind, module=module, daclass=daclass,
-        region=region, year=year, page=1, page_size=limit,
-    )
     items = []
-    for r in rows:
-        d = db.get_doc(r["id"])
-        if not d:
-            continue
-        data = d["data"]
-        answer = next((o["label"] for o in (data.get("options") or []) if o.get("correct")), "")
-        items.append({
-            "title": d["title"], "module": d["module"], "exam": d["exam"],
-            "stem": data.get("stem", ""), "options": data.get("options") or [],
-            "answer": answer, "analysis": data.get("official") or data.get("reasoning") or "",
-        })
+
+    # 优先处理 doc_ids 指定的题目（单题/多题导出）
+    if doc_ids:
+        try:
+            ids = [int(x) for x in doc_ids.split(",") if x.strip().isdigit()][:50]
+        except ValueError:
+            ids = []
+        for did in ids:
+            d = db.get_doc(did)
+            if not d:
+                continue
+            data = d["data"]
+            answer = next((o["label"] for o in (data.get("options") or []) if o.get("correct")), "")
+            items.append({
+                "title": d["title"], "module": d["module"], "exam": d["exam"],
+                "stem": data.get("stem", ""), "options": data.get("options") or [],
+                "answer": answer, "analysis": data.get("official") or data.get("reasoning") or "",
+            })
+        total = len(items)
+    else:
+        rows, total = db.search_docs(
+            q=q, kind=kind, module=module, daclass=daclass,
+            region=region, year=year, page=1, page_size=limit,
+        )
+        for r in rows:
+            d = db.get_doc(r["id"])
+            if not d:
+                continue
+            data = d["data"]
+            answer = next((o["label"] for o in (data.get("options") or []) if o.get("correct")), "")
+            items.append({
+                "title": d["title"], "module": d["module"], "exam": d["exam"],
+                "stem": data.get("stem", ""), "options": data.get("options") or [],
+                "answer": answer, "analysis": data.get("official") or data.get("reasoning") or "",
+            })
 
     def block(it, idx, show_ans):
         opts = "".join(
@@ -707,8 +771,9 @@ def api_export_print(
 
     questions = "".join(block(it, i + 1, False) for i, it in enumerate(items))
     answers = "".join(block(it, i + 1, True) for i, it in enumerate(items)) if with_answer else ""
+    title_suffix = f"指定 {len(items)} 题" if doc_ids else f"{total} 题（本次 {len(items)} 题）"
     html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
-<title>题库导出 · {total} 题（本次 {len(items)} 题）</title>
+<title>题库导出 · {title_suffix}</title>
 <style>
   body {{ font-family: "Noto Serif SC", "SimSun", serif; margin: 0; color: #1a1a1a; }}
   .wrap {{ max-width: 800px; margin: 0 auto; padding: 32px 24px; }}
@@ -724,9 +789,9 @@ def api_export_print(
   @media print {{ .noprint {{ display: none; }} }}
   .tip {{ background: #fdf6e3; border: 1px solid #e0d5b0; padding: 10px 14px; border-radius: 6px; font-size: 13px; }}
 </style></head><body><div class="wrap">
-<div class="noprint tip">打印为 PDF：按 <b>Ctrl + P</b> → 目标选「另存为 PDF」→ 勾选背景图形。共匹配 {total} 题，本次导出前 {len(items)} 题（可在地址栏调 limit，最大 500）。</div>
-<h1>题库导出（{esc(kind or "全部")}）</h1>
-<div class="sub">筛选：{esc(q or "无关键词")} / {esc(module or "全模块")} / {esc(region or "全地区")} / {esc(year or "全年份")} · 生成于 {__import__("time").strftime("%Y-%m-%d %H:%M")}</div>
+<div class="noprint tip">打印为 PDF：按 <b>Ctrl + P</b> → 目标选「另存为 PDF」→ 勾选背景图形。共 {len(items)} 题。</div>
+<h1>题库导出{("（单题）" if doc_ids and len(items) == 1 else "")}</h1>
+<div class="sub">生成于 {__import__("time").strftime("%Y-%m-%d %H:%M")}</div>
 <h2>第一部分 · 试题</h2>
 {questions or "<p>没有匹配的题目</p>"}
 <h2 class="pagebreak">第二部分 · 答案与解析</h2>

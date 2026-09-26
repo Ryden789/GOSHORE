@@ -165,6 +165,7 @@ function route() {
   else if (name === "review") dispatch(renderReview);
   else if (name === "shizheng") dispatch(renderShizheng);
   else if (name === "essay") dispatch(renderEssay);
+  else if (name === "history") dispatch(renderHistory);
   else dispatch(renderHome);
 }
 window.addEventListener("hashchange", route);
@@ -537,8 +538,10 @@ async function renderDoc(id, tabName) {
           <button class="btn btn-sm" id="showDraft">📄 看底稿解析</button>
           <button class="btn btn-sm btn-primary" id="askAi"${!online ? ' disabled title="当前离线，可看底稿解析"' : ''}>让 AI 讲这道题</button>
           <button class="btn btn-sm" id="variantBtn"${!online ? ' disabled title="当前离线"' : ''}>🧬 变式题</button>
+          <button class="btn btn-sm" id="exportBtn" title="打印/导出本题">⬇ 导出</button>
           <button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>
           ${nextBtnHtml}`;
+        $("#exportBtn").onclick = () => window.open(`/api/export/print?doc_ids=${id}`, "_blank");
         $("#askAi").onclick = () => (location.hash = `#/doc/${id}/ai`);
         $("#variantBtn").onclick = async () => {
           const b = $("#variantBtn");
@@ -1031,7 +1034,10 @@ async function renderPaper() {
 }
 
 async function runPaper(ids, opt = {}) {
-  const docs = await Promise.all(ids.map(id => api(`/api/doc/${id}`)));
+  // 批量加载：1 次请求代替 N 次，消除组卷延迟
+  const res = await api("/api/docs/batch", { ids });
+  const docs = res.items || [];
+  if (!docs.length) { $("#paperBody").innerHTML = `<div class="panel">题目加载失败</div>`; return; }
   const answers = new Array(docs.length).fill(null);   // {sel, correct, ms}
   let cur = 0, startedAt = Date.now(), finished = false;
   const t0 = Date.now();
@@ -2100,48 +2106,81 @@ async function renderShizheng() {
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">时政常识</h1>
-      <p class="page-desc">每半月一期 · 进入新月期自动生成当期积累（AI 整理，考前请以权威时政资料核对）</p>
+      <p class="page-desc">近半年（12 期）半月时政积累 · 已生成 ${r.items.length} 期 · 点击缺失期次即可生成</p>
     </div>
     <div id="szBody"></div>`;
 
   const body = $("#szBody");
 
-  function drawList(items, current) {
-    body.innerHTML = items.length ? items.map((it, i) => `
-      <div class="panel rise rise-${Math.min(i + 1, 3)}" style="${it.period === current ? "border-left:4px solid var(--cinnabar)" : ""}">
-        <details ${i === 0 ? "open" : ""}>
-          <summary style="cursor:pointer;font-weight:700">${it.period === current ? "🔴 " : ""}${esc(it.period)}<span style="font-weight:400;color:var(--ink-3);font-size:12px;margin-left:8px">${new Date(it.created_at * 1000).toLocaleDateString("zh-CN")} 生成</span></summary>
+  function draw() {
+    const byPeriod = Object.fromEntries(r.items.map(it => [it.period, it]));
+    // 已生成列表
+    const generated = r.items.length ? r.items.map(it => `
+      <div class="panel rise" style="${it.period === r.current ? "border-left:4px solid var(--cinnabar)" : "border-left:4px solid var(--indigo)"}">
+        <details ${it.period === r.current ? "open" : ""}>
+          <summary style="cursor:pointer;font-weight:700">${it.period === r.current ? "🔴 当前期：" : ""}${esc(it.period)}<span style="font-weight:400;color:var(--ink-3);font-size:12px;margin-left:8px">${new Date(it.created_at * 1000).toLocaleDateString("zh-CN")} 生成</span></summary>
           <div class="sz-content" style="margin-top:10px">${md(it.content)}</div>
         </details>
-      </div>`).join("")
-      : `<div class="panel empty">还没有时政积累</div>`;
+      </div>`).join("") : "";
+
+    // 缺失期次生成区
+    const missing = (r.missing_periods || []).filter(p => p !== r.current);
+    const missingHtml = missing.length ? `
+      <div class="panel rise" style="background:var(--paper-2)">
+        <div style="font-weight:700;margin-bottom:8px">📌 缺失期次（近半年）—— 点击生成</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${missing.map(p => `<button class="btn btn-sm sz-gen-btn" data-p="${esc(p)}">${esc(p)}</button>`).join("")}
+        </div>
+      </div>` : "";
+
+    body.innerHTML = missingHtml + generated;
+
+    // 绑定生成按钮
+    $$(".sz-gen-btn", body).forEach(b => {
+      b.onclick = async () => {
+        const p = b.dataset.p;
+        b.disabled = true; b.textContent = "生成中…";
+        try {
+          const g = await api("/api/shizheng/generate", { period: p });
+          if (g.ok) {
+            const fresh = await api("/api/shizheng");
+            r.items = fresh.items;
+            r.missing_periods = fresh.missing_periods;
+            draw();
+          } else {
+            b.disabled = false; b.textContent = p + "（失败）";
+          }
+        } catch (e) { b.disabled = false; b.textContent = p; }
+      };
+    });
   }
 
-  drawList(r.items, r.current);
+  draw();
 
+  // 当期若不存在则自动在底部生成
   if (!r.current_exists && !shizhengGenerating) {
     shizhengGenerating = true;
-    body.insertAdjacentHTML("afterbegin", `
-      <div class="panel" id="szGen">⏳ 正在生成本期（${esc(r.current)}）时政常识，约需 1 分钟…</div>`);
+    body.insertAdjacentHTML("beforeend", `
+      <div class="panel" id="szGen" style="border-left:4px solid var(--cinnabar)">⏳ 正在生成本期（${esc(r.current)}）时政常识，约需 1 分钟…</div>`);
     try {
       const g = await api("/api/shizheng/generate", { period: r.current });
       $("#szGen")?.remove();
       if (g.ok) {
         const fresh = await api("/api/shizheng");
-        drawList(fresh.items, fresh.current);
+        r.items = fresh.items;
+        r.missing_periods = fresh.missing_periods;
+        draw();
       } else {
-        body.insertAdjacentHTML("afterbegin", `
+        $("#szGen")?.remove();
+        body.insertAdjacentHTML("beforeend", `
           <div class="panel" style="border-left:4px solid var(--cinnabar)">
             本期生成失败：${esc(g.error || "未知错误")}
-            <button class="btn btn-sm" id="szRetry" style="margin-left:10px">重试</button>
+            <button class="btn btn-sm" id="szRetry">重试</button>
           </div>`);
         $("#szRetry").onclick = renderShizheng;
       }
-    } catch (e) {
-      $("#szGen")?.remove();
-    } finally {
-      shizhengGenerating = false;
-    }
+    } catch (e) { $("#szGen")?.remove(); }
+    finally { shizhengGenerating = false; }
   }
 }
 
@@ -2182,6 +2221,52 @@ async function renderEssay() {
     cur = t.dataset.k;
     $$("#essayTabs .tab").forEach(x => x.classList.toggle("active", x === t));
     draw();
+  });
+}
+
+/* =====================================================
+   做题历史记录
+===================================================== */
+
+async function renderHistory() {
+  const r = await api("/api/history?limit=200");
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">做题记录</h1>
+      <p class="page-desc">共 ${r.total} 条作答记录 · 显示最近 ${r.items.length} 条 · 点击可回题目</p>
+    </div>
+    <div id="histBody"></div>`;
+
+  const body = $("#histBody");
+
+  function fmtTime(ts) {
+    const d = new Date(ts * 1000);
+    return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  }
+
+  body.innerHTML = r.items.length ? r.items.map(it => `
+    <div class="panel rise hist-item" data-id="${it.doc_id}" style="cursor:pointer;transition:transform .15s">
+      <div style="display:flex;align-items:flex-start;gap:12px">
+        <span style="font-size:20px;line-height:1">${it.correct ? '<span style="color:var(--bamboo)">✓</span>' : '<span style="color:var(--cinnabar)">✗</span>'}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;margin-bottom:4px">${esc(it.title)}</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-3)">
+            <span class="tag">${esc(it.module)}</span>
+            ${it.kaodian ? `<span class="tag">${esc(it.kaodian)}</span>` : ""}
+            ${it.region ? `<span>${esc(it.region)} ${esc(it.year)}</span>` : ""}
+            <span>选 ${esc(it.selected)} · ${(it.ms / 1000).toFixed(1)}s</span>
+            <span>${fmtTime(it.created_at)}</span>
+          </div>
+        </div>
+        <span style="color:var(--ink-3);font-size:13px">→</span>
+      </div>
+    </div>`).join("")
+    : `<div class="panel empty">还没有做题记录，去题库刷几道吧</div>`;
+
+  $$(".hist-item", body).forEach(el => {
+    el.onclick = () => location.hash = `#/doc/${el.dataset.id}/answer`;
+    el.onmouseenter = () => el.style.transform = "translateX(4px)";
+    el.onmouseleave = () => el.style.transform = "";
   });
 }
 

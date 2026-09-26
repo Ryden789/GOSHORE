@@ -261,6 +261,9 @@ input, select, textarea { font-family: var(--sans); }
 .material-box.always-open {
   margin: 0 0 16px; background: var(--panel); box-shadow: var(--shadow);
   border-left: 4px solid var(--indigo);
+  /* 资料分析材料 sticky 固定在顶部，题目可滚动 */
+  position: sticky; top: 70px; z-index: 15;
+  max-height: 40vh; overflow-y: auto;
 }
 .material-box .mat-title {
   font-weight: 700; font-family: var(--serif); letter-spacing: 1px; color: var(--indigo);
