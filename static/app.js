@@ -12,11 +12,31 @@ function esc(s) {
     .replace(/"/g, "&quot;");
 }
 
+function toast(msg, ms = 3200) {
+  let t = document.getElementById("toastBox");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "toastBox";
+    t.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink,#333);color:#fff;padding:10px 18px;border-radius:8px;font-size:13.5px;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.25);opacity:0;transition:opacity .25s;pointer-events:none;max-width:80vw";
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.style.opacity = "1";
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.style.opacity = "0"; }, ms);
+}
+
 async function api(path, body) {
   const opt = body
     ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
     : {};
-  const r = await fetch(path, opt);
+  let r;
+  try {
+    r = await fetch(path, opt);
+  } catch (e) {
+    toast("网络异常：请确认本机服务正在运行（http://127.0.0.1:8765）");
+    throw e;
+  }
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.json();
 }
@@ -533,12 +553,13 @@ async function renderDoc(id, tabName) {
         });
         const ms = Date.now() - startedAt;
         const online = navigator.onLine;
+        const isImgQ = /<img|\/img\?path=/.test((d.stem || "") + JSON.stringify(d.options || []));
         $("#answerBar").innerHTML = `
           ${correct ? '<span class="badge ok">回答正确</span>' : '<span class="badge no">回答错误</span>'}
           <span style="color:var(--ink-3);font-size:13px;font-family:var(--mono)">用时 ${(ms / 1000).toFixed(1)}s</span>
           <button class="btn btn-sm" id="showDraft">📄 看底稿解析</button>
           <button class="btn btn-sm btn-primary" id="askAi"${!online ? ' disabled title="当前离线，可看底稿解析"' : ''}>让 AI 讲这道题</button>
-          <button class="btn btn-sm" id="variantBtn"${!online ? ' disabled title="当前离线"' : ''}>🧬 变式题</button>
+          <button class="btn btn-sm" id="variantBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式题（AI 无法读取图形）"' : ''}>🧬 变式题</button>
           <button class="btn btn-sm" id="exportBtn" title="打印/导出本题">⬇ 导出</button>
           <button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>
           ${nextBtnHtml}`;
@@ -548,7 +569,10 @@ async function renderDoc(id, tabName) {
           const b = $("#variantBtn");
           b.disabled = true; b.textContent = "生成中…";
           try {
-            const r = await api(`/api/variant/generate/${id}`, {});
+            const r = await Promise.race([
+              api(`/api/variant/generate/${id}`, {}),
+              new Promise((_, rej) => setTimeout(() => rej(new Error("生成超时（90 秒），请稍后重试")), 90000)),
+            ]);
             if (!r.ok) { alert(r.error); return; }
             const q = r.item;
             const panel = document.createElement("div");
@@ -851,6 +875,7 @@ async function renderWrong() {
     <div class="page-head rise">
       <h1 class="page-title">错题本</h1>
       <p class="page-desc">最近一次答错的真题，共 ${items.length} 道 · 消灭它们比刷 100 道新题更值</p>
+      ${items.length ? `<button class="btn btn-sm" id="aiReason" style="margin-top:8px">🤖 AI 预归因未打标题</button>` : ""}
     </div>
     <div class="doc-list rise rise-1" id="list"></div>`;
   $("#list").innerHTML = items.length
@@ -893,6 +918,30 @@ async function renderWrong() {
     await api("/api/wrong-reason", { doc_id: docId, reason: wasOn ? "" : r });
     if (!wasOn) ch.classList.add("on");
   });
+
+  // AI 预归因：批量处理未打标的错题，逐题调用后端，完成后重渲染上色
+  const aiBtn = $("#aiReason");
+  if (aiBtn) aiBtn.onclick = async () => {
+    const todo = items.filter(it => !reasons[it.id]);
+    if (!todo.length) return toast("所有错题都已有错因标注");
+    aiBtn.disabled = true; aiBtn.textContent = `归因中 0/${todo.length}`;
+    let done = 0;
+    for (const it of todo) {
+      try {
+        const r = await api("/api/wrong-reason/ai-suggest", { doc_id: it.id });
+        if (r.ok && r.reason) reasons[it.id] = r.reason;
+      } catch (e) { /* 网络问题已由 api() toast 提示 */ }
+      done++;
+      aiBtn.textContent = `归因中 ${done}/${todo.length}`;
+      // 实时更新对应行的标签
+      const row = document.querySelector(`.reason-row[data-id="${it.id}"]`);
+      if (row && reasons[it.id]) {
+        $$(".reason-chip", row).forEach(c => c.classList.toggle("on", c.dataset.r === reasons[it.id]));
+      }
+    }
+    aiBtn.disabled = false; aiBtn.textContent = "🤖 AI 预归因未打标题";
+    toast(`AI 预归因完成：${done} 题`);
+  };
 }
 
 /* =====================================================
@@ -968,6 +1017,18 @@ async function renderPaper() {
     <div class="panel rise rise-2">
       <div class="speed-config">
         <div class="cfg-group">
+          <div class="cfg-label">疑点陷阱题集（官方答案存疑题 · 防坑强化训练）</div>
+          <div class="cfg-inline" id="trapRow">
+            <span id="trapCnt" style="font-size:13px;color:var(--ink-3)">加载中…</span>
+            <button class="btn" id="trapStart" disabled>开始陷阱训练</button>
+          </div>
+          <div style="font-size:12.5px;color:var(--ink-3);margin-top:6px">来自疑点复核工作台已「确认问题」的题：这些题的官方答案被判定存疑，训练目标是识别陷阱与命题破绽，而非背答案</div>
+        </div>
+      </div>
+    </div>
+    <div class="panel rise rise-2">
+      <div class="speed-config">
+        <div class="cfg-group">
           <div class="cfg-label">真题套卷（按当年卷面顺序整卷练，自动计时）</div>
           <div class="cfg-inline" id="examRow">
             <select id="examSel" style="min-width:280px"><option value="">加载中…</option></select>
@@ -1001,6 +1062,26 @@ async function renderPaper() {
       runPaper(r.ids, { title: r.name, minutes: r.minutes });
     } finally {
       $("#examStart").disabled = false; $("#examStart").textContent = "开始整卷";
+    }
+  };
+
+  // 疑点陷阱题集
+  api("/api/doubts?status=confirmed&page=1&page_size=1").then(r => {
+    const n = r.total || 0;
+    const cnt = $("#trapCnt"), btn = $("#trapStart");
+    if (!cnt) return;
+    cnt.textContent = `共 ${n} 道已确认存疑题`;
+    btn.disabled = !n;
+  }).catch(() => { const c = $("#trapCnt"); if (c) c.textContent = "疑点数据加载失败"; });
+  $("#trapStart").onclick = async () => {
+    const btn = $("#trapStart");
+    btn.disabled = true; btn.textContent = "组卷中…";
+    try {
+      const res = await api("/api/paper", { trap: true, n: 15 });
+      if (!res.ids.length) return alert("暂无可用的陷阱题——先到疑点复核工作台确认问题题项");
+      runPaper(res.ids, { title: "疑点陷阱题集" });
+    } finally {
+      btn.disabled = false; btn.textContent = "开始陷阱训练";
     }
   };
 
@@ -1135,11 +1216,39 @@ async function runPaper(ids, opt = {}) {
     const unDone = answers.length - done.length;
     const totalMs = Date.now() - t0;
     const wrongIdx = answers.map((a, i) => a && !a.correct ? i : -1).filter(i => i >= 0);
-    // F5.5 模块顺序报告
+    // F5.5 模块顺序报告（含用时，供节奏分析）
     const modMap = {};
-    docs.forEach((doc, i) => { const m = doc.module || "未分类"; if(!modMap[m]) modMap[m]={m,total:0,ok:0}; modMap[m].total++; if(answers[i]?.correct) modMap[m].ok++; });
+    docs.forEach((doc, i) => {
+      const m = doc.module || "未分类";
+      if (!modMap[m]) modMap[m] = { m, total: 0, ok: 0, ms: 0 };
+      modMap[m].total++;
+      if (answers[i]?.correct) modMap[m].ok++;
+      if (answers[i]) modMap[m].ms += answers[i].ms || 0;
+    });
     const modRows = Object.values(modMap).sort((a,b)=>b.total-a.total).map(x=>
       `<div class="bar-row"><span class="name">${esc(x.m)}</span><span class="track"><span class="fill" style="display:block;width:${x.total?x.ok/x.total*100:0}%"></span></span><span class="pct">${x.ok}/${x.total}</span></div>`).join("");
+    // 节奏报告：各模块实际用时 vs 建议用时（做题顺序铁律：常识8→言语20→判断25→资料15→综合14→数量8，共110分钟基准）
+    const OPT_MIN = { "常识判断": 8, "言语理解": 20, "判断推理": 25, "资料分析": 15, "综合分析": 14, "数量关系": 8 };
+    const pScale = opt.minutes ? opt.minutes / 110 : 1;
+    const paceRows = Object.values(modMap).filter(x => x.ms > 0).sort((a, b) => (b.ms - a.ms)).map(x => {
+      const used = x.ms / 60000, rec = (OPT_MIN[x.m] || 10) * pScale * (x.total / 20);
+      const over = used > rec * 1.2;
+      const under = used < rec * 0.5 && x.total >= 3;
+      return `<tr>
+        <td style="padding:4px 8px;border-top:1px solid var(--line)">${esc(x.m)}</td>
+        <td style="padding:4px 8px;border-top:1px solid var(--line);text-align:center;font-family:var(--mono)">${used.toFixed(1)} 分</td>
+        <td style="padding:4px 8px;border-top:1px solid var(--line);text-align:center;font-family:var(--mono)">${rec.toFixed(1)} 分</td>
+        <td style="padding:4px 8px;border-top:1px solid var(--line);text-align:center;font-family:var(--mono);color:${over ? "var(--cinnabar)" : under ? "var(--amber)" : "var(--bamboo)"}">${over ? "超时 " + (used - rec).toFixed(1) : under ? "偏快" : "正常"}</td>
+      </tr>`;
+    }).join("");
+    const paceHtml = paceRows ? `
+      <div style="text-align:left;margin-top:14px">
+        <h4 style="margin:0 0 6px;font-size:14px">节奏报告 <span style="font-size:12px;color:var(--ink-3)">建议顺序：常识→言语→判断→资料→综合→数量，先把确定性分数拿满</span></h4>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr style="color:var(--ink-3)"><th align="left" style="padding:4px 8px">模块</th><th style="padding:4px 8px">实际用时</th><th style="padding:4px 8px">建议用时</th><th style="padding:4px 8px">判定</th></tr>
+          ${paceRows}
+        </table>
+      </div>` : "";
     body.innerHTML = `
       <div class="panel" style="text-align:center">
         <h3>本卷判分${auto?" · 到时自动交卷":""}</h3>
@@ -1151,6 +1260,7 @@ async function runPaper(ids, opt = {}) {
         </div>
         ${unDone ? `<p style="color:var(--cinnabar);font-weight:600">⚠ 未作答 ${unDone} 题——实战中没做与做错同样不得分</p>` : ""}
         <div class="mod-bars" style="text-align:left;margin-top:14px">${modRows}</div>
+        ${paceHtml}
         ${wrongIdx.length ? `<p style="color:var(--ink-2)">答错 ${wrongIdx.length} 道：${wrongIdx.map(i => `第 ${i + 1} 题`).join("、")}，已自动收入错题本</p>` : (unDone ? "" : `<p style="color:var(--bamboo)">全对，漂亮。</p>`)}
         <button class="btn btn-primary" id="rePaper">再组一卷</button>
         <button class="btn" id="backHome">回到今日</button>
@@ -2049,6 +2159,7 @@ async function renderReview() {
     api("/api/reviews"), api("/api/due-cards"), api("/api/cards/progress"),
   ]);
   const items = res.items;
+  const dueList = dueCards.items || [];
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">今日复习</h1>
@@ -2061,7 +2172,7 @@ async function renderReview() {
           <div class="review-lbl">到期真题</div>
         </div>
         <div>
-          <div class="review-num">${dueCards.length}</div>
+          <div class="review-num">${dueList.length}</div>
           <div class="review-lbl">到期辨析卡</div>
         </div>
         <div>
@@ -2069,7 +2180,7 @@ async function renderReview() {
           <div class="review-lbl">卡片已学</div>
         </div>
         ${items.length ? `<button class="btn btn-primary" id="startReview" style="margin-left:auto">开始复习真题（${items.length}）</button>` : ""}
-        ${dueCards.length ? `<a class="btn" href="#/cards" style="border-color:var(--cinnabar);color:var(--cinnabar)">去复习卡片（${dueCards.length}）</a>` : ""}
+        ${dueList.length ? `<a class="btn" href="#/cards" style="border-color:var(--cinnabar);color:var(--cinnabar)">去复习卡片（${dueList.length}）</a>` : ""}
       </div>
       ${items.length ? `
       <div class="doc-list" style="margin-top:14px">
@@ -2101,6 +2212,7 @@ async function renderReview() {
 ===================================================== */
 
 let shizhengGenerating = false;
+let szBusy = false;   // 批量生成串行锁：同一时刻只允许一个期次在生成
 
 async function renderShizheng() {
   const r = await api("/api/shizheng");
@@ -2121,6 +2233,11 @@ async function renderShizheng() {
         <details ${it.period === r.current ? "open" : ""}>
           <summary style="cursor:pointer;font-weight:700">${it.period === r.current ? "🔴 当前期：" : ""}${esc(it.period)}<span style="font-weight:400;color:var(--ink-3);font-size:12px;margin-left:8px">${new Date(it.created_at * 1000).toLocaleDateString("zh-CN")} 生成</span></summary>
           <div class="sz-content" style="margin-top:10px">${md(it.content)}</div>
+          <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
+            <button class="btn btn-sm sz-quiz-btn" data-p="${esc(it.period)}">📝 自测 10 题</button>
+            <span style="font-size:12px;color:var(--ink-3);margin-left:8px">看 → 测闭环：先阅读再自测，直接服务常识判断</span>
+          </div>
+          <div class="sz-quiz-box" data-p="${esc(it.period)}" style="margin-top:10px"></div>
         </details>
       </div>`).join("") : "";
 
@@ -2136,22 +2253,87 @@ async function renderShizheng() {
 
     body.innerHTML = missingHtml + generated;
 
-    // 绑定生成按钮
+    // 绑定生成按钮（串行队列：生成中锁定全部按钮，逐期进行）
     $$(".sz-gen-btn", body).forEach(b => {
       b.onclick = async () => {
+        if (szBusy) return;
+        szBusy = true;
+        $$(".sz-gen-btn", body).forEach(x => { x.disabled = true; });
         const p = b.dataset.p;
-        b.disabled = true; b.textContent = "生成中…";
+        b.textContent = "生成中…";
         try {
           const g = await api("/api/shizheng/generate", { period: p });
           if (g.ok) {
             const fresh = await api("/api/shizheng");
             r.items = fresh.items;
             r.missing_periods = fresh.missing_periods;
-            draw();
+            draw();   // 重绘后按钮自动恢复可用
           } else {
-            b.disabled = false; b.textContent = p + "（失败）";
+            $$(".sz-gen-btn", body).forEach(x => {
+              x.disabled = false; x.textContent = x.dataset.p + (x === b ? "（失败）" : "");
+            });
           }
-        } catch (e) { b.disabled = false; b.textContent = p; }
+        } catch (e) {
+          $$(".sz-gen-btn", body).forEach(x => { x.disabled = false; x.textContent = x.dataset.p; });
+        } finally {
+          szBusy = false;
+        }
+      };
+    });
+
+    // 自测题按钮：加载/生成当期 10 题并渲染为可点击作答
+    $$(".sz-quiz-btn", body).forEach(btn => {
+      btn.onclick = async () => {
+        if (btn.disabled) return;
+        const p = btn.dataset.p;
+        const box = document.querySelector(`.sz-quiz-box[data-p="${CSS.escape(p)}"]`);
+        if (!box) return;
+        btn.disabled = true; btn.textContent = "加载自测题…";
+        try {
+          const g = await api("/api/shizheng/quiz", { period: p });
+          if (!g.ok) { btn.textContent = "生成失败，点此重试"; btn.disabled = false; return toast(g.error || "生成失败"); }
+          btn.textContent = g.cached ? "已加载自测题" : "自测题已生成";
+          if (!box.innerHTML) {
+            const qs = g.items || [];
+            let right = 0, answered = 0;
+            box.innerHTML = `<div style="font-weight:700;margin-bottom:8px">📋 时政自测（${qs.length} 题 · 点击选项即判分）</div>` +
+              qs.map((q, qi) => `
+                <div class="szq" data-qi="${qi}" style="margin-bottom:12px">
+                  <div style="font-weight:600">${qi + 1}. ${esc(q.q)}</div>
+                  <div class="szq-opts" style="display:flex;flex-direction:column;gap:4px;margin-top:6px">
+                    ${q.options.map((o, oi) => `<button class="btn btn-sm szq-opt" data-k="${o.trim()[0] || String.fromCharCode(65 + oi)}">${esc(o)}</button>`).join("")}
+                  </div>
+                  <div class="szq-note" style="display:none;margin-top:4px;font-size:12.5px;color:var(--ink-3)"></div>
+                </div>`).join("") +
+              `<div class="szq-score" style="font-weight:700;color:var(--bamboo)"></div>`;
+            box.querySelectorAll(".szq").forEach(el => {
+              const q = qs[+el.dataset.qi];
+              let done = false;
+              el.querySelectorAll(".szq-opt").forEach(ob => {
+                ob.onclick = () => {
+                  if (done) return;
+                  done = true; answered++;
+                  const k = ob.dataset.k;
+                  const okAns = k.toUpperCase() === String(q.answer).trim().toUpperCase();
+                  if (okAns) { ob.style.borderColor = "var(--bamboo)"; ob.style.color = "var(--bamboo)"; right++; }
+                  else {
+                    ob.style.borderColor = "var(--cinnabar)"; ob.style.color = "var(--cinnabar)";
+                    const corr = [...el.querySelectorAll(".szq-opt")].find(x => x.dataset.k.toUpperCase() === String(q.answer).trim().toUpperCase());
+                    if (corr) { corr.style.borderColor = "var(--bamboo)"; corr.style.color = "var(--bamboo)"; }
+                  }
+                  el.querySelectorAll(".szq-opt").forEach(x => { x.disabled = true; });
+                  const note = el.querySelector(".szq-note");
+                  note.style.display = "";
+                  note.textContent = `正确答案：${q.answer}${q.note ? " · " + q.note : ""}`;
+                  const sc = box.querySelector(".szq-score");
+                  sc.textContent = answered ? `已答 ${answered}/${qs.length} · 答对 ${right}` : "";
+                };
+              });
+            });
+          }
+        } catch (e) {
+          btn.textContent = "📝 自测 10 题"; btn.disabled = false;
+        }
       };
     });
   }
@@ -2343,14 +2525,42 @@ async function renderGrade() {
   };
 
   function drawHist() {
-    $("#gHist").innerHTML = hist.items.length ? hist.items.map(it => `
+    // 失分画像：按题型聚合平均得分率（得分率低的排前面）
+    const agg = {};
+    hist.items.forEach(it => {
+      const a = agg[it.category] || (agg[it.category] = { n: 0, rateSum: 0, rateN: 0 });
+      a.n++;
+      if (it.total_score > 0 && it.score > 0) { a.rateSum += it.score / it.total_score; a.rateN++; }
+    });
+    const prof = Object.entries(agg).map(([k, a]) => ({
+      name: (rub.items.find(r => r.key === k) || {}).name || k,
+      n: a.n,
+      rate: a.rateN ? a.rateSum / a.rateN : null,
+    })).sort((x, y) => (x.rate === null ? 2 : x.rate) - (y.rate === null ? 2 : y.rate));
+    const profHtml = prof.length ? `
+      <div style="margin-bottom:12px;padding:10px 12px;background:var(--paper-2,#f7f4ec);border-radius:8px">
+        <div style="font-size:13px;color:var(--ink-2);margin-bottom:6px"><b>📊 失分画像</b><span style="color:var(--ink-3);margin-left:8px">按题型平均得分率，靠前且偏红 = 薄弱环节</span></div>
+        ${prof.map(p => {
+          const pct = p.rate === null ? null : Math.round(p.rate * 100);
+          const color = pct === null ? "var(--ink-3)" : pct < 50 ? "var(--cinnabar)" : pct < 70 ? "#c77b1e" : "var(--bamboo)";
+          return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
+            <span style="width:120px;font-size:12.5px;text-align:right;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.name)}</span>
+            <span style="flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden">
+              <span style="display:block;height:100%;width:${pct === null ? 0 : pct}%;background:${color}"></span>
+            </span>
+            <span style="width:60px;font-size:12px;color:${color}">${pct === null ? "待解析" : pct + "%"}</span>
+            <span style="width:44px;font-size:12px;color:var(--ink-3)">${p.n}次</span>
+          </div>`;
+        }).join("")}
+      </div>` : "";
+    $("#gHist").innerHTML = profHtml + (hist.items.length ? hist.items.map(it => `
       <div class="gh-item" data-id="${it.id}" style="padding:8px 4px;border-top:1px solid var(--line);cursor:pointer">
         <span class="tag">${esc((rub.items.find(r => r.key === it.category) || {}).name || it.category)}</span>
         <b style="margin-left:6px">${esc(it.summary.replace(/^#+\s*/, ""))}</b>
         <span style="float:right;color:var(--ink-3);font-size:12px">${new Date(it.created_at * 1000).toLocaleString("zh-CN")}</span>
         <div style="font-size:12.5px;color:var(--ink-3);margin-top:2px">${esc(it.question.slice(0, 50))}…</div>
       </div>`).join("")
-      : `<div style="color:var(--ink-3);font-size:13px">暂无批改记录</div>`;
+      : `<div style="color:var(--ink-3);font-size:13px">暂无批改记录</div>`);
     $$(".gh-item").forEach(el => el.onclick = async () => {
       const d = await api("/api/essay/history/" + el.dataset.id);
       $("#gOut").innerHTML = `<div class="panel" style="border-left:4px solid var(--indigo);margin-top:14px">
@@ -2396,7 +2606,9 @@ async function renderGrade() {
           if (ev.type === "delta") { full += ev.text; box.innerHTML = md(full); }
           else if (ev.type === "error") { full += `\n\n**⚠ ${ev.text}**`; box.innerHTML = md(full); }
           else if (ev.type === "saved") {
-            hist.items.unshift({ id: +ev.text, category: catSel.value, question, total_score: 0,
+            const mScore = full.match(/总分[：:]\s*(\d+(?:\.\d+)?)/);
+            hist.items.unshift({ id: +ev.text, category: catSel.value, question,
+              total_score: parseInt(totalIn.value) || 0, score: mScore ? +mScore[1] : 0,
               summary: full.split("\n")[0].slice(0, 60), created_at: Date.now() / 1000 });
             drawHist();
           }

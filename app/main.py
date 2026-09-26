@@ -5,7 +5,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     JSONResponse,
@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import ai, db, essay_rubric, importer, knowledge, speedcalc, variant, wordfill
-from .config import STATIC_DIR, load_settings, save_settings
+from .config import STATIC_DIR, DB_PATH, SETTINGS_PATH, load_settings, save_settings
 
 import html as _html
 
@@ -257,11 +257,12 @@ class PaperIn(BaseModel):
     module: str = ""
     kaodian: str = ""
     n: int = 10
+    trap: bool = False     # 疑点陷阱题集：只抽「确认问题」的题
 
 
 @app.post("/api/paper")
 def api_paper(b: PaperIn):
-    ids = db.random_paper(b.module, b.kaodian, max(1, min(30, b.n)))
+    ids = db.random_paper(b.module, b.kaodian, max(1, min(30, b.n)), trap=b.trap)
     return {"ids": ids}
 
 
@@ -534,6 +535,46 @@ def api_wrong_reasons():
     return db.wrong_reason_map()
 
 
+class WrongReasonAiIn(BaseModel):
+    doc_id: int
+
+
+@app.post("/api/wrong-reason/ai-suggest")
+async def api_wrong_reason_ai(b: WrongReasonAiIn):
+    """AI 预归因：根据题目与学生错选，从五类错因中判定一个并落库。"""
+    doc = db.get_doc(b.doc_id)
+    if not doc:
+        raise HTTPException(404)
+    d = doc["data"]
+    hist = db.get_user_history(b.doc_id)
+    correct = next((o["label"] for o in d.get("options") or [] if o.get("correct")), "")
+    opts = "\n".join(f"{o['label']}. {o['text']}" for o in d.get("options") or [])
+    prompt = (
+        "你是行测教研老师。学生做错了一道选择题，请从以下五个错因中判定最可能的一个：\n"
+        "知识盲区 / 审题失误 / 计算错误 / 时间不够 / 蒙猜\n"
+        "判定标准：\n"
+        "- 学生错选的考点与题目考点完全陌生、需要知识补充才能做对 → 知识盲区\n"
+        "- 题目本身会做，但错选源于看错问法/理解偏差/忽略限定词 → 审题失误\n"
+        "- 涉及数值计算且错选项常为过程错误值 → 计算错误\n"
+        "- 学生作答次数多、反复更换答案、无明显思路 → 时间不够\n"
+        "- 错选项与任何考点无关联、随机乱选 → 蒙猜\n"
+        "只输出一个错因标签，不要输出任何其他内容。\n\n"
+        f"【题目】{str(d.get('stem', ''))[:800]}\n"
+        f"【选项】\n{opts[:700]}\n"
+        f"【正确答案】{correct}\n"
+        f"【学生最近错选】{hist.get('last_selected') or '未知'}\n"
+        f"【作答历史】共 {hist.get('tries', 0)} 次错 {hist.get('wrongs', 0)} 次"
+    )
+    try:
+        out = await ai.chat_once([{"role": "user", "content": prompt}], temperature=0)
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
+    reason = next((r for r in ["知识盲区", "审题失误", "计算错误", "时间不够", "蒙猜"] if r in out), "")
+    if reason:
+        db.set_wrong_reason(b.doc_id, reason)
+    return {"ok": bool(reason), "reason": reason}
+
+
 @app.get("/api/reviews")
 def api_reviews():
     return {"items": db.due_reviews()}
@@ -676,6 +717,110 @@ async def api_shizheng_generate(b: ShizhengGenIn):
         return {"ok": False, "error": "生成内容为空，请重试"}
     db.save_shizheng(period, f"{period}时政常识", content)
     return {"ok": True, "item": db.get_shizheng(period)}
+
+
+@app.post("/api/shizheng/quiz")
+async def api_shizheng_quiz(b: ShizhengGenIn):
+    """为某期时政生成 10 道自测单选（JSON），存库；已存在直接返回。"""
+    import json as _json
+    import re as _re
+    period = b.period or _shizheng_period()[0]
+    cached = db.get_shizheng_quiz(period)
+    if cached:
+        try:
+            return {"ok": True, "cached": True, "items": _json.loads(cached)}
+        except Exception:
+            pass
+    item = db.get_shizheng(period)
+    if not item:
+        return {"ok": False, "error": "该期时政尚未生成"}
+    prompt = (
+        "基于下面的时政内容，出 10 道单选自测题，直接考察内容中的事实要点。\n"
+        "严格输出 JSON（不要 markdown 代码块），格式：\n"
+        '{"items":[{"q":"题干","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","note":"一句话考点说明"}]}\n'
+        "要求：答案分布均匀、干扰项似是而非但正确项唯一、note 控制在 30 字内。\n\n"
+        f"【时政内容】\n{item['content'][:6000]}"
+    )
+    try:
+        out = await ai.chat_once([{"role": "user", "content": prompt}], temperature=0.4)
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
+    m = _re.search(r"\{[\s\S]*\}", out)
+    if not m:
+        return {"ok": False, "error": "生成格式异常，请重试"}
+    try:
+        data = _json.loads(m.group(0))
+        items = [q for q in data.get("items", [])
+                 if q.get("q") and len(q.get("options") or []) == 4 and q.get("answer")]
+    except Exception:
+        return {"ok": False, "error": "解析失败，请重试"}
+    if not items:
+        return {"ok": False, "error": "未生成有效题目，请重试"}
+    db.save_shizheng_quiz(period, _json.dumps(items, ensure_ascii=False))
+    return {"ok": True, "cached": False, "items": items}
+
+
+# ---------------- 备份 / 恢复 ----------------
+
+@app.get("/api/backup/export")
+def api_backup_export():
+    """打包 goshor.db + settings.json + essay_questions.json 为 zip 下载。"""
+    import io
+    import zipfile
+    from datetime import datetime
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        if DB_PATH.exists():
+            z.write(DB_PATH, "goshor.db")
+        if SETTINGS_PATH.exists():
+            z.write(SETTINGS_PATH, "settings.json")
+        eq = STATIC_DIR.parent / "data" / "essay_questions.json"
+        if eq.exists():
+            z.write(eq, "essay_questions.json")
+    buf.seek(0)
+    name = f"goshore_backup_{datetime.now():%Y%m%d_%H%M}.zip"
+    return StreamingResponse(
+        buf, media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={name}"})
+
+
+@app.post("/api/backup/import")
+async def api_backup_import(file: UploadFile):
+    """从备份 zip 恢复（覆盖 db / settings / essay 题库），需重启服务生效。"""
+    import zipfile
+    import shutil
+    import tempfile
+    ok_files = []
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            fp = Path(td) / "backup.zip"
+            fp.write_bytes(await file.read())
+            with zipfile.ZipFile(fp) as z:
+                names = z.namelist()
+                if "goshor.db" not in names:
+                    return {"ok": False, "error": "备份包中缺少 goshor.db"}
+                tmp_db = Path(td) / "goshor.db"
+                z.extract("goshor.db", td)
+                # 校验是合法 SQLite 再覆盖
+                import sqlite3
+                try:
+                    chk = sqlite3.connect(tmp_db)
+                    chk.execute("SELECT 1")
+                    chk.close()
+                except Exception:
+                    return {"ok": False, "error": "goshor.db 校验失败"}
+                shutil.copy2(tmp_db, DB_PATH)
+                ok_files.append("goshor.db")
+                if "settings.json" in names:
+                    shutil.copy2(Path(td) / "settings.json", SETTINGS_PATH)
+                    ok_files.append("settings.json")
+                if "essay_questions.json" in names:
+                    shutil.copy2(Path(td) / "essay_questions.json",
+                                 STATIC_DIR.parent / "data" / "essay_questions.json")
+                    ok_files.append("essay_questions.json")
+        return {"ok": True, "restored": ok_files, "note": "请重启服务使恢复生效"}
+    except zipfile.BadZipFile:
+        return {"ok": False, "error": "不是合法的 zip 备份包"}
 
 
 # ---------------- 申论 / 综应知识 ----------------

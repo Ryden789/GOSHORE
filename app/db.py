@@ -860,10 +860,39 @@ def list_wrong_book() -> list[dict]:
     return out
 
 
-def random_paper(module: str = "", kaodian: str = "", n: int = 10) -> list[int]:
+def random_paper(module: str = "", kaodian: str = "", n: int = 10, trap: bool = False) -> list[int]:
     """随机组卷：返回 doc_id 列表（真题）。
-    资料分析按整篇材料抽取（同材料小题连续出现）。"""
+    资料分析按整篇材料抽取（同材料小题连续出现）。
+    trap=True：疑点陷阱题集——只抽疑点工作台「确认问题」的题，不足时补普通题。"""
     conn = connect()
+
+    if trap:
+        rows = conn.execute(
+            "SELECT id FROM documents WHERE kind='真题' AND qid IN "
+            "(SELECT qid FROM doubts WHERE status='confirmed') ORDER BY RANDOM() LIMIT ?",
+            (n,)).fetchall()
+        ids: list[int] = [r["id"] for r in rows]
+        if len(ids) < n:
+            # 不足时用普通真题补齐（排除已选）
+            excl = f" AND id NOT IN ({','.join('?' * len(ids))})" if ids else ""
+            args = (tuple(ids) if ids else ()) + (n - len(ids),)
+            more = conn.execute(
+                f"SELECT id FROM documents WHERE kind='真题'{excl} ORDER BY RANDOM() LIMIT ?",
+                args).fetchall()
+            ids.extend(r["id"] for r in more)
+        if ids:
+            qs = ",".join("?" * len(ids))
+            mod_map = {
+                r["id"]: r["module"]
+                for r in conn.execute(
+                    f"SELECT id, module FROM documents WHERE id IN ({qs})", ids
+                ).fetchall()
+            }
+            order = {m: i for i, m in enumerate(MODULE_ORDER)}
+            ids.sort(key=lambda x: (order.get(mod_map.get(x, ""), 99), x))
+        conn.close()
+        return ids[:n]
+
     where, args = ["kind='真题'"], []
     if module:
         where.append("module=?"); args.append(module)
@@ -1456,15 +1485,56 @@ def save_shizheng(period: str, title: str, content: str) -> None:
     conn.close()
 
 
+def _ensure_sz_quiz(conn: sqlite3.Connection) -> None:
+    """shizheng 表补 quiz 列（自测题 JSON，旧库迁移）。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(shizheng)")}
+    if "quiz" not in cols:
+        conn.execute("ALTER TABLE shizheng ADD COLUMN quiz TEXT DEFAULT ''")
+        conn.commit()
+
+
+def save_shizheng_quiz(period: str, quiz: str) -> None:
+    """保存某期时政的自测题 JSON 文本。"""
+    conn = connect()
+    _ensure_sz_quiz(conn)
+    conn.execute("UPDATE shizheng SET quiz=? WHERE period=?", (quiz, period))
+    conn.commit()
+    conn.close()
+
+
+def get_shizheng_quiz(period: str) -> str:
+    conn = connect()
+    _ensure_sz_quiz(conn)
+    row = conn.execute("SELECT quiz FROM shizheng WHERE period=?", (period,)).fetchone()
+    conn.close()
+    return (row["quiz"] if row else "") or ""
+
+
 # ---------------- 申论/综应 批改记录 ----------------
+
+def _ensure_grade_score(conn: sqlite3.Connection) -> None:
+    """essay_grades 表补 score 列（AI 实际得分，旧库迁移）。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(essay_grades)")}
+    if "score" not in cols:
+        conn.execute("ALTER TABLE essay_grades ADD COLUMN score REAL DEFAULT 0")
+        conn.commit()
+
+
+def _parse_grade_score(result: str) -> float:
+    """从批改结果解析实际得分（OUTPUT_SPEC 格式：『## 总分：X / 15分』）。"""
+    m = _re.search(r"总分[：:]\s*(\d+(?:\.\d+)?)", result or "")
+    return float(m.group(1)) if m else 0.0
+
 
 def save_essay_grade(category: str, question: str, answer: str,
                      total_score: int, result: str) -> int:
     conn = connect()
+    _ensure_grade_score(conn)
     cur = conn.execute(
-        "INSERT INTO essay_grades(category,question,answer,total_score,result,created_at)"
-        " VALUES(?,?,?,?,?,?)",
-        (category, question[:2000], answer[:8000], total_score, result, time.time()))
+        "INSERT INTO essay_grades(category,question,answer,total_score,result,score,created_at)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (category, question[:2000], answer[:8000], total_score, result,
+         _parse_grade_score(result), time.time()))
     conn.commit()
     gid = cur.lastrowid
     conn.close()
@@ -1473,11 +1543,22 @@ def save_essay_grade(category: str, question: str, answer: str,
 
 def list_essay_grades(limit: int = 50) -> list[dict]:
     conn = connect()
+    _ensure_grade_score(conn)
     rows = conn.execute(
-        "SELECT id, category, question, total_score, result, created_at"
+        "SELECT id, category, question, total_score, result, score, created_at"
         " FROM essay_grades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        if not d["score"] and d["result"]:          # 旧记录惰性回填
+            d["score"] = _parse_grade_score(d["result"])
+            if d["score"]:
+                conn.execute("UPDATE essay_grades SET score=? WHERE id=?",
+                             (d["score"], d["id"]))
+        items.append(d)
+    conn.commit()
     conn.close()
-    return [dict(r) for r in rows]
+    return items
 
 
 def get_essay_grade(gid: int) -> dict | None:
