@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -16,11 +17,9 @@ from pydantic import BaseModel
 from . import ai, db, speedcalc, wordfill
 from .config import STATIC_DIR, load_settings, save_settings
 
-app = FastAPI(title="GOSHORE 上岸")
 
-
-@app.on_event("startup")
-def _startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     db.init_db(db.connect())
     # 首次启动自动构建索引（库为空时）
     conn = db.connect()
@@ -28,6 +27,10 @@ def _startup():
     conn.close()
     if n == 0:
         db.reindex()
+    yield
+
+
+app = FastAPI(title="GOSHORE 上岸", lifespan=lifespan)
 
 
 # ---------------- 题库 ----------------
@@ -63,6 +66,14 @@ def api_doc(doc_id: int):
     if not d:
         raise HTTPException(404)
     return d
+
+
+@app.get("/api/doc-by-qid/{qid}")
+def api_doc_by_qid(qid: str):
+    did = db.doc_id_by_qid(qid)
+    if did is None:
+        raise HTTPException(404)
+    return {"doc_id": did}
 
 
 class AnswerIn(BaseModel):

@@ -362,6 +362,21 @@ def get_doc(doc_id: int) -> dict | None:
         ).fetchall()
         for r2 in rows2:
             d["material_group"].append({"id": r2["id"], "title": r2["title"]})
+    # 相关题：按 vault path 反查内部 doc_id，供前端直接跳转
+    related = d["data"].get("related") or []
+    if related:
+        paths = [r.get("path") for r in related if r.get("path")]
+        if paths:
+            # wikilink 路径可能缺 .md 后缀，两种形式都查
+            cand = list({p for p in paths} | {p + ".md" for p in paths if not p.endswith(".md")})
+            qs = ",".join("?" * len(cand))
+            found = conn.execute(
+                f"SELECT id, path FROM documents WHERE path IN ({qs})", cand
+            ).fetchall()
+            by_path = {r3["path"]: r3["id"] for r3 in found}
+            for r in related:
+                p = r.get("path") or ""
+                r["doc_id"] = by_path.get(p) or by_path.get(p + ".md")
     conn.close()
     return d
 
@@ -371,6 +386,18 @@ def get_doc_by_path(rel_path: str) -> dict | None:
     row = conn.execute("SELECT id FROM documents WHERE path=?", (rel_path,)).fetchone()
     conn.close()
     return get_doc(row["id"]) if row else None
+
+
+def doc_id_by_qid(qid: str) -> int | None:
+    """按 qid（真题编号）查内部 doc_id。"""
+    if not qid:
+        return None
+    conn = connect()
+    row = conn.execute(
+        "SELECT id FROM documents WHERE qid=?", (str(qid),)
+    ).fetchone()
+    conn.close()
+    return row["id"] if row else None
 
 
 def get_related_brief(rel_paths: list[str]) -> list[dict]:

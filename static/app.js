@@ -423,12 +423,30 @@ async function renderDoc(id, tabName) {
           if (lb === sel && !correct) o.classList.add("wrong");
         });
         const ms = Date.now() - startedAt;
+        const online = navigator.onLine;
         $("#answerBar").innerHTML = `
           ${correct ? '<span class="badge ok">回答正确</span>' : '<span class="badge no">回答错误</span>'}
           <span style="color:var(--ink-3);font-size:13px;font-family:var(--mono)">用时 ${(ms / 1000).toFixed(1)}s</span>
-          <button class="btn btn-sm btn-primary" id="askAi">让 AI 讲这道题</button>
+          <button class="btn btn-sm" id="showDraft">📄 看底稿解析</button>
+          <button class="btn btn-sm btn-primary" id="askAi"${!online ? ' disabled title="当前离线，可看底稿解析"' : ''}>让 AI 讲这道题</button>
           <button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>`;
         $("#askAi").onclick = () => (location.hash = `#/doc/${id}/ai`);
+        $("#showDraft").onclick = () => {
+          const bar = $("#answerBar");
+          const existing = $("#draftPanel");
+          if (existing) { existing.remove(); return; }
+          const draftHtml = [
+            d.reasoning ? `<details open><summary>推理链</summary><div>${md(d.reasoning)}</div></details>` : "",
+            d.fastest ? `<details open><summary>最快解法</summary><div>${md(d.fastest)}</div></details>` : "",
+            d.official ? `<details open><summary>官方解析</summary><div>${rawHtml(d.official)}</div></details>` : "",
+          ].filter(Boolean).join("") || `<div class="empty" style="padding:12px">本题暂无文字底稿解析</div>`;
+          const panel = document.createElement("div");
+          panel.id = "draftPanel";
+          panel.className = "panel";
+          panel.style.marginTop = "12px";
+          panel.innerHTML = `<h4 style="margin:0 0 8px;font-size:16px">底稿解析</h4>${draftHtml}`;
+          bar.parentElement.appendChild(panel);
+        };
         bindMark();
         api("/api/answer", { doc_id: id, selected: sel, correct: !!correct, ms });
       };
@@ -463,7 +481,9 @@ async function renderDoc(id, tabName) {
     const relHtml = (d.related || []).length ? `
       <div class="panel note-section">
         <div class="sec-title">相关题</div>
-        ${d.related.map(r => `<div>• ${esc(r.label)} <span style="color:var(--ink-3)">${esc(r.tail)}</span></div>`).join("")}
+        ${d.related.map(r => r.doc_id
+          ? `<div>• <a href="#/doc/${r.doc_id}" class="rel-link">${esc(r.label)}</a> <span style="color:var(--ink-3)">${esc(r.tail)}</span></div>`
+          : `<div style="opacity:.55">• ${esc(r.label)} <span style="color:var(--ink-3)">${esc(r.tail)}（题库暂无）</span></div>`).join("")}
       </div>` : "";
 
     el.innerHTML =
@@ -938,7 +958,7 @@ function renderSpeed() {
     types: ["arith", "div_trunc", "frac_pct", "base_growth", "growth_amt"],
     digits: 3, n: 10, challenge: false,
   };
-  const run = { items: [], idx: 0, correct: 0, answered: false, deadline: 0, timerH: null, times: [] };
+  const run = { items: [], idx: 0, correct: 0, answered: false, deadline: 0, timerH: null, times: [], records: [] };
 
   view.innerHTML = `
     <div class="page-head rise">
@@ -1005,7 +1025,7 @@ function renderSpeed() {
 
   async function start() {
     if (!cfg.types.length) return alert("请至少选择一种题型");
-    run.items = []; run.idx = 0; run.correct = 0; run.times = [];
+    run.items = []; run.idx = 0; run.correct = 0; run.times = []; run.records = [];
     if (cfg.challenge) {
       run.deadline = Date.now() + 60000;
       run.timerH = setInterval(() => {
@@ -1051,21 +1071,45 @@ function renderSpeed() {
         <div class="speed-explain" id="explain"></div>
       </div>`;
 
-    const judge = isCorrect => {
+    const judge = (isCorrect, userVal) => {
       if (run.answered) return;
       run.answered = true;
       run.times.push(Date.now() - qStart);
       if (isCorrect) run.correct++;
+      run.records.push({ item: p, userVal: String(userVal ?? ""), right: isCorrect });
       $("#explain").innerHTML =
         (isCorrect ? '<span style="color:var(--bamboo)">✔ 正确　</span>' : '<span style="color:var(--cinnabar)">✘ 错误　</span>')
         + esc(p.explain);
-      const advance = () => { run.idx++; next(); };
-      if (cfg.challenge) setTimeout(advance, 450);
-      else setTimeout(advance, 900);
+      const advance = () => { document.removeEventListener("keydown", onEnter); run.idx++; next(); };
+      const onEnter = e => { if (e.key === "Enter") advance(); };
+      if (isCorrect || cfg.challenge) {
+        // 答对快速过；挑战模式保节奏自动跳
+        setTimeout(advance, cfg.challenge ? 450 : 600);
+      } else {
+        // 答错停留：显示正确算式，回车或点按钮才继续
+        const btn = document.createElement("button");
+        btn.className = "btn btn-primary btn-sm";
+        btn.id = "nextQ";
+        btn.textContent = "下一题 ↵";
+        btn.style.marginLeft = "12px";
+        btn.onclick = advance;
+        $("#explain").appendChild(btn);
+        document.addEventListener("keydown", onEnter);
+        btn.focus();
+      }
     };
 
+    const fracEq = (a, b) => {
+      // 分数数值比较：兼容全角／、未约分、空格（P2-9）
+      const parse = s => {
+        const m = String(s).replace(/／/g, "/").replace(/\s/g, "").match(/^(-?\d+)\/(\d+)$/);
+        return m ? [+m[1], +m[2]] : null;
+      };
+      const x = parse(a), y = parse(b);
+      return !!(x && y && y[1] !== 0 && x[0] * y[1] === x[1] * y[0]);
+    };
     const check = val => {
-      if (p.input === "fraction") return val.replace(/\s/g, "") === p.answer.replace(/\s/g, "");
+      if (p.input === "fraction") return fracEq(val, p.answer);
       if (p.tolerance) return Math.abs(parseFloat(val) - parseFloat(p.answer)) <= p.tolerance;
       return parseFloat(val) === parseFloat(p.answer);
     };
@@ -1079,7 +1123,7 @@ function renderSpeed() {
           const c = $(`.speed-opt[data-l="${p.answer}"]`);
           c && c.classList.add("correct");
         }
-        judge(right);
+        judge(right, b.dataset.l);
       });
     } else {
       const inp = $("#numAnswer");
@@ -1089,7 +1133,7 @@ function renderSpeed() {
         if (!v) return;
         $("#numOk").disabled = true;
         inp.disabled = true;
-        judge(check(v));
+        judge(check(v), v);
       };
       $("#numOk").onclick = submit;
       inp.addEventListener("keydown", e => e.key === "Enter" && submit());
@@ -1106,7 +1150,7 @@ function renderSpeed() {
 
   async function finish() {
     clearInterval(run.timerH);
-    const done = run.idx + (run.answered ? 1 : 0);
+    const done = run.records.length;
     const total = cfg.challenge ? done : run.items.length;
     const avgMs = run.times.length ? Math.round(run.times.reduce((a, b) => a + b, 0) / run.times.length) : 0;
     if (total > 0) {
@@ -1115,6 +1159,7 @@ function renderSpeed() {
         total, correct: run.correct, avg_ms: avgMs,
       });
     }
+    const wrongs = run.records.filter(r => !r.right);
     body.innerHTML = `
       <div class="panel" style="text-align:center">
         <h3>${cfg.challenge ? "60 秒挑战结束" : "本轮完成"}</h3>
@@ -1124,10 +1169,26 @@ function renderSpeed() {
           <div class="stat-card" style="--accent:var(--amber)"><div class="v">${avgMs ? (avgMs / 1000).toFixed(1) + "<small>s</small>" : "-"}</div><div class="k">平均用时</div></div>
         </div>
         <button class="btn btn-primary" id="again">再来一轮</button>
+        ${wrongs.length ? `<button class="btn" id="redoWrong" style="--accent:var(--cinnabar)">只把错题再练一遍（${wrongs.length}）</button>` : ""}
         <button class="btn" id="cfg">返回配置</button>
-      </div>`;
+      </div>
+      ${wrongs.length ? `
+      <div class="panel">
+        <h3>本轮错题（${wrongs.length}）</h3>
+        ${wrongs.map(w => `
+          <div class="wrong-row">
+            <div class="wrong-q">${esc(w.item.q)}</div>
+            <div class="wrong-a">你的答案：<b style="color:var(--cinnabar)">${esc(w.userVal || "（空）")}</b>　${esc(w.item.explain)}</div>
+          </div>`).join("")}
+      </div>` : ""}`;
     $("#again").onclick = start;
     $("#cfg").onclick = showConfig;
+    if (wrongs.length) $("#redoWrong").onclick = () => {
+      run.items = wrongs.map(w => w.item);
+      run.idx = 0; run.correct = 0; run.times = []; run.records = [];
+      run.deadline = 0;
+      showProblem();
+    };
   }
 
   showConfig();

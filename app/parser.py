@@ -169,7 +169,18 @@ def parse(rel_path: str, text: str) -> Parsed:
         fast = FAST_RE.search(body)
         data["wenfa"] = wenfa.group(1).strip() if wenfa else ""
         data["fastest"] = fast.group(1).strip() if fast else ""
-        data["reasoning"] = sec_map.get("推理链", "")
+        reasoning = sec_map.get("推理链", "")
+        # P2-7：推理链尾部常带一段“最快解法：⚡…”，剥离归入 fastest，避免页面重复渲染
+        if reasoning:
+            m = re.search(r"\n\s*(?:\*\*)?最快解法(?:\*\*)?[：:]", reasoning)
+            if m:
+                tail = reasoning[m.start():]
+                reasoning = reasoning[:m.start()].rstrip()
+                if not data["fastest"]:
+                    data["fastest"] = re.sub(
+                        r"^\s*(?:\*\*)?最快解法(?:\*\*)?[：:]\s*", "", tail
+                    ).strip()
+        data["reasoning"] = reasoning
         data["pitfalls"] = sec_map.get("易错点", "")
         data["muke"] = sec_map.get("母题抽象", "")
         data["tonglei"] = sec_map.get("同类特征", "")
