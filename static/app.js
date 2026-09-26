@@ -186,6 +186,10 @@ function route() {
   else if (name === "shizheng") dispatch(renderShizheng);
   else if (name === "essay") dispatch(renderEssay);
   else if (name === "grade") dispatch(renderGrade);
+  else if (name === "formula") dispatch(renderFormula);
+  else if (name === "logic") dispatch(renderLogic);
+  else if (name === "wenxian") dispatch(renderWenxian);
+  else if (name === "report") dispatch(renderReport);
   else if (name === "history") dispatch(renderHistory);
   else dispatch(renderHome);
 }
@@ -2622,6 +2626,465 @@ async function renderGrade() {
     box.classList.remove("cursor-blink");
     busy = false; $("#gGo").disabled = false;
   };
+}
+
+// ============== f1 资料分析列式专项 ==============
+
+async function renderFormula() {
+  const F_TYPES = {
+    zengliang: "增长量", jiqi: "基期值", zengsu: "增长率",
+    xian_bizhong: "现期比重", ji_bizhong: "基期比重", bi_cha: "比重差",
+    pingjun: "现期平均数", pingjun_su: "平均数增速", beishu: "倍数",
+    junian: "年均增长量", genian: "隔年增长率", zengliang_bj: "增长量比较",
+  };
+  const cfg = {
+    types: ["zengliang", "jiqi", "zengsu", "xian_bizhong", "beishu", "genian"],
+    n: 10,
+  };
+  const run = { items: [], idx: 0, correct: 0, times: [], records: [] };
+
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">资料分析 · 列式专项</h1>
+      <p class="page-desc">只练「看条件 → 判断题型 → 选列式」，不做计算；把列式反应练快，考场省出 3-5 分钟</p>
+    </div>
+    <div id="fBody" class="rise rise-1"></div>`;
+  const body = $("#fBody");
+
+  const CHEAT = [
+    ["增长量", "现期A、增速r", "A×r/(1+r)"],
+    ["基期值", "现期A、增速r", "A/(1+r)"],
+    ["增长率", "现期A、基期B", "(A-B)/B"],
+    ["现期比重", "部分C、整体D", "C/D"],
+    ["基期比重", "C(r₁)、D(r₂)", "(C/D)×(1+r₂)/(1+r₁)"],
+    ["比重差", "C(r₁)、D(r₂)", "(C/D)×(r₁-r₂)/(1+r₁)"],
+    ["现期平均数", "总量T、个数N", "T/N"],
+    ["平均数增速", "总r₁、个r₂", "(r₁-r₂)/(1+r₂)"],
+    ["倍数", "A 是 B 的几倍", "A/B"],
+    ["年均增长量", "末年M、初年B", "(M-B)/间隔年数"],
+    ["隔年增长率", "两年增速r₁r₂", "r₁+r₂+r₁×r₂"],
+    ["增长量比较", "A₁r₁、A₂r₂", "比 A×r/(1+r)"],
+  ];
+
+  function showConfig() {
+    body.innerHTML = `
+      <div class="panel speed-config">
+        <div class="cfg-group">
+          <div class="cfg-label">选择题型（默认高频6类）</div>
+          <div class="type-checks">
+            ${Object.entries(F_TYPES).map(([k, v]) =>
+              `<div class="type-check ${cfg.types.includes(k) ? "on" : ""}" data-t="${k}">${v}</div>`).join("")}
+          </div>
+        </div>
+        <div class="cfg-inline">
+          <span>题量 <select id="fN"><option>8</option><option selected>10</option><option>15</option><option>20</option></select></span>
+        </div>
+        <div><button class="btn btn-primary" id="fStart">开始训练</button></div>
+      </div>
+      <div class="panel">
+        <details>
+          <summary style="cursor:pointer;font-weight:500">📐 公式速查（12 类，考前扫一眼）</summary>
+          <table style="width:100%;margin-top:10px;font-size:13.5px;border-collapse:collapse">
+            <tr style="color:var(--ink-3)"><th style="text-align:left;padding:4px 8px">题型</th><th style="text-align:left;padding:4px 8px">已知条件</th><th style="text-align:left;padding:4px 8px">列式</th></tr>
+            ${CHEAT.map(r => `<tr style="border-top:1px solid var(--line-soft)">
+              <td style="padding:5px 8px;white-space:nowrap"><b>${r[0]}</b></td>
+              <td style="padding:5px 8px;color:var(--ink-2)">${r[1]}</td>
+              <td style="padding:5px 8px;font-family:var(--mono)">${r[2]}</td></tr>`).join("")}
+          </table>
+        </details>
+      </div>
+      <div class="panel"><h3 style="margin:0 0 8px">最近记录</h3><div id="fHist"></div></div>
+      <div class="panel" id="fTsPanel" style="display:none">
+        <h3 style="margin:0 0 8px">分题型掌握情况</h3><div id="fTs"></div>
+      </div>`;
+
+    $$(".type-check").forEach(t => t.onclick = () => {
+      const k = t.dataset.t;
+      cfg.types = cfg.types.includes(k) ? cfg.types.filter(x => x !== k) : [...cfg.types, k];
+      t.classList.toggle("on");
+    });
+    $("#fN").onchange = e => (cfg.n = +e.target.value);
+    $("#fStart").onclick = start;
+    (async () => {
+      try {
+        const [h, ts] = await Promise.all([
+          api("/api/formula/history"), api("/api/formula/type-stats")]);
+        $("#fHist").innerHTML = h.items.length
+          ? h.items.slice(0, 8).map(r =>
+              `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:13px">
+                 <span>${r.correct}/${r.total} · 均${(r.avg_ms / 1000).toFixed(1)}秒</span>
+                 <span style="color:var(--ink-3)">${new Date(r.created_at * 1000).toLocaleDateString("zh-CN")}</span>
+               </div>`).join("")
+          : `<div class="empty" style="padding:16px">还没有记录</div>`;
+        if (ts.items.length) {
+          $("#fTsPanel").style.display = "";
+          $("#fTs").innerHTML = ts.items.map(x =>
+            `<div class="mod-bar-row">
+               <span class="name">${F_TYPES[x.type] || x.type}</span>
+               <span class="track"><span class="fill" style="display:block;width:${x.rate}%"></span></span>
+               <span class="pct">${x.ok}/${x.n} · ${x.avg_s}秒</span>
+             </div>`).join("");
+        }
+      } catch {}
+    })();
+  }
+
+  async function start() {
+    if (!cfg.types.length) return alert("请至少选择一种题型");
+    const res = await api("/api/formula/generate", { config: { types: cfg.types }, n: cfg.n });
+    run.items = res.items;
+    run.idx = 0; run.correct = 0; run.times = []; run.records = [];
+    showProblem();
+  }
+
+  function showProblem() {
+    if (run.idx >= run.items.length) return finish();
+    const p = run.items[run.idx];
+    const t0 = Date.now();
+    let answered = false;
+    body.innerHTML = `
+      <div class="panel">
+        <div class="speed-top">
+          <span class="speed-progress">第 ${run.idx + 1} / ${run.items.length} 题 · 已对 ${run.correct}</span>
+        </div>
+        <div class="f-ctx">${esc(p.context)}</div>
+        <div class="f-q"><b>问：</b>${esc(p.q)}</div>
+        <div class="f-opts">
+          ${p.options.map(o =>
+            `<button class="f-opt" data-l="${o.label}"><b>${o.label}.</b> ${esc(o.text)}</button>`).join("")}
+        </div>
+        <div id="fTip"></div>
+        <button class="btn btn-primary" id="fNext" style="display:none">下一题 →</button>
+      </div>`;
+
+    $$(".f-opt").forEach(btn => btn.onclick = () => {
+      if (answered) return;
+      answered = true;
+      const ms = Date.now() - t0;
+      const ok = btn.dataset.l === p.answer;
+      run.times.push(ms);
+      run.records.push({ p, picked: btn.dataset.l, ok, ms });
+      if (ok) run.correct++;
+      $$(".f-opt").forEach(x => {
+        x.disabled = true;
+        if (x.dataset.l === p.answer) x.classList.add("right");
+        else if (x === btn) x.classList.add("wrong");
+      });
+      const correctOpt = p.options.find(o => o.label === p.answer);
+      $("#fTip").innerHTML = `
+        <div class="f-explain">
+          ${ok ? "✓ 列式正确" : `✗ 你选了 ${btn.dataset.l}，正确列式为 <b>${esc(correctOpt.text)}</b>（${p.answer}项）`}
+          <div class="f-tiptext">${esc(p.tip)}</div>
+        </div>`;
+      const nb = $("#fNext");
+      nb.style.display = "";
+      nb.textContent = run.idx + 1 >= run.items.length ? "查看结算 →" : "下一题 →";
+      nb.onclick = () => { run.idx++; showProblem(); };
+    });
+  }
+
+  async function finish() {
+    const total = run.items.length;
+    const avgMs = Math.round(run.times.reduce((a, b) => a + b, 0) / total);
+    try {
+      await api("/api/formula/result", {
+        config: { types: cfg.types }, total, correct: run.correct, avg_ms: avgMs,
+        details: run.records.map(r => ({ type: r.p.type, correct: r.ok, ms: r.ms }))});
+    } catch {}
+    const wrongs = run.records.filter(r => !r.ok);
+    body.innerHTML = `
+      <div class="panel" style="text-align:center;padding:28px">
+        <div style="font-size:42px;font-weight:700;color:var(--cinnabar);font-family:var(--serif)">${run.correct}<span style="font-size:22px;color:var(--ink-3)"> / ${total}</span></div>
+        <div style="color:var(--ink-2);margin-top:6px">平均 <b>${(avgMs / 1000).toFixed(1)}</b> 秒/题</div>
+        <div style="margin:14px auto 0;max-width:360px;height:10px;background:var(--line);border-radius:5px;overflow:hidden">
+          <span style="display:block;height:100%;width:${Math.round(run.correct / total * 100)}%;background:var(--bamboo)"></span>
+        </div>
+      </div>
+      ${wrongs.length ? `<div class="panel">
+        <h3 style="margin:0 0 10px">本轮错题（${wrongs.length}）</h3>
+        ${wrongs.map(w => `
+          <div style="padding:10px 0;border-top:1px solid var(--line-soft)">
+            <div style="font-size:13px;color:var(--ink-3)">${esc(w.p.context)}</div>
+            <div style="margin:6px 0;font-size:13.5px">你选 <b style="color:var(--cinnabar)">${w.picked}</b>
+              · 正确 <b style="font-family:var(--mono)">${esc(w.p.options.find(o => o.label === w.p.answer).text)}</b></div>
+            <div class="f-tiptext">${esc(w.p.tip)}</div>
+          </div>`).join("")}
+      </div>` : ""}
+      <div class="panel" style="display:flex;gap:10px;flex-wrap:wrap">
+        ${wrongs.length ? `<button class="btn" id="fRetryWrong">只把错题再练（${wrongs.length}）</button>` : ""}
+        <button class="btn btn-primary" id="fAgain">再来一组</button>
+        <button class="btn" id="fBack">改配置</button>
+      </div>`;
+    if (wrongs.length) $("#fRetryWrong").onclick = () => {
+      run.items = wrongs.map(w => w.p);
+      run.idx = 0; run.correct = 0; run.times = []; run.records = [];
+      showProblem();
+    };
+    $("#fAgain").onclick = start;
+    $("#fBack").onclick = showConfig;
+  }
+
+  showConfig();
+}
+
+// ============== f2 判断推理考点专项 ==============
+
+async function renderLogic() {
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">判断推理 · 考点专项</h1>
+      <p class="page-desc">按细分考点抽题：哪里弱练哪里；图推/逻辑附规律速查，碎片时间练识别</p>
+    </div>
+    <div id="lgBody" class="rise rise-1"></div>`;
+  const body = $("#lgBody");
+
+  const CHEAT_LOGIC = [
+    ["图形推理 · 位置", "平移（方向/步数）、旋转（角度）、翻转（轴对称）；元素相同看位置"],
+    ["图形推理 · 样式", "遍历、加减同异（去同存异/去异存同）、黑白运算"],
+    ["图形推理 · 属性", "对称（轴/中心）、开闭性、曲直性；元素不同先看属性"],
+    ["图形推理 · 数量", "点（交点/切点）、线（一笔画/笔画数）、面（封闭区域）、素（元素种类/个数）"],
+    ["图形推理 · 空间", "相对面（隔一个/Z字）、相邻面、公共边、画边法"],
+    ["逻辑 · 翻译推理", "前推后：如果…那么；后推前：只有…才；逆否：否后必否前；且或德摩根"],
+    ["逻辑 · 加强削弱", "找论点论据；削弱：否论点＞拆桥＞否论据、因果倒置；加强：解释因果＞举例"],
+    ["逻辑 · 真假推理", "矛盾关系（所有/有的不、必然/可能不），绕开矛盾看其余"],
+    ["逻辑 · 组合排列", "排除法、代入法、最大信息、列表连线"],
+    ["类比 · 关系", "语义（近反义）；全同/并列/包含/交叉；语法（主谓/动宾/偏正）"],
+    ["定义 · 要点", "主体、客体；方式目的、原因结果、前提条件；选非题注意圈出“不”"],
+  ];
+
+  body.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">考点加载中…</div></div>`;
+  let tree = [];
+  try {
+    const r = await api("/api/kaodian-tree?module=" + encodeURIComponent("判断推理"));
+    tree = r.items;
+  } catch (e) {
+    body.innerHTML = `<div class="panel">考点加载失败：${esc(e.message)}</div>`;
+    return;
+  }
+
+  body.innerHTML = `
+    ${tree.length ? tree.map(big => `
+      <div class="panel logic-big">
+        <div class="logic-big-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <span><b>${esc(big.name)}</b><span class="tag" style="margin-left:8px">${big.total} 题</span></span>
+          <button class="btn btn-sm kd-big" data-k="${esc(big.name + " /")}">整个大类混合练 →</button>
+        </div>
+        <div class="kd-children">
+          ${big.children.length ? big.children.map(c => `
+            <div class="kd-child">
+              <span class="kd-name" title="${esc(c.prefix)}">${esc(c.name)}<span class="kd-n">（${c.n}）</span></span>
+              <button class="btn btn-sm kd-pick" data-k="${esc(c.prefix)}">练这个</button>
+            </div>`).join("") : `<div class="kd-n" style="padding:6px 8px">高频考点题量较少，建议直接大类混合练</div>`}
+        </div>
+      </div>`).join("") : `<div class="panel">暂无判断题考点数据</div>`}
+    <div class="panel">
+      <details>
+        <summary style="cursor:pointer;font-weight:500">📖 规律速查（图推+逻辑+类比+定义）</summary>
+        <div style="margin-top:10px">
+          ${CHEAT_LOGIC.map(r => `
+            <div style="padding:7px 0;border-top:1px solid var(--line-soft)">
+              <b style="font-size:13.5px">${r[0]}</b>
+              <div style="font-size:13px;color:var(--ink-2);margin-top:2px">${r[1]}</div>
+            </div>`).join("")}
+        </div>
+      </details>
+    </div>`;
+
+  $$(".kd-pick, .kd-big").forEach(btn => btn.onclick = async () => {
+    const kd = btn.dataset.k;
+    body.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">正在抽题…</div></div>`;
+    let res;
+    try {
+      res = await api("/api/paper", { module: "判断推理", kaodian: kd, n: 10 });
+    } catch (e) {
+      body.innerHTML = `<div class="panel">抽题失败：${esc(e.message)}</div>`;
+      return;
+    }
+    if (!res.ids.length) {
+      body.innerHTML = `<div class="panel">该考点暂无可抽题目</div>`;
+      return;
+    }
+    view.innerHTML = `<div id="paperBody"></div>`;
+    runPaper(res.ids, { title: kd });
+  });
+}
+
+// ============== f3 综应科技文献阅读专项 ==============
+
+async function renderWenxian() {
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">综应C类 · 科技文献阅读</h1>
+      <p class="page-desc">《综合应用能力C类》第一大题（通常 50 分）：客观选择 + 概括 + 论证；套路强、可短期提分</p>
+    </div>
+    <div id="wxBody" class="rise rise-1"></div>`;
+  const body = $("#wxBody");
+
+  const STEPS = [
+    ["① 先看题目，再读材料", "带着问题读，圈出题干关键词（专有名词、数字、否定词、因果词），回原文定位"],
+    ["② 选项与原文逐字比对", "重点盯：范围（部分/全部）、时态（已然/未然）、模态（可能/必然）、因果方向"],
+    ["③ 概括题：分层摘要点", "按段落逻辑分层，每层提炼一个要点，保留关键词、去掉例子数据，注意字数"],
+    ["④ 论证评价：拆三要素", "找论点（结论）、论据（数据/事实）、论证方式，判断是哪类错误再下笔"],
+  ];
+  const ERR_TYPES = [
+    ["偷换概念", "把相似概念等同（如“沉积”换成“侵蚀”）"],
+    ["以偏概全", "用部分/个例推出全称结论"],
+    ["绝对化表述", "把“可能、有助于”说成“必然、完全”"],
+    ["混淆时态", "把推测/计划说成已实现"],
+    ["强加因果", "先后发生或相关不等于因果"],
+    ["因果倒置", "把原因和结果颠倒"],
+    ["无中生有", "选项信息原文根本没有"],
+    ["论据不充分", "样本太少/不具代表性就下结论"],
+  ];
+
+  // 题量检查
+  let nTotal = 0;
+  try {
+    const r = await api("/api/search", { module: "综合分析", page: 1, page_size: 1 });
+    nTotal = r.total;
+  } catch {}
+
+  body.innerHTML = `
+    <div class="panel">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:14px">专项题库 <b>${nTotal >= 20 ? "已就绪（20 题）" : nTotal + " 题"}</b></span>
+        <span>题量 <select id="wxN"><option>8</option><option selected>10</option><option>15</option></select></span>
+        <button class="btn btn-primary" id="wxStart">开始练习</button>
+      </div>
+      <div class="hint" style="margin-top:8px">练习为客观选择题（文意理解+论证评价），做完可看逐题解析；概括题请在「AI批改」页选“文献阅读”题型提交</div>
+    </div>
+    <div class="panel">
+      <h3 style="margin:0 0 10px">作答四步法</h3>
+      ${STEPS.map(s => `
+        <div style="padding:8px 0;border-top:1px solid var(--line-soft)">
+          <b style="font-size:14px">${s[0]}</b>
+          <div style="font-size:13.5px;color:var(--ink-2);margin-top:2px">${s[1]}</div>
+        </div>`).join("")}
+    </div>
+    <div class="panel">
+      <h3 style="margin:0 0 10px">论证评价 · 八类常见错误</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px 18px">
+        ${ERR_TYPES.map(e => `
+          <div style="font-size:13.5px;padding:6px 0;border-top:1px solid var(--line-soft)">
+            <b>${e[0]}</b><span style="color:var(--ink-2);margin-left:6px">${e[1]}</span>
+          </div>`).join("")}
+      </div>
+    </div>`;
+
+  $("#wxStart").onclick = async () => {
+    const n = +$("#wxN").value;
+    body.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">正在抽题…</div></div>`;
+    let res;
+    try {
+      res = await api("/api/paper", { module: "综合分析", kaodian: "科技文献阅读", n });
+    } catch (e) {
+      body.innerHTML = `<div class="panel">抽题失败：${esc(e.message)}</div>`;
+      return;
+    }
+    if (!res.ids.length) {
+      body.innerHTML = `<div class="panel">题库暂无该考点题目</div>`;
+      return;
+    }
+    view.innerHTML = `<div id="paperBody"></div>`;
+    runPaper(res.ids, { title: "科技文献阅读" });
+  };
+}
+
+// ============== f4 每周学习诊断报告 ==============
+
+async function renderReport() {
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">每周学习诊断</h1>
+      <p class="page-desc">自动汇总本周数据并对比上周：哪里在进步、哪里要补，报告直接给结论</p>
+    </div>
+    <div id="rpBody" class="rise rise-1"></div>`;
+  const body = $("#rpBody");
+  body.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">报告生成中…</div></div>`;
+
+  let d;
+  try {
+    d = await api("/api/report/weekly");
+  } catch (e) {
+    body.innerHTML = `<div class="panel">报告生成失败：${esc(e.message)}</div>`;
+    return;
+  }
+
+  const arrow = v => v === null || v === undefined ? "" :
+    v > 0 ? `<span style="color:var(--bamboo)">▲${Math.abs(v)}</span>` :
+    v < 0 ? `<span style="color:var(--cinnabar)">▼${Math.abs(v)}</span>` :
+    `<span style="color:var(--ink-3)">—</span>`;
+
+  body.innerHTML = `
+    <div class="panel" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <b style="font-size:15px">${esc(d.range)}</b>
+      <button class="btn btn-sm" id="rpRefresh">重新生成</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
+      <div class="panel rp-card">
+        <div class="rp-label">本周做题</div>
+        <div class="rp-num">${d.summary.total}<span class="rp-sub"> 道</span></div>
+        <div class="rp-sub2">上周 ${d.summary.last_total} 道 · ${arrow(d.summary.total - d.summary.last_total)}</div>
+      </div>
+      <div class="panel rp-card">
+        <div class="rp-label">学习时长</div>
+        <div class="rp-num">${d.summary.minutes}<span class="rp-sub"> 分钟</span></div>
+        <div class="rp-sub2">按做题用时统计</div>
+      </div>
+      <div class="panel rp-card">
+        <div class="rp-label">学习天数</div>
+        <div class="rp-num">${d.summary.days}<span class="rp-sub"> 天</span></div>
+        <div class="rp-sub2">本周有做题记录的日子</div>
+      </div>
+      <div class="panel rp-card">
+        <div class="rp-label">申论批改</div>
+        <div class="rp-num">${d.grades.cur === null ? "—" : d.grades.cur + "%"}</div>
+        <div class="rp-sub2">本周 ${d.grades.n} 次 · 上周 ${d.grades.last === null ? "—" : d.grades.last + "%"}</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3 style="margin:0 0 10px">模块周对比</h3>
+      ${d.compare.length ? `
+        <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+          <tr style="color:var(--ink-3)">
+            <th style="text-align:left;padding:6px 8px">模块</th>
+            <th style="text-align:right;padding:6px 8px">题量</th>
+            <th style="text-align:right;padding:6px 8px">正确率</th>
+            <th style="text-align:right;padding:6px 8px">均时</th>
+            <th style="text-align:right;padding:6px 8px">较上周</th>
+          </tr>
+          ${d.compare.map(m => `
+            <tr style="border-top:1px solid var(--line-soft)">
+              <td style="padding:7px 8px"><b>${esc(m.module)}</b></td>
+              <td style="padding:7px 8px;text-align:right">${m.n}</td>
+              <td style="padding:7px 8px;text-align:right;color:${m.rate < 60 ? "var(--cinnabar)" : "var(--ink-1)"}">${m.rate}%</td>
+              <td style="padding:7px 8px;text-align:right">${m.avg_s}秒</td>
+              <td style="padding:7px 8px;text-align:right">${arrow(m.d_rate)}</td>
+            </tr>`).join("")}
+        </table>` : `<div class="empty" style="padding:14px">本周暂无做题数据，先去做一组题吧</div>`}
+    </div>
+
+    ${d.weak.length ? `
+    <div class="panel">
+      <h3 style="margin:0 0 10px">薄弱考点 TOP${d.weak.length}</h3>
+      ${d.weak.map(w => `
+        <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line-soft)">
+          <span style="flex:1;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(w.kaodian)}">
+            <span class="tag">${esc(w.module)}</span> ${esc(w.kaodian.replace(/^[^\/]+\/\s*/, ""))}
+          </span>
+          <span style="color:var(--cinnabar);font-size:13px">${w.rate}%</span>
+          <span style="color:var(--ink-3);font-size:12.5px">${w.ok}/${w.n}</span>
+        </div>`).join("")}
+    </div>` : ""}
+
+    <div class="panel" style="border-left:4px solid var(--cinnabar)">
+      <h3 style="margin:0 0 8px">📋 本周建议</h3>
+      ${d.advice.map((a, i) =>
+        `<div style="font-size:14px;padding:6px 0;${i ? "border-top:1px solid var(--line-soft)" : ""}">${esc(a)}</div>`).join("")}
+    </div>`;
+
+  $("#rpRefresh").onclick = renderReport;
 }
 
 route();

@@ -14,7 +14,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, essay_rubric, importer, knowledge, speedcalc, variant, wordfill
+from . import ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill
 from .config import STATIC_DIR, DB_PATH, SETTINGS_PATH, load_settings, save_settings
 
 import html as _html
@@ -225,6 +225,44 @@ def api_speed_history():
     return {"items": db.speed_history()}
 
 
+# ---------------- 资料分析列式专项 ----------------
+
+class FormulaIn(BaseModel):
+    config: dict = {}
+    n: int = 10
+
+
+@app.post("/api/formula/generate")
+def api_formula_generate(b: FormulaIn):
+    types = b.config.get("types") or []
+    n = max(5, min(30, b.n))
+    return {"items": formula_drill.generate(types, n)}
+
+
+class FormulaResultIn(BaseModel):
+    config: dict = {}
+    total: int
+    correct: int
+    avg_ms: int
+    details: list[dict] = []
+
+
+@app.post("/api/formula/result")
+def api_formula_result(b: FormulaResultIn):
+    db.add_formula_round(b.config, b.total, b.correct, b.avg_ms, b.details)
+    return {"ok": True}
+
+
+@app.get("/api/formula/type-stats")
+def api_formula_type_stats():
+    return {"items": db.formula_type_stats()}
+
+
+@app.get("/api/formula/history")
+def api_formula_history():
+    return {"items": db.formula_history()}
+
+
 # ---------------- 学习数据 ----------------
 
 @app.get("/api/stats")
@@ -236,6 +274,12 @@ def api_stats():
 def api_history(limit: int = 100, offset: int = 0):
     """做题历史记录（含题目信息）"""
     return db.answer_history(min(500, limit), offset)
+
+
+@app.get("/api/report/weekly")
+def api_weekly_report():
+    """每周学习诊断报告：本周 vs 上周，模块对比/薄弱考点/规则化建议。"""
+    return db.weekly_report()
 
 
 @app.get("/api/wrong-book")
@@ -251,6 +295,12 @@ def api_marks():
 @app.get("/api/kaodian-list")
 def api_kaodian_list():
     return {"items": db.kaodian_list()}
+
+
+@app.get("/api/kaodian-tree")
+def api_kaodian_tree(module: str = "判断推理"):
+    """判断专项：某模块真题考点两级树（大类/细分，带题数）。"""
+    return {"items": db.kaodian_tree(module)}
 
 
 class PaperIn(BaseModel):

@@ -140,6 +140,22 @@ CREATE TABLE IF NOT EXISTS essay_grades (
     result TEXT DEFAULT '',
     created_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS formula_rounds (
+    id INTEGER PRIMARY KEY,
+    config TEXT,
+    total INTEGER,
+    correct INTEGER,
+    avg_ms INTEGER,
+    created_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS formula_items (
+    round_id INTEGER,
+    qtype TEXT,
+    correct INTEGER,
+    ms REAL
+);
 """
 
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
@@ -815,6 +831,60 @@ def speed_history(limit: int = 50) -> list[dict]:
     return out
 
 
+# ---------------- 资料分析列式专项 ----------------
+
+def add_formula_round(config: dict, total: int, correct: int, avg_ms: int,
+                      details: list | None = None) -> None:
+    conn = connect()
+    cur = conn.execute(
+        "INSERT INTO formula_rounds(config,total,correct,avg_ms,created_at) VALUES(?,?,?,?,?)",
+        (json.dumps(config, ensure_ascii=False), total, correct, avg_ms, time.time()),
+    )
+    if details:
+        rid = cur.lastrowid
+        conn.executemany(
+            "INSERT INTO formula_items(round_id,qtype,correct,ms) VALUES(?,?,?,?)",
+            [(rid, d.get("type", ""), 1 if d.get("correct") else 0, d.get("ms", 0))
+             for d in details],
+        )
+    conn.commit()
+    conn.close()
+
+
+def formula_type_stats() -> list[dict]:
+    """分题型聚合：总题、正确数、正确率、平均用时。"""
+    conn = connect()
+    rows = conn.execute(
+        """SELECT qtype, COUNT(*) n, SUM(correct) ok, AVG(ms) avg_ms
+           FROM formula_items GROUP BY qtype"""
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        out.append({
+            "type": r["qtype"],
+            "n": r["n"],
+            "ok": r["ok"],
+            "rate": round(r["ok"] / r["n"] * 100) if r["n"] else 0,
+            "avg_s": round((r["avg_ms"] or 0) / 1000, 1),
+        })
+    return out
+
+
+def formula_history(limit: int = 50) -> list[dict]:
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM formula_rounds ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["config"] = json.loads(d["config"] or "{}")
+        out.append(d)
+    conn.close()
+    return out
+
+
 # ---------------- 学习数据（错题本 / 收藏 / 统计 / 组卷） ----------------
 
 def list_marks() -> list[dict]:
@@ -897,7 +967,9 @@ def random_paper(module: str = "", kaodian: str = "", n: int = 10, trap: bool = 
     if module:
         where.append("module=?"); args.append(module)
     if kaodian:
-        where.append("kaodian=?"); args.append(kaodian)
+        # 考点按前缀匹配：归一前缀（如「逻辑判断 / 加强论证-补充论据」）可命中
+        # 各种括号补充变体；大类混练传「逻辑判断 /」
+        where.append("kaodian LIKE ?"); args.append(kaodian + "%")
     sql_where = " AND ".join(where)
 
     # 资料分析：按材料指纹分组抽
@@ -956,6 +1028,37 @@ def kaodian_list() -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def kaodian_tree(module: str, top: int = 10) -> list[dict]:
+    """某模块真题考点树：大类 → 高频细分考点 top N（去括号补充归一，按题数排序）。
+
+    长尾考点不逐个列出（AI 标注文本变体过多），统一通过「整个大类混合练」覆盖。
+    返回节点：{name, total, children:[{name, prefix(完整前缀，抽题用), n}]}。"""
+    import re as _re
+    conn = connect()
+    rows = conn.execute(
+        "SELECT kaodian, COUNT(*) c FROM documents WHERE kind='真题' AND module=?"
+        " GROUP BY kaodian", (module,)).fetchall()
+    conn.close()
+    tree: dict[str, dict] = {}
+    for r in rows:
+        k = _re.sub(r"（[^）]*）|\([^)]*\)", "", r["kaodian"] or "").strip()
+        if not k:
+            continue
+        big, _, sub = k.partition(" / ")
+        node = tree.setdefault(big, {"name": big, "total": 0, "subs": {}})
+        node["total"] += r["c"]
+        key = sub or big
+        node["subs"][key] = node["subs"].get(key, 0) + r["c"]
+    out = sorted(tree.values(), key=lambda x: -x["total"])
+    for n in out:
+        subs = sorted(n.pop("subs").items(), key=lambda x: -x[1])
+        n["children"] = [
+            {"name": s, "prefix": f"{n['name']} / {s}" if " / " not in s
+             else s, "n": c}
+            for s, c in subs[:top] if c >= 2]
+    return out
 
 
 def stats_overview() -> dict:
@@ -1122,6 +1225,158 @@ def answer_history(limit: int = 100, offset: int = 0) -> dict:
         })
     conn.close()
     return {"items": items, "total": total}
+
+
+# ---------------- 每周学习诊断报告 ----------------
+
+# 各模块每题建议用时（秒），用于节奏诊断
+SUGGEST_SEC = {
+    "常识判断": 24, "言语理解与表达": 60, "言语理解": 60,
+    "判断推理": 75, "资料分析": 45, "综合分析": 42, "数量关系": 24,
+}
+
+
+def _period_module_stats(conn, start: float, end: float) -> tuple[list[dict], set]:
+    """时间段内按模块聚合做题数据 + 学习日期集合。"""
+    rows = conn.execute(
+        """SELECT d.module, a.correct, a.ms, a.created_at
+           FROM answers a JOIN documents d ON d.id=a.doc_id
+           WHERE a.created_at>=? AND a.created_at<? AND d.module!=''""",
+        (start, end)).fetchall()
+    mods: dict[str, dict] = {}
+    days = set()
+    for r in rows:
+        m = mods.setdefault(r["module"], {"n": 0, "ok": 0, "ms": 0})
+        m["n"] += 1
+        m["ok"] += r["correct"] or 0
+        m["ms"] += r["ms"] or 0
+        days.add(time.strftime("%Y-%m-%d", time.localtime(r["created_at"])))
+    out = []
+    for m, d in mods.items():
+        out.append({
+            "module": m, "n": d["n"], "ok": d["ok"],
+            "rate": round(d["ok"] / d["n"] * 100),
+            "avg_s": round(d["ms"] / d["n"] / 1000, 1),
+            "min": round(d["ms"] / 60000, 1),
+        })
+    return sorted(out, key=lambda x: -x["n"]), days
+
+
+def weekly_report() -> dict:
+    """本周（周一起）vs 上周诊断：模块对比、薄弱考点、批改/速算趋势、规则化建议。"""
+    lt = time.localtime()
+    day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    week_start = day_start - lt.tm_wday * 86400          # 本周一 0 点
+    last_start = week_start - 7 * 86400                  # 上周一 0 点
+    now = time.time()
+
+    conn = connect()
+    _ensure_grade_score(conn)
+
+    cur_mods, cur_days = _period_module_stats(conn, week_start, now)
+    last_mods, _ = _period_module_stats(conn, last_start, week_start)
+
+    cur_total = sum(m["n"] for m in cur_mods)
+    last_total = sum(m["n"] for m in last_mods)
+    cur_min = round(sum(m["min"] for m in cur_mods), 1)
+
+    # 模块周对比（带正确率/题量 delta）
+    last_map = {m["module"]: m for m in last_mods}
+    compare = []
+    for m in cur_mods:
+        lm = last_map.get(m["module"])
+        compare.append({**m,
+                        "d_rate": m["rate"] - lm["rate"] if lm else None,
+                        "d_n": m["n"] - lm["n"] if lm else None})
+
+    # 薄弱考点 top5（本周样本≥2，正确率升序）
+    weak = []
+    rows = conn.execute(
+        """SELECT d.module, d.kaodian, COUNT(*) n, SUM(a.correct) ok
+           FROM answers a JOIN documents d ON d.id=a.doc_id
+           WHERE a.created_at>=? AND d.kaodian!=''
+           GROUP BY d.kaodian HAVING n>=2
+           ORDER BY SUM(a.correct)*1.0/COUNT(*) LIMIT 5""",
+        (week_start,)).fetchall()
+    for r in rows:
+        weak.append({"module": r["module"], "kaodian": r["kaodian"],
+                     "n": r["n"], "ok": r["ok"],
+                     "rate": round((r["ok"] or 0) / r["n"] * 100)})
+
+    # 批改（近14天，本周/上周得分率）
+    grades = []
+    for r in conn.execute(
+            "SELECT category, total_score, score, created_at FROM essay_grades"
+            " WHERE created_at>=? ORDER BY id", (now - 14 * 86400,)).fetchall():
+        grades.append(dict(r))
+    def _grade_avg(items):
+        v = [g for g in items if g["total_score"] and g["score"]]
+        if not v:
+            return None
+        return round(sum(g["score"] / g["total_score"] for g in v) / len(v) * 100)
+    g_cur = _grade_avg([g for g in grades if g["created_at"] >= week_start])
+    g_last = _grade_avg([g for g in grades if last_start <= g["created_at"] < week_start])
+    g_n = len([g for g in grades if g["created_at"] >= week_start])
+
+    # 速算 / 列式专项 近7天
+    def _drill_brief(table):
+        rows = conn.execute(
+            f"SELECT total, correct FROM {table} WHERE created_at>=?",
+            (week_start,)).fetchall()
+        if not rows:
+            return None
+        return {"rounds": len(rows),
+                "rate": round(sum(r["correct"] / r["total"] for r in rows) / len(rows) * 100)}
+    speed_b = _drill_brief("speed_rounds")
+    formula_b = _drill_brief("formula_rounds")
+
+    # 复习到期
+    review_due = conn.execute(
+        "SELECT COUNT(*) c FROM review_plan WHERE due_at<=?", (now,)).fetchone()["c"]
+
+    conn.close()
+
+    # ---- 规则化建议 ----
+    advice = []
+    if cur_total == 0:
+        advice.append("本周还没有做题记录：先从「组卷」抽 15-20 题热手，或练一轮速算。")
+    if len(cur_days) < 4 and cur_total > 0:
+        advice.append(f"本周学习 {len(cur_days)} 天：建议每天至少做一组题，连续性比单日突击更有效。")
+    for m in cur_mods:
+        if m["n"] >= 5 and m["rate"] < 60:
+            advice.append(f"「{m['module']}」正确率 {m['rate']}%（{m['n']}题）："
+                          f"按考点拆分精练，比整套刷更有效。")
+        sug = SUGGEST_SEC.get(m["module"])
+        if sug and m["avg_s"] > sug * 1.25:
+            advice.append(f"「{m['module']}」平均每题 {m['avg_s']} 秒、节奏偏慢："
+                          f"可练速算/列式专项，先把判断和列式速度提上来。")
+    if weak:
+        w = weak[0]
+        advice.append(f"薄弱考点「{w['kaodian']}」正确率 {w['rate']}%："
+                      f"可在组卷页按该考点专攻。")
+    if review_due:
+        advice.append(f"有 {review_due} 道题到了复习时间：今天先清「复习」，再做新题。")
+    if g_cur is not None and g_cur < 60:
+        advice.append(f"申论/综应本周平均得分率 {g_cur}%：对照批改细则补漏点，小题先求要点齐全。")
+    if not advice:
+        advice.append("本周状态不错：保持节奏，可安排一次限时模考查漏。")
+
+    return {
+        "range": f"{time.strftime('%m月%d日', time.localtime(week_start))}"
+                 f"—{time.strftime('%m月%d日', time.localtime(now))}",
+        "generated_at": now,
+        "summary": {
+            "total": cur_total, "last_total": last_total,
+            "minutes": cur_min, "days": len(cur_days),
+        },
+        "compare": compare,
+        "weak": weak,
+        "grades": {"cur": g_cur, "last": g_last, "n": g_n},
+        "speed": speed_b,
+        "formula": formula_b,
+        "review_due": review_due,
+        "advice": advice,
+    }
 
 
 # ---------------- F9 辨析卡（词语卡 + 错题考点卡） ----------------
