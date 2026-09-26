@@ -147,6 +147,7 @@ function route() {
   else if (name === "paper") renderPaper();
   else if (name === "search") renderSearch();
   else if (name === "cards") renderCards();
+  else if (name === "import") renderImport();
   else renderHome();
 }
 window.addEventListener("hashchange", route);
@@ -1192,6 +1193,116 @@ function renderSpeed() {
   }
 
   showConfig();
+}
+
+/* =====================================================
+   题库导入
+===================================================== */
+
+function renderImport() {
+  const state = { items: [], tab: "json" };
+  const MODULES = ["常识判断", "言语理解", "数量关系", "判断推理", "资料分析", "综合分析"];
+
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">导入题库</h1>
+      <p class="page-desc">导入的题写入 vault「99-自导入」目录，与现有题库同构，可检索、可组卷、可 AI 讲题；原有题库不受影响</p>
+    </div>
+    <div class="panel rise rise-1">
+      <div class="ai-mode-row" style="margin-bottom:14px">
+        <button class="mode-chip active" data-tab="json">JSON 题库</button>
+        <button class="mode-chip" data-tab="web">网页 / 文本真题</button>
+      </div>
+
+      <div id="tabJson">
+        <p class="hint" style="margin-bottom:8px">粘贴 JSON 数组，每题字段：stem（题干）、options（选项数组）、answer（答案字母）、analysis（解析，可空）、module / kaodian / year / exam（可空）</p>
+        <textarea id="jsonText" class="imp-area" rows="10" placeholder='[{"stem":"……","options":["A. …","B. …","C. …","D. …"],"answer":"B","analysis":"……","module":"言语理解"}]'></textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <input type="file" id="jsonFile" accept=".json,.txt"/>
+          <button class="btn btn-primary" id="jsonPreview">解析预览</button>
+        </div>
+      </div>
+
+      <div id="tabWeb" style="display:none">
+        <p class="hint" style="margin-bottom:8px">粘贴国考真题网页地址（如 gkzhenti.cn 的真题页），或直接把网页文字复制到下方文本框，由 AI 抽取结构化题目</p>
+        <div class="cfg-inline" style="margin-bottom:8px">
+          <input id="webUrl" placeholder="https://…（留空则用下方粘贴文本）" style="flex:1"/>
+        </div>
+        <textarea id="webText" class="imp-area" rows="8" placeholder="或直接粘贴网页文字（含题干、选项、答案）……"></textarea>
+        <div style="margin-top:8px"><button class="btn btn-primary" id="webPreview">AI 抽取预览</button></div>
+      </div>
+
+      <div class="cfg-inline" style="margin-top:14px;border-top:1px solid var(--line-soft);padding-top:12px">
+        <span>默认模块 <select id="impModule"><option value="">（按题目自带）</option>${MODULES.map(m => `<option>${m}</option>`).join("")}</select></span>
+        <span>年份 <input id="impYear" placeholder="如 2025" style="width:80px"/></span>
+        <span>试卷 <input id="impExam" placeholder="如 国考副省级" style="width:140px"/></span>
+        <span>地区 <input id="impRegion" placeholder="如 国家" style="width:80px"/></span>
+      </div>
+    </div>
+
+    <div id="impPreview"></div>`;
+
+  const defaults = () => ({
+    module: $("#impModule").value, year: $("#impYear").value.trim(),
+    exam: $("#impExam").value.trim(), region: $("#impRegion").value.trim(),
+  });
+
+  $$(".mode-chip", view).forEach(c => c.onclick = () => {
+    $$(".mode-chip", view).forEach(x => x.classList.toggle("active", x === c));
+    state.tab = c.dataset.tab;
+    $("#tabJson").style.display = state.tab === "json" ? "" : "none";
+    $("#tabWeb").style.display = state.tab === "web" ? "" : "none";
+  });
+
+  $("#jsonFile").onchange = async e => {
+    const f = e.target.files[0];
+    if (f) $("#jsonText").value = await f.text();
+  };
+
+  const showPreview = (res) => {
+    const el = $("#impPreview");
+    if (res.error) { el.innerHTML = `<div class="panel"><div class="empty" style="padding:20px;color:var(--cinnabar)">${esc(res.error)}</div></div>`; return; }
+    state.items = res.items || [];
+    if (!state.items.length) { el.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">未识别到题目</div></div>`; return; }
+    el.innerHTML = `
+      <div class="panel">
+        <h3>识别到 ${state.items.length} 题${res.errors?.length ? `（${res.errors.length} 条被跳过）` : ""}</h3>
+        ${state.items.slice(0, 10).map((it, i) => `
+          <div class="imp-item">
+            <b>${i + 1}.</b> ${esc(it.stem.slice(0, 80))}${it.stem.length > 80 ? "…" : ""}
+            <span class="imp-meta">${esc(it.module || "未分类")} · 答案 ${esc(it.answer)}</span>
+          </div>`).join("")}
+        ${state.items.length > 10 ? `<div class="hint">… 其余 ${state.items.length - 10} 题省略预览</div>` : ""}
+        ${res.errors?.length ? `<div class="hint" style="color:var(--amber)">${res.errors.slice(0, 3).map(esc).join("<br>")}</div>` : ""}
+        <button class="btn btn-primary" id="impCommit">确认导入 ${state.items.length} 题</button>
+      </div>`;
+    $("#impCommit").onclick = async () => {
+      $("#impCommit").disabled = true;
+      $("#impCommit").textContent = "导入中…";
+      try {
+        const r = await api("/api/import/commit", { items: state.items, defaults: defaults() });
+        if (!r.ok) { alert(r.error); return; }
+        el.innerHTML = `<div class="panel"><div class="empty" style="padding:24px">
+          ✅ 成功导入 ${r.saved} 题${r.failed?.length ? `，${r.failed.length} 题失败` : ""}，
+          题库现有真题 ${r.total} 道。<a href="#/search">去题库看看 →</a></div></div>`;
+      } catch (e) { alert("导入失败：" + e.message); $("#impCommit").disabled = false; $("#impCommit").textContent = "重试导入"; }
+    };
+  };
+
+  $("#jsonPreview").onclick = async () => {
+    const text = $("#jsonText").value.trim();
+    if (!text) return alert("请先粘贴 JSON 或选择文件");
+    showPreview(await api("/api/import/json/preview", { text, defaults: defaults() }));
+  };
+  $("#webPreview").onclick = async () => {
+    const url = $("#webUrl").value.trim(), text = $("#webText").value.trim();
+    if (!url && !text) return alert("请填网址或粘贴文本");
+    const btn = $("#webPreview");
+    btn.disabled = true; btn.textContent = "AI 抽取中（约 10~30 秒）…";
+    try { showPreview(await api("/api/import/web/preview", { url, text })); }
+    catch (e) { alert("抽取失败：" + e.message); }
+    finally { btn.disabled = false; btn.textContent = "AI 抽取预览"; }
+  };
 }
 
 /* =====================================================

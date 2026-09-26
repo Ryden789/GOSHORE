@@ -14,7 +14,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, speedcalc, wordfill
+from . import ai, db, importer, speedcalc, wordfill
 from .config import STATIC_DIR, load_settings, save_settings
 
 
@@ -277,6 +277,69 @@ def api_wordfill_answer(b: WordfillAnswerIn):
 @app.get("/api/wordfill/stats")
 def api_wordfill_stats():
     return db.wordfill_stats()
+
+
+# ---------------- 题库导入 ----------------
+
+class ImportJsonIn(BaseModel):
+    text: str
+    defaults: dict = {}
+
+
+@app.post("/api/import/json/preview")
+def api_import_json_preview(b: ImportJsonIn):
+    """解析自有题库 JSON，返回预览（不入库）。"""
+    items, errors = importer.parse_json_bank(b.text)
+    return {"items": items, "errors": errors, "count": len(items)}
+
+
+class ImportUrlIn(BaseModel):
+    url: str = ""
+    text: str = ""
+
+
+@app.post("/api/import/web/preview")
+async def api_import_web_preview(b: ImportUrlIn):
+    """抓网页或接受粘贴文本，AI 抽取真题，返回预览（不入库）。"""
+    try:
+        if b.url:
+            text = await importer.fetch_url_text(b.url)
+            if len(text) < 50:
+                return {"items": [], "error": "网页正文过短，可能被反爬；请改用粘贴文本模式"}
+        else:
+            text = b.text.strip()
+    except Exception as e:
+        return {"items": [], "error": f"抓取失败：{e}"}
+    if not text:
+        return {"items": [], "error": "内容为空"}
+    items, err = await importer.ai_extract_questions(text)
+    return {"items": items, "error": err, "count": len(items)}
+
+
+class ImportCommitIn(BaseModel):
+    items: list[dict]
+    defaults: dict = {}
+
+
+@app.post("/api/import/commit")
+def api_import_commit(b: ImportCommitIn):
+    """确认导入：写 md 到 vault 99-自导入/ 并入库。"""
+    if not b.items:
+        return {"ok": False, "error": "没有可导入的题目"}
+    if len(b.items) > 200:
+        return {"ok": False, "error": "单次最多导入 200 题"}
+    items, errors = [], []
+    for i, raw in enumerate(b.items, 1):
+        item, err = importer.normalize_item(raw, i)
+        if item:
+            items.append(item)
+        else:
+            errors.append(err)
+    if not items:
+        return {"ok": False, "error": "全部题目校验失败：" + "；".join(errors[:3])}
+    result = importer.commit_items(items, b.defaults)
+    result["skipped"] = errors
+    return result
 
 
 # ---------------- 设置 ----------------

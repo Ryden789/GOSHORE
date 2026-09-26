@@ -498,3 +498,9 @@ input, select, textarea { font-family: var(--sans); }
 
 /* ---- F5 配比模板按钮 ---- */
 .tpl-btn { margin-right: 8px; }
+
+/* 导入题库 */
+.hint { color: var(--ink-3); font-size: 12.5px; }
+.imp-area { width: 100%; box-sizing: border-box; font-family: var(--mono); font-size: 13px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 6px; background: #fff; resize: vertical; }
+.imp-item { padding: 8px 4px; border-bottom: 1px dashed var(--line-soft); font-size: 14px; }
+.imp-meta { display: block; color: var(--ink-3); font-size: 12px; margin-top: 2px; }
