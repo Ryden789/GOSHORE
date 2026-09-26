@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        maven { url "https://chaquo.com/maven" }
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        maven { url "https://chaquo.com/maven" }
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "GOSHORE"
+include ":app"

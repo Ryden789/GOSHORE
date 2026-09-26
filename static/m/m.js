@@ -44,6 +44,11 @@ function route() {
 }
 window.addEventListener("hashchange", route);
 
+// 做题页不改 hash，再次点击当前 tab 时强制重新渲染（退出做题覆盖页）
+$$("#tabbar a").forEach(a => a.addEventListener("click", () => {
+  if (a.getAttribute("href") === location.hash) setTimeout(route, 0);
+}));
+
 /* ---------- 首页 ---------- */
 
 async function renderHome() {
@@ -356,7 +361,17 @@ async function renderReview() {
 async function renderMe() {
   const rep = await api("/api/report/weekly");
   const s = rep.summary || {};
+  const native = window.GoshorNative;
+  const mode = native && native.isHosted && native.isHosted() === "1"
+    ? (native.mode ? native.mode() : "lan")
+    : "browser";
   view.innerHTML = `
+    ${mode === "lan" ? `
+    <div class="card">
+      <h3>App 服务器设置</h3>
+      <div class="kd-row"><span class="kn">当前服务器</span><span>${esc(GoshorNative.getHost())}</span></div>
+      <div style="margin-top:10px"><button class="btn btn-block" id="hostBtn">修改服务器地址</button></div>
+    </div>` : ""}
     <div class="card">
       <h3>本周诊断（${esc(rep.range || "")}）</h3>
       <div class="stat-grid" style="margin-top:4px">
@@ -376,6 +391,7 @@ async function renderMe() {
       <h3>本周建议</h3>
       ${(rep.advice || []).map(a => `<div style="padding:7px 0;border-top:1px solid var(--line-soft);font-size:14px">${esc(a)}</div>`).join("")}
     </div>
+    ${mode === "browser" ? `
     <div class="card">
       <h3>添加到主屏幕</h3>
       <p class="muted" style="margin:0;font-size:13.5px">
@@ -385,8 +401,16 @@ async function renderMe() {
         之后从桌面图标打开即是全屏 App 形态。
       </p>
     </div>
+    <a class="entry" href="/api/app-apk"><span class="ei">⬇</span>
+      <span class="et"><b>下载安卓安装包</b><small>APK · 允许安装未知来源后打开</small></span><span class="go">›</span></a>
     <a class="entry" href="/" target="_blank"><span class="ei">🖥</span>
-      <span class="et"><b>电脑完整版</b><small>新标签页打开桌面端</small></span><span class="go">›</span></a>`;
+      <span class="et"><b>电脑完整版</b><small>新标签页打开桌面端</small></span><span class="go">›</span></a>` : ""}`;
+
+    const hb = $("#hostBtn");
+    if (hb) hb.onclick = () => {
+      const v = prompt("输入电脑局域网地址（host:port）：", GoshorNative.getHost());
+      if (v && v.trim()) GoshorNative.setHost(v.trim());
+    };
 }
 
 route();

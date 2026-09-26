@@ -1,10 +1,14 @@
 """全局配置：目录常量 + JSON 设置文件（API Key 使用 Windows DPAPI 按当前用户加密落盘）。"""
 import base64
 import ctypes
-import ctypes.wintypes as wt
 import json
 import sys
 from pathlib import Path
+
+try:  # wintypes 仅 Windows CPython 自带，安卓/其他平台降级为 None
+    import ctypes.wintypes as wt
+except Exception:
+    wt = None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -23,8 +27,9 @@ DEFAULTS = {
 # ---------------- DPAPI（Windows 凭据级加密，仅当前用户可解） ----------------
 
 
-class _DATA_BLOB(ctypes.Structure):
-    _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+if wt is not None:
+    class _DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
 
 def _mk_blob(data: bytes):

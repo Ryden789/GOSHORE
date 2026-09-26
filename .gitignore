@@ -14,3 +14,13 @@ __pycache__/
 # 测试/临时文件
 data/test*.pdf
 scripts/_*.py
+
+# 安卓构建工具链与产物
+.tools/
+.android-sdk/
+dist/
+.vscode/
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/

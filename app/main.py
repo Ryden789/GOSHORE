@@ -138,6 +138,17 @@ def api_img(path: str):
     return FileResponse(fp)
 
 
+# ---------------- 安卓安装包下载 ----------------
+
+@app.get("/api/app-apk")
+def api_app_apk():
+    fp = Path(__file__).resolve().parent.parent / "dist" / "goshor.apk"
+    if not fp.exists():
+        raise HTTPException(404, "APK 尚未构建")
+    return FileResponse(fp, filename="goshor.apk",
+                        media_type="application/vnd.android.package-archive")
+
+
 # ---------------- AI 讲题 ----------------
 
 class ExplainIn(BaseModel):
