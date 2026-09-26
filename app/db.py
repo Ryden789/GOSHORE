@@ -1,0 +1,1076 @@
+"""SQLite 存储层 + 增量索引 + 检索。"""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import time
+from pathlib import Path
+
+from . import parser
+from .config import DB_PATH, load_settings
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS documents (
+    id        INTEGER PRIMARY KEY,
+    path      TEXT UNIQUE NOT NULL,
+    kind      TEXT DEFAULT '',
+    qid       TEXT DEFAULT '',
+    title     TEXT DEFAULT '',
+    module    TEXT DEFAULT '',
+    daclass   TEXT DEFAULT '',
+    region    TEXT DEFAULT '',
+    year      TEXT DEFAULT '',
+    exam      TEXT DEFAULT '',
+    kaodian   TEXT DEFAULT '',
+    tags      TEXT DEFAULT '',
+    mtime     REAL DEFAULT 0,
+    data      TEXT DEFAULT '{}',
+    search_text TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_docs_kind ON documents(kind);
+CREATE INDEX IF NOT EXISTS idx_docs_mod ON documents(module, daclass);
+CREATE INDEX IF NOT EXISTS idx_docs_qid ON documents(qid);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
+    title, content, tokenize='trigram'
+);
+
+CREATE TABLE IF NOT EXISTS answers (
+    id INTEGER PRIMARY KEY,
+    doc_id INTEGER,
+    selected TEXT,
+    correct INTEGER,
+    ms INTEGER,
+    created_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS marks (
+    doc_id INTEGER PRIMARY KEY,
+    mark TEXT,
+    updated_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS speed_rounds (
+    id INTEGER PRIMARY KEY,
+    config TEXT,
+    total INTEGER,
+    correct INTEGER,
+    avg_ms INTEGER,
+    created_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS wordfill_questions (
+    id INTEGER PRIMARY KEY,
+    passage TEXT,
+    blanks INTEGER DEFAULT 1,
+    options TEXT,
+    answer TEXT,
+    analysis TEXT,
+    words TEXT,
+    category TEXT DEFAULT '',
+    difficulty TEXT DEFAULT 'mid',
+    verified INTEGER DEFAULT 0,
+    created_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS wordfill_answers (
+    id INTEGER PRIMARY KEY,
+    qid INTEGER,
+    selected TEXT,
+    correct INTEGER,
+    ms INTEGER,
+    created_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS wrong_reasons (
+    doc_id INTEGER PRIMARY KEY,
+    reason TEXT DEFAULT '',
+    updated_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS review_plan (
+    doc_id INTEGER PRIMARY KEY,
+    stage INTEGER DEFAULT 1,
+    due_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS cards (
+    id TEXT PRIMARY KEY,
+    card_type TEXT,
+    module TEXT,
+    subtype TEXT,
+    category TEXT,
+    stem TEXT,
+    answer TEXT,
+    analysis TEXT,
+    user_answer TEXT,
+    source TEXT,
+    tags TEXT DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS card_reviews (
+    id INTEGER PRIMARY KEY,
+    card_id TEXT,
+    level INTEGER,
+    created_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS card_plan (
+    card_id TEXT PRIMARY KEY,
+    stage INTEGER DEFAULT 1,
+    due_at REAL
+);
+"""
+
+
+def connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA)
+    # 补充列：material_fp（材料指纹，用于资料分析同材料归组）
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(documents)")]
+    # 补充列：wordfill_questions.verified（生成题是否通过校验）
+    wcols = [r["name"] for r in conn.execute("PRAGMA table_info(wordfill_questions)")]
+    if "verified" not in wcols:
+        conn.execute(
+            "ALTER TABLE wordfill_questions ADD COLUMN verified INTEGER DEFAULT 0"
+        )
+        conn.commit()
+    if "material_fp" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN material_fp TEXT DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_fp ON documents(material_fp)")
+        conn.commit()
+        # 一次性回填存量资料分析题的指纹
+        rows = conn.execute(
+            "SELECT id, data FROM documents WHERE module='资料分析' AND kind='真题'"
+        ).fetchall()
+        for r in rows:
+            try:
+                d = json.loads(r["data"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            fp = _material_fingerprint(d.get("material", ""))
+            conn.execute("UPDATE documents SET material_fp=? WHERE id=?", (fp, r["id"]))
+    conn.commit()
+    # 幂等回填：材料档案的指纹（用 raw_material 算，与真题指纹同源可互查）
+    rows = conn.execute(
+        "SELECT id, data FROM documents WHERE kind='材料' AND (material_fp IS NULL OR material_fp='')"
+    ).fetchall()
+    for r in rows:
+        try:
+            d = json.loads(r["data"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        fp = _material_fingerprint(d.get("raw_material", ""))
+        if fp:
+            conn.execute("UPDATE documents SET material_fp=? WHERE id=?", (fp, r["id"]))
+    conn.commit()
+
+
+def _material_fingerprint(material: str) -> str:
+    """材料指纹：优先取图片路径（图表格材料），否则取纯文本前 120 字。"""
+    import re as _re
+    if not material:
+        return ""
+    imgs = _re.findall(r'<img[^>]*src="([^"]+)"', material)
+    if imgs:
+        return "img:" + ",".join(sorted(imgs))[:200]
+    text = _re.sub(r"<[^>]+>", "", material)
+    text = _re.sub(r"\s+", "", text)
+    return text[:120]
+
+
+# ---------------- 索引 ----------------
+
+def _upsert(conn: sqlite3.Connection, p: parser.Parsed, mtime: float) -> int:
+    tags = json.dumps(p.tags, ensure_ascii=False)
+    data = json.dumps(p.data, ensure_ascii=False)
+    fp = _material_fingerprint(p.data.get("material", "")) if p.module == "资料分析" else ""
+    cur = conn.execute(
+        """INSERT INTO documents
+           (path,kind,qid,title,module,daclass,region,year,exam,kaodian,tags,mtime,data,search_text,material_fp)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(path) DO UPDATE SET
+             kind=excluded.kind,qid=excluded.qid,title=excluded.title,
+             module=excluded.module,daclass=excluded.daclass,region=excluded.region,
+             year=excluded.year,exam=excluded.exam,kaodian=excluded.kaodian,
+             tags=excluded.tags,mtime=excluded.mtime,data=excluded.data,
+             search_text=excluded.search_text,material_fp=excluded.material_fp""",
+        (
+            p.rel_path, p.kind, p.qid, p.title, p.module, p.daclass,
+            p.region, p.year, p.exam, p.kaodian, tags, mtime, data,
+            p.search_text, fp,
+        ),
+    )
+    doc_id = cur.lastrowid
+    conn.execute("DELETE FROM docs_fts WHERE rowid=?", (doc_id,))
+    conn.execute(
+        "INSERT INTO docs_fts(rowid,title,content) VALUES (?,?,?)",
+        (doc_id, p.title, p.search_text),
+    )
+    return doc_id
+
+
+def reindex(progress=None) -> dict:
+    """全量/增量扫描 vault。progress(done,total,phase) 可选回调。"""
+    vault = Path(load_settings()["vault_path"])
+    if not vault.exists():
+        return {"ok": False, "error": f"vault 路径不存在: {vault}"}
+
+    conn = connect()
+    init_db(conn)
+    existing = {r["path"]: r["mtime"] for r in conn.execute("SELECT path,mtime FROM documents")}
+    seen: set[str] = set()
+
+    files: list[Path] = []
+    for root, dirs, fnames in os.walk(vault):
+        dirs[:] = [d for d in dirs if d != ".obsidian" and not d.startswith(".")]
+        for fn in fnames:
+            if fn.endswith(".md"):
+                files.append(Path(root) / fn)
+
+    changed = 0
+    total = len(files)
+    for i, fp in enumerate(files):
+        rel = fp.relative_to(vault).as_posix()
+        seen.add(rel)
+        try:
+            mt = fp.stat().st_mtime
+        except OSError:
+            continue
+        if existing.get(rel) == mt:
+            if progress:
+                progress(i + 1, total, "scan")
+            continue
+        try:
+            text = fp.read_text(encoding="utf-8")
+            p = parser.parse(rel, text)
+        except Exception as e:  # 单题解析失败不阻断全库
+            print(f"[parse-error] {rel}: {e}")
+            continue
+        _upsert(conn, p, mt)
+        changed += 1
+        if progress:
+            progress(i + 1, total, "index")
+        if changed % 200 == 0:
+            conn.commit()
+
+    removed = 0
+    for gone in set(existing) - seen:
+        row = conn.execute("SELECT id FROM documents WHERE path=?", (gone,)).fetchone()
+        if row:
+            conn.execute("DELETE FROM docs_fts WHERE rowid=?", (row["id"],))
+        conn.execute("DELETE FROM documents WHERE path=?", (gone,))
+        removed += 1
+
+    conn.commit()
+    conn.close()
+    return {
+        "ok": True,
+        "total": total,
+        "changed": changed,
+        "removed": removed,
+    }
+
+
+# ---------------- 查询 ----------------
+
+_LIST_COLS = (
+    "id,path,kind,qid,title,module,daclass,region,year,exam,kaodian"
+)
+
+
+def _rows(conn: sqlite3.Connection, sql: str, args: tuple, limit: int, offset: int):
+    rows = conn.execute(sql + " LIMIT ? OFFSET ?", args + (limit, offset)).fetchall()
+    total = conn.execute(
+        "SELECT COUNT(*) c FROM (" + sql + ")", args
+    ).fetchone()["c"]
+    return [dict(r) for r in rows], total
+
+
+def search_docs(
+    q: str = "",
+    kind: str = "",
+    module: str = "",
+    daclass: str = "",
+    region: str = "",
+    year: str = "",
+    page: int = 1,
+    page_size: int = 20,
+):
+    conn = connect()
+    where, args = [], []
+    if q:
+        q = q.strip()
+        if len(q) >= 3:
+            where.append(
+                "id IN (SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?)"
+            )
+            safe = q.replace('"', '""')
+            args.append(f'"{safe}"')
+        else:
+            where.append("(title LIKE ? OR search_text LIKE ?)")
+            args += [f"%{q}%", f"%{q}%"]
+    for col, val in [
+        ("kind", kind), ("module", module), ("daclass", daclass),
+        ("region", region), ("year", year),
+    ]:
+        if val:
+            where.append(f"{col}=?")
+            args.append(val)
+    sql = "SELECT " + _LIST_COLS + " FROM documents"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY year DESC, id"
+    rows, total = _rows(conn, sql, tuple(args), page_size, (page - 1) * page_size)
+    conn.close()
+    return rows, total
+
+
+def get_doc(doc_id: int) -> dict | None:
+    conn = connect()
+    row = conn.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    d = dict(row)
+    d["data"] = json.loads(d.get("data") or "{}")
+    d["tags"] = json.loads(d.get("tags") or "[]")
+    mark = conn.execute("SELECT mark FROM marks WHERE doc_id=?", (doc_id,)).fetchone()
+    d["mark"] = mark["mark"] if mark else ""
+    last = conn.execute(
+        "SELECT selected,correct,ms,created_at FROM answers WHERE doc_id=? "
+        "ORDER BY id DESC LIMIT 1",
+        (doc_id,),
+    ).fetchone()
+    d["last_answer"] = dict(last) if last else None
+
+    # 资料分析：找同材料的其他小题
+    d["material_group"] = []
+    if d.get("module") == "资料分析" and d.get("material_fp"):
+        rows2 = conn.execute(
+            "SELECT id,title FROM documents "
+            "WHERE kind='真题' AND module='资料分析' AND id!=? AND material_fp=?",
+            (doc_id, d["material_fp"]),
+        ).fetchall()
+        for r2 in rows2:
+            d["material_group"].append({"id": r2["id"], "title": r2["title"]})
+    conn.close()
+    return d
+
+
+def get_doc_by_path(rel_path: str) -> dict | None:
+    conn = connect()
+    row = conn.execute("SELECT id FROM documents WHERE path=?", (rel_path,)).fetchone()
+    conn.close()
+    return get_doc(row["id"]) if row else None
+
+
+def get_related_brief(rel_paths: list[str]) -> list[dict]:
+    if not rel_paths:
+        return []
+    conn = connect()
+    qs = ",".join("?" * len(rel_paths))
+    rows = conn.execute(
+        f"SELECT {_LIST_COLS} FROM documents WHERE path IN ({qs})", rel_paths
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def facets() -> dict:
+    conn = connect()
+    def vals(col):
+        return [
+            r[col]
+            for r in conn.execute(
+                f"SELECT DISTINCT {col} FROM documents WHERE {col}!='' ORDER BY {col}"
+            )
+        ]
+    out = {
+        "modules": vals("module"),
+        "daclass": vals("daclass"),
+        "regions": vals("region"),
+        "years": vals("year"),
+        "kinds": vals("kind"),
+    }
+    counts = {
+        r["kind"] or "未分类": r["c"]
+        for r in conn.execute("SELECT kind, COUNT(*) c FROM documents GROUP BY kind")
+    }
+    out["counts"] = counts
+    conn.close()
+    return out
+
+
+def add_answer(doc_id: int, selected: str, correct: bool, ms: int) -> None:
+    conn = connect()
+    conn.execute(
+        "INSERT INTO answers(doc_id,selected,correct,ms,created_at) VALUES(?,?,?,?,?)",
+        (doc_id, selected, int(correct), ms, time.time()),
+    )
+    conn.commit()
+    conn.close()
+    _schedule_review(doc_id, correct)
+
+
+def _schedule_review(doc_id: int, correct: bool) -> None:
+    """F7 间隔复习：答错进计划 1 天后；计划内答对升档 3→7 天，答错回 1 天。"""
+    DAY = 86400.0
+    conn = connect()
+    r = conn.execute("SELECT stage FROM review_plan WHERE doc_id=?", (doc_id,)).fetchone()
+    if correct:
+        if r:
+            stage = min(r["stage"] + 1, 3)
+            due = time.time() + (3 if stage == 2 else 7) * DAY
+            conn.execute("UPDATE review_plan SET stage=?, due_at=? WHERE doc_id=?",
+                         (stage, due, doc_id))
+    else:
+        conn.execute(
+            "INSERT OR REPLACE INTO review_plan(doc_id,stage,due_at) VALUES(?,?,?)",
+            (doc_id, 1, time.time() + DAY),
+        )
+    conn.commit()
+    conn.close()
+
+
+def due_reviews() -> list[dict]:
+    """今日到期待复习的真题。"""
+    conn = connect()
+    rows = conn.execute(
+        f"""SELECT {_LIST_COLS}, p.stage FROM review_plan p
+            JOIN documents d ON d.id = p.doc_id
+            WHERE p.due_at <= ? ORDER BY p.due_at""",
+        (time.time(),),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def set_wrong_reason(doc_id: int, reason: str) -> None:
+    conn = connect()
+    if reason:
+        conn.execute(
+            "INSERT OR REPLACE INTO wrong_reasons(doc_id,reason,updated_at) VALUES(?,?,?)",
+            (doc_id, reason, time.time()),
+        )
+    else:
+        conn.execute("DELETE FROM wrong_reasons WHERE doc_id=?", (doc_id,))
+    conn.commit()
+    conn.close()
+
+
+def wrong_reason_map() -> dict:
+    conn = connect()
+    rows = conn.execute("SELECT doc_id, reason FROM wrong_reasons").fetchall()
+    conn.close()
+    return {r["doc_id"]: r["reason"] for r in rows}
+
+
+def get_material_profile(material_fp: str) -> dict | None:
+    """按指纹找材料档案，返回口径/陷阱/小题群关系。"""
+    if not material_fp:
+        return None
+    conn = connect()
+    row = conn.execute(
+        "SELECT data FROM documents WHERE kind='材料' AND material_fp=? LIMIT 1",
+        (material_fp,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = json.loads(row["data"] or "{}")
+    return {
+        "koujing": d.get("koujing", ""),
+        "traps": d.get("traps", ""),
+        "relations": d.get("relations", ""),
+        "theme": d.get("theme", ""),
+    }
+
+
+def get_user_history(doc_id: int) -> dict:
+    """用户在该题上的历史表现：作答次数/错误数/最近错选/错因标签。"""
+    conn = connect()
+    s = conn.execute(
+        "SELECT COUNT(*) tries, SUM(correct=0) wrongs FROM answers WHERE doc_id=?",
+        (doc_id,),
+    ).fetchone()
+    last = conn.execute(
+        "SELECT selected, correct FROM answers WHERE doc_id=? ORDER BY id DESC LIMIT 1",
+        (doc_id,),
+    ).fetchone()
+    reason = conn.execute(
+        "SELECT reason FROM wrong_reasons WHERE doc_id=?", (doc_id,)
+    ).fetchone()
+    conn.close()
+    return {
+        "tries": s["tries"] or 0,
+        "wrongs": s["wrongs"] or 0,
+        "last_selected": last["selected"] if last else "",
+        "reason": reason["reason"] if reason else "",
+    }
+
+
+def set_mark(doc_id: int, mark: str) -> None:
+    conn = connect()
+    if mark:
+        conn.execute(
+            "INSERT OR REPLACE INTO marks(doc_id,mark,updated_at) VALUES(?,?,?)",
+            (doc_id, mark, time.time()),
+        )
+    else:
+        conn.execute("DELETE FROM marks WHERE doc_id=?", (doc_id,))
+    conn.commit()
+    conn.close()
+
+
+def add_speed_round(config: dict, total: int, correct: int, avg_ms: int) -> None:
+    conn = connect()
+    conn.execute(
+        "INSERT INTO speed_rounds(config,total,correct,avg_ms,created_at) VALUES(?,?,?,?,?)",
+        (json.dumps(config, ensure_ascii=False), total, correct, avg_ms, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def speed_history(limit: int = 50) -> list[dict]:
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM speed_rounds ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["config"] = json.loads(d["config"])
+        out.append(d)
+    conn.close()
+    return out
+
+
+# ---------------- 学习数据（错题本 / 收藏 / 统计 / 组卷） ----------------
+
+def list_marks() -> list[dict]:
+    """所有收藏标记的题目。"""
+    conn = connect()
+    cols = ",".join("d." + c for c in _LIST_COLS.split(","))
+    rows = conn.execute(
+        f"""SELECT {cols}, m.mark, m.updated_at
+            FROM marks m JOIN documents d ON d.id = m.doc_id
+            ORDER BY m.updated_at DESC"""
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def list_wrong_book() -> list[dict]:
+    """错题本：最近答过且最后一次答错的题（含次数统计）。"""
+    conn = connect()
+    rows = conn.execute(
+        f"""SELECT d.*, a.selected AS last_selected, a.ms AS last_ms,
+                   a.created_at AS last_at, s.tries, s.wrongs
+            FROM documents d
+            JOIN answers a ON a.doc_id = d.id
+            JOIN (SELECT doc_id, COUNT(*) tries, SUM(correct=0) wrongs, MAX(id) max_id
+                  FROM answers GROUP BY doc_id) s
+              ON s.doc_id = d.id AND a.id = s.max_id
+            WHERE a.correct = 0 AND d.kind = '真题'
+            ORDER BY a.created_at DESC"""
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = {k: r[k] for k in _LIST_COLS.split(",") if k in r.keys()}
+        d.update({
+            "last_selected": r["last_selected"], "last_ms": r["last_ms"],
+            "last_at": r["last_at"], "tries": r["tries"], "wrongs": r["wrongs"],
+        })
+        # 正确答案
+        data = json.loads(r["data"]) if "data" in r.keys() else {}
+        corr = next((o["label"] for o in data.get("options", []) if o.get("correct")), "")
+        d["answer"] = corr
+        out.append(d)
+    conn.close()
+    return out
+
+
+def random_paper(module: str = "", kaodian: str = "", n: int = 10) -> list[int]:
+    """随机组卷：返回 doc_id 列表（真题）。
+    资料分析按整篇材料抽取（同材料小题连续出现）。"""
+    conn = connect()
+    where, args = ["kind='真题'"], []
+    if module:
+        where.append("module=?"); args.append(module)
+    if kaodian:
+        where.append("kaodian=?"); args.append(kaodian)
+    sql_where = " AND ".join(where)
+
+    # 资料分析：按材料指纹分组抽
+    if module in ("", "资料分析") and not kaodian:
+        # 抽出若干篇材料（每篇取全部小题）
+        fp_rows = conn.execute(
+            f"SELECT DISTINCT material_fp FROM documents WHERE {sql_where} "
+            "AND module='资料分析' AND material_fp!='' ORDER BY RANDOM() LIMIT ?",
+            tuple(args) + (max(1, n // 5),),
+        ).fetchall()
+        ids: list[int] = []
+        for r in fp_rows:
+            sub = conn.execute(
+                f"SELECT id FROM documents WHERE {sql_where} AND material_fp=? ORDER BY id",
+                tuple(args) + (r["material_fp"],),
+            ).fetchall()
+            ids.extend(s["id"] for s in sub)
+        # 若指定模块就是资料分析，直接返回
+        if module == "资料分析":
+            conn.close()
+            return ids[:n]
+    else:
+        ids = []
+
+    # 其他题按单题随机
+    rows = conn.execute(
+        f"SELECT id FROM documents WHERE {sql_where} "
+        + ("AND material_fp='' " if module == "" else "")
+        + "ORDER BY RANDOM() LIMIT ?",
+        tuple(args) + (n - len(ids),),
+    ).fetchall()
+    ids.extend(r["id"] for r in rows)
+    conn.close()
+    return ids[:n]
+
+
+def kaodian_list() -> list[dict]:
+    """考点分布（真题），供组卷筛选。"""
+    conn = connect()
+    rows = conn.execute(
+        "SELECT module, kaodian, COUNT(*) c FROM documents "
+        "WHERE kind='真题' AND kaodian!='' GROUP BY module, kaodian ORDER BY c DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def stats_overview() -> dict:
+    """Dashboard 汇总数据。"""
+    conn = connect()
+    today = time.time() - (time.time() % 86400) - 8 * 3600 + 86400  # 今天 24:00 (UTC+8 修正粗略)
+    # 用本地日界
+    lt = time.localtime()
+    day_start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+
+    doc_counts = {r["kind"] or "未分类": r["c"] for r in conn.execute(
+        "SELECT kind, COUNT(*) c FROM documents GROUP BY kind")}
+
+    ans_total = conn.execute("SELECT COUNT(*) c FROM answers").fetchone()["c"]
+    ans_correct = conn.execute("SELECT COUNT(*) c FROM answers WHERE correct=1").fetchone()["c"]
+    today_ans = conn.execute(
+        "SELECT COUNT(*) c, SUM(correct=1) ok FROM answers WHERE created_at>=?",
+        (day_start,)).fetchone()
+
+    # 连续学习天数（有作答或速算记录的日子）
+    days = set()
+    for r in conn.execute("SELECT created_at FROM answers"):
+        days.add(time.strftime("%Y-%m-%d", time.localtime(r["created_at"])))
+    for r in conn.execute("SELECT created_at FROM speed_rounds"):
+        days.add(time.strftime("%Y-%m-%d", time.localtime(r["created_at"])))
+    streak = 0
+    d = lt
+    while True:
+        key = time.strftime("%Y-%m-%d", d)
+        if key in days:
+            streak += 1
+            d = time.localtime(time.mktime(d) - 86400)
+        else:
+            # 今天还没学不算断
+            if streak == 0 and key == time.strftime("%Y-%m-%d", lt):
+                d = time.localtime(time.mktime(d) - 86400)
+                continue
+            break
+
+    wrong_count = conn.execute(
+        """SELECT COUNT(*) c FROM (
+             SELECT doc_id, MAX(id) mid FROM answers GROUP BY doc_id) s
+           JOIN answers a ON a.id = s.mid WHERE a.correct=0"""
+    ).fetchone()["c"]
+    mark_count = conn.execute("SELECT COUNT(*) c FROM marks").fetchone()["c"]
+
+    speed_best = conn.execute(
+        "SELECT MAX(correct) best FROM speed_rounds WHERE json_extract(config,'$.challenge')=1"
+    ).fetchone()["best"] or 0
+
+    # 最近 14 天每日做题数
+    daily = []
+    for i in range(13, -1, -1):
+        ds = day_start - i * 86400
+        de = ds + 86400
+        c = conn.execute(
+            "SELECT COUNT(*) c FROM answers WHERE created_at>=? AND created_at<?",
+            (ds, de)).fetchone()["c"]
+        daily.append({"date": time.strftime("%m-%d", time.localtime(ds)), "count": c})
+
+    # 模块正确率
+    mod_stats = []
+    for r in conn.execute(
+        """SELECT d.module, COUNT(*) n, SUM(a.correct) ok
+           FROM answers a JOIN documents d ON d.id=a.doc_id
+           WHERE d.module!='' GROUP BY d.module HAVING n>=3 ORDER BY n DESC"""
+    ):
+        mod_stats.append({"module": r["module"], "n": r["n"],
+                          "rate": round((r["ok"] or 0) / r["n"] * 100)})
+
+    # 速算趋势（最近 20 轮）
+    speed_trend = []
+    for r in conn.execute(
+        "SELECT total, correct, avg_ms, created_at, config FROM speed_rounds ORDER BY id DESC LIMIT 20"
+    ):
+        speed_trend.append({
+            "t": r["created_at"], "total": r["total"], "correct": r["correct"],
+            "avg_ms": r["avg_ms"],
+            "challenge": bool(json.loads(r["config"]).get("challenge")),
+        })
+    speed_trend.reverse()
+
+    # F6 错因分布
+    reason_dist = [
+        {"reason": r["reason"] or "未标注", "c": r["c"]}
+        for r in conn.execute(
+            """SELECT COALESCE(NULLIF(w.reason,''),'未标注') reason, COUNT(*) c
+               FROM (SELECT doc_id, MAX(id) mid FROM answers GROUP BY doc_id) s
+               JOIN answers a ON a.id=s.mid AND a.correct=0
+               LEFT JOIN wrong_reasons w ON w.doc_id=s.doc_id
+               GROUP BY reason ORDER BY c DESC""")
+    ]
+
+    # F8 高频错题 TOP10
+    top_wrong = []
+    for r in conn.execute(
+        """SELECT d.id, d.title, d.module, d.kaodian, s.wrongs, s.tries
+           FROM (SELECT doc_id, COUNT(*) tries, SUM(correct=0) wrongs, MAX(id) mid
+                 FROM answers GROUP BY doc_id) s
+           JOIN answers a ON a.id=s.mid AND a.correct=0
+           JOIN documents d ON d.id=s.doc_id
+           WHERE d.kind='真题' ORDER BY s.wrongs DESC, s.tries DESC LIMIT 10"""
+    ):
+        top_wrong.append(dict(r))
+
+    review_due = conn.execute(
+        "SELECT COUNT(*) c FROM review_plan WHERE due_at<=?", (time.time(),)
+    ).fetchone()["c"]
+    card_due = conn.execute(
+        "SELECT COUNT(*) c FROM card_plan WHERE due_at<=?", (time.time(),)
+    ).fetchone()["c"]
+    card_total = conn.execute("SELECT COUNT(*) c FROM cards").fetchone()["c"]
+
+    conn.close()
+    return {
+        "doc_counts": doc_counts,
+        "answers_total": ans_total,
+        "answers_correct": ans_correct,
+        "today_answers": today_ans["c"] or 0,
+        "today_correct": today_ans["ok"] or 0,
+        "streak": streak,
+        "wrong_count": wrong_count,
+        "mark_count": mark_count,
+        "speed_best_challenge": speed_best,
+        "daily": daily,
+        "module_stats": mod_stats,
+        "speed_trend": speed_trend,
+        "reason_dist": reason_dist,
+        "top_wrong": top_wrong,
+        "review_due": review_due,
+        "card_due": card_due,
+        "card_total": card_total,
+    }
+
+
+# ---------------- F9 辨析卡（词语卡 + 错题考点卡） ----------------
+
+def import_cards() -> dict:
+    """从 data/cards/*.json 幂等导入辨析卡（按 id 去重）。"""
+    cards_dir = DB_PATH.parent / "cards"
+    if not cards_dir.exists():
+        return {"ok": False, "error": "data/cards 目录不存在"}
+    conn = connect()
+    init_db(conn)
+    added = 0
+    for fp in cards_dir.glob("*.json"):
+        try:
+            obj = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for q in obj.get("questions", []):
+            try:
+                conn.execute(
+                    """INSERT OR IGNORE INTO cards
+                       (id,card_type,module,subtype,category,stem,answer,analysis,user_answer,source,tags)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        q["id"], q.get("type", ""), q.get("module", ""),
+                        q.get("subtype", ""), q.get("category", ""),
+                        q.get("stem", ""), q.get("answer", ""),
+                        q.get("analysis", ""), q.get("userAnswer", ""),
+                        q.get("source", fp.name),
+                        json.dumps(q.get("tags", []), ensure_ascii=False),
+                    ),
+                )
+                added += conn.total_changes - added
+            except Exception:
+                continue
+    conn.commit()
+    conn.close()
+    return {"ok": True, "added": added}
+
+
+def list_cards(card_type: str = "", category: str = "", module: str = "") -> list[dict]:
+    conn = connect()
+    where, args = [], []
+    for col, val in [("card_type", card_type), ("category", category), ("module", module)]:
+        if val:
+            where.append(f"{col}=?"); args.append(val)
+    sql = "SELECT * FROM cards"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id"
+    rows = conn.execute(sql, tuple(args)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["tags"] = json.loads(d.get("tags") or "[]")
+        out.append(d)
+    conn.close()
+    return out
+
+
+def card_facets() -> dict:
+    conn = connect()
+    out = {}
+    for col in ("card_type", "module", "category"):
+        out[col + "s"] = [
+            dict(r) for r in conn.execute(
+                f"SELECT {col} AS k, COUNT(*) c FROM cards WHERE {col}!='' "
+                f"GROUP BY {col} ORDER BY c DESC"
+            )
+        ]
+    conn.close()
+    return out
+
+
+def card_review(card_id: str, level: int) -> None:
+    """卡片自评：2认识/1模糊/0不会。模糊不会进 1 天计划，认识升档 3→7 天。"""
+    DAY = 86400.0
+    conn = connect()
+    conn.execute(
+        "INSERT INTO card_reviews(card_id,level,created_at) VALUES(?,?,?)",
+        (card_id, level, time.time()),
+    )
+    if level >= 2:
+        r = conn.execute("SELECT stage FROM card_plan WHERE card_id=?", (card_id,)).fetchone()
+        if r:
+            stage = min(r["stage"] + 1, 3)
+            due = time.time() + (3 if stage == 2 else 7) * DAY
+            conn.execute("UPDATE card_plan SET stage=?, due_at=? WHERE card_id=?",
+                         (stage, due, card_id))
+    else:
+        conn.execute(
+            "INSERT OR REPLACE INTO card_plan(card_id,stage,due_at) VALUES(?,?,?)",
+            (card_id, 1, time.time() + DAY),
+        )
+    conn.commit()
+    conn.close()
+
+
+def due_cards() -> list[dict]:
+    conn = connect()
+    rows = conn.execute(
+        """SELECT c.*, p.stage FROM card_plan p
+           JOIN cards c ON c.id = p.card_id
+           WHERE p.due_at <= ? ORDER BY p.due_at""",
+        (time.time(),),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["tags"] = json.loads(d.get("tags") or "[]")
+        out.append(d)
+    conn.close()
+    return out
+
+
+# ---------------- F5 真实配比模考 ----------------
+
+EXAM_TEMPLATES = {
+    "guokao": {
+        "name": "国考行测（副省级）",
+        "minutes": 120,
+        "parts": [("常识判断", 20), ("言语理解与表达", 40), ("数量关系", 15),
+                  ("判断推理", 40), ("资料分析", 20)],
+    },
+    "shiye_c": {
+        "name": "事业单位C类职测",
+        "minutes": 90,
+        "parts": [("常识判断", 20), ("言语理解与表达", 25), ("数量关系", 15),
+                  ("判断推理", 30), ("综合分析", 10)],
+    },
+}
+
+
+def template_paper(key: str) -> dict:
+    """按真实配比抽题；某模块题量不足时整体等比缩减（F5.2）。
+    资料分析按整篇材料抽取。返回 {name, minutes, ids, lack[], scale}。"""
+    t = EXAM_TEMPLATES.get(key)
+    if not t:
+        return {"ok": False, "error": "未知模板"}
+    conn = connect()
+    avail = {}
+    for mod, _ in t["parts"]:
+        avail[mod] = conn.execute(
+            "SELECT COUNT(*) c FROM documents WHERE kind='真题' AND module=?",
+            (mod,)).fetchone()["c"]
+    # 实际可抽总量 / 模板总量 统一算 scale，题量为 0 的模块按 0 计入
+    total_want = sum(n for _, n in t["parts"])
+    plan: dict[str, int] = {}
+    lack = []
+    for mod, n in t["parts"]:
+        plan[mod] = min(avail[mod], n)
+        if avail[mod] == 0:
+            lack.append(f"{mod}（题库暂无）")
+        elif avail[mod] < n:
+            lack.append(f"{mod}（需{n}/有{avail[mod]}）")
+    scale = sum(plan.values()) / total_want if total_want else 0
+    ids: list[int] = []
+    for mod, n in t["parts"]:
+        want = plan[mod]
+        if want <= 0:
+            continue
+        if mod == "资料分析":
+            # 按材料整篇抽
+            fps = conn.execute(
+                "SELECT DISTINCT material_fp FROM documents WHERE kind='真题' "
+                "AND module='资料分析' AND material_fp!='' ORDER BY RANDOM() LIMIT ?",
+                (max(1, want // 5),)).fetchall()
+            got: list[int] = []
+            for r in fps:
+                sub = conn.execute(
+                    "SELECT id FROM documents WHERE kind='真题' AND material_fp=? "
+                    "ORDER BY id", (r["material_fp"],)).fetchall()
+                got.extend(s["id"] for s in sub)
+            ids.extend(got[:want])
+        else:
+            rows = conn.execute(
+                "SELECT id FROM documents WHERE kind='真题' AND module=? "
+                "ORDER BY RANDOM() LIMIT ?", (mod, want)).fetchall()
+            ids.extend(r["id"] for r in rows)
+    conn.close()
+    if not ids:
+        return {"ok": False, "error": "题库中没有该模板可用的题目", "lack": lack}
+    return {
+        "ok": True, "name": t["name"],
+        "minutes": max(5, round(t["minutes"] * scale)),
+        "ids": ids, "lack": lack,
+        "scale": round(scale, 3),
+    }
+
+
+# ---------------- 词语填空 ----------------
+
+def save_wordfill(q: dict) -> int:
+    """保存一道生成的词语填空题，返回 id。"""
+    conn = connect()
+    cur = conn.execute(
+        """INSERT INTO wordfill_questions
+           (passage, blanks, options, answer, analysis, words, category, difficulty, verified, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            q["passage"], q.get("blanks", 1),
+            json.dumps(q["options"], ensure_ascii=False),
+            q["answer"], q["analysis"],
+            json.dumps(q.get("words", []), ensure_ascii=False),
+            q.get("category", ""), q.get("difficulty", "mid"),
+            1 if q.get("verified") else 0,
+            time.time(),
+        ),
+    )
+    conn.commit()
+    qid = cur.lastrowid
+    conn.close()
+    return qid
+
+
+def get_wordfill(qid: int) -> dict | None:
+    conn = connect()
+    row = conn.execute(
+        "SELECT * FROM wordfill_questions WHERE id=?", (qid,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    d["options"] = json.loads(d["options"])
+    d["words"] = json.loads(d["words"])
+    return d
+
+
+def random_wordfill(n: int = 1, category: str = "", difficulty: str = "") -> list[dict]:
+    """从已有题库随机取 n 道。"""
+    conn = connect()
+    where, args = [], []
+    if category:
+        where.append("category=?"); args.append(category)
+    if difficulty:
+        where.append("difficulty=?"); args.append(difficulty)
+    sql = "SELECT * FROM wordfill_questions"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY RANDOM() LIMIT ?"
+    rows = conn.execute(sql, tuple(args) + (n,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["options"] = json.loads(d["options"])
+        d["words"] = json.loads(d["words"])
+        out.append(d)
+    conn.close()
+    return out
+
+
+def wordfill_count() -> int:
+    conn = connect()
+    c = conn.execute("SELECT COUNT(*) c FROM wordfill_questions").fetchone()["c"]
+    conn.close()
+    return c
+
+
+def add_wordfill_answer(qid: int, selected: str, correct: bool, ms: int) -> None:
+    conn = connect()
+    conn.execute(
+        "INSERT INTO wordfill_answers(qid,selected,correct,ms,created_at) VALUES(?,?,?,?,?)",
+        (qid, selected, int(correct), ms, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def wordfill_stats() -> dict:
+    """词语填空统计。"""
+    conn = connect()
+    total_q = conn.execute("SELECT COUNT(*) c FROM wordfill_questions").fetchone()["c"]
+    total_a = conn.execute("SELECT COUNT(*) c FROM wordfill_answers").fetchone()["c"]
+    ok_a = conn.execute("SELECT COUNT(*) c FROM wordfill_answers WHERE correct=1").fetchone()["c"]
+    wrong_q = conn.execute(
+        """SELECT COUNT(DISTINCT s.qid) c FROM (
+             SELECT qid, MAX(id) mid FROM wordfill_answers GROUP BY qid) s
+           JOIN wordfill_answers a ON a.id=s.mid WHERE a.correct=0"""
+    ).fetchone()["c"]
+    conn.close()
+    return {
+        "total_questions": total_q,
+        "total_answers": total_a,
+        "total_correct": ok_a,
+        "wrong_count": wrong_q,
+    }

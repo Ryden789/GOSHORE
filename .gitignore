@@ -1,0 +1,16 @@
+# 敏感信息与本地数据
+data/settings.json
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/cards/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 测试/临时文件
+data/test*.pdf
+scripts/_*.py

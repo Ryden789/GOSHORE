@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GOSHORE 上岸 · 自习室</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="paper-grain" aria-hidden="true"></div>
+<div class="app">
+  <aside class="sidebar">
+    <a class="brand" href="#/home">
+      <div class="brand-seal">岸</div>
+      <div>
+        <div class="brand-name">上岸自习室</div>
+        <div class="brand-sub">GOSHORE STUDY</div>
+      </div>
+    </a>
+    <nav class="nav">
+      <a href="#/home" data-route="home"><span class="ico">⌂</span>今日</a>
+      <a href="#/search" data-route="search"><span class="ico">▤</span>题库</a>
+      <a href="#/paper" data-route="paper"><span class="ico">✎</span>组卷</a>
+      <a href="#/wrong" data-route="wrong"><span class="ico">✗</span>错题本</a>
+      <a href="#/marks" data-route="marks"><span class="ico">★</span>收藏</a>
+      <a href="#/wordfill" data-route="wordfill"><span class="ico">词</span>词语填空</a>
+      <a href="#/cards" data-route="cards"><span class="ico">▦</span>辨析卡</a>
+      <a href="#/speed" data-route="speed"><span class="ico">⚡</span>速算</a>
+      <a href="#/settings" data-route="settings"><span class="ico">⚙</span>设置</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="ink-line"></div>
+      <span>本地运行 · 数据私有</span>
+    </div>
+  </aside>
+  <main id="view" class="view"></main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
