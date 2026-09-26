@@ -18,12 +18,19 @@ from app import importer
 
 PAPER_URL = "https://gwy.gkzhenti.cn/paper/1723610466312"  # 2024 国考地市级
 WANT_MODULES = {"常识判断": "常识判断", "言语理解与表达": "言语理解", "数量关系": "数量关系"}
+ALL_MODULES = {
+    **WANT_MODULES,
+    "判断推理": "判断推理",
+    "资料分析": "资料分析",
+    "综合分析": "综合分析",
+}
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 
-def fetch_questions(url: str) -> list[dict]:
+def fetch_questions(url: str, want_modules: dict | None = None) -> list[dict]:
     """抓取试卷页，返回 [{num, module, stem, options}]。"""
+    want = want_modules or WANT_MODULES
     text = httpx.get(url, timeout=30, headers=HEADERS, follow_redirects=True).text
 
     # 按模块标题切分整页
@@ -36,7 +43,7 @@ def fetch_questions(url: str) -> list[dict]:
     questions = []
     for title, content in sections:
         module = None
-        for key, mod in WANT_MODULES.items():
+        for key, mod in want.items():
             if key in title:
                 module = mod
                 break
