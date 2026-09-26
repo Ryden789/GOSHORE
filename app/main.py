@@ -14,7 +14,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, importer, speedcalc, wordfill
+from . import ai, db, importer, speedcalc, variant, wordfill
 from .config import STATIC_DIR, load_settings, save_settings
 
 
@@ -138,6 +138,19 @@ async def api_explain(b: ExplainIn):
     if not doc:
         raise HTTPException(404)
 
+    stuck_key = ""
+    if b.mode == "stuck" and b.stuck:
+        stuck_key = json.dumps({"s": b.stuck.get("selected"), "step": b.stuck.get("step")}, ensure_ascii=False, sort_keys=True)
+
+    # 首讲命中缓存直接流式复现（追问不缓存）
+    if not b.history:
+        cached = db.get_explain_cache(b.doc_id, b.mode, stuck_key)
+        if cached:
+            async def replay():
+                yield f"data: {json.dumps({'type': 'delta', 'text': cached}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'text': ''}, ensure_ascii=False)}\n\n"
+            return StreamingResponse(replay(), media_type="text/event-stream")
+
     if not b.history:
         messages = ai.build_first_messages(doc, b.mode, b.stuck)
     else:
@@ -146,9 +159,16 @@ async def api_explain(b: ExplainIn):
         if b.ask:
             messages.append({"role": "user", "content": b.ask})
 
+    # 收集首讲内容用于缓存
+    buffer: list[str] = []
+
     async def gen():
         async for kind, payload in ai.stream_chat(messages):
+            if kind == "delta":
+                buffer.append(payload)
             yield f"data: {json.dumps({'type': kind, 'text': payload}, ensure_ascii=False)}\n\n"
+        if not b.history and buffer:
+            db.set_explain_cache(b.doc_id, b.mode, stuck_key, "".join(buffer))
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
@@ -170,12 +190,18 @@ class SpeedResultIn(BaseModel):
     total: int
     correct: int
     avg_ms: int
+    details: list[dict] = []     # [{type, correct, ms}]
 
 
 @app.post("/api/speed/result")
 def api_speed_result(b: SpeedResultIn):
-    db.add_speed_round(b.config, b.total, b.correct, b.avg_ms)
+    db.add_speed_round(b.config, b.total, b.correct, b.avg_ms, b.details)
     return {"ok": True}
+
+
+@app.get("/api/speed/type-stats")
+def api_speed_type_stats():
+    return {"items": db.speed_type_stats()}
 
 
 @app.get("/api/speed/history")
@@ -340,6 +366,107 @@ def api_import_commit(b: ImportCommitIn):
     result = importer.commit_items(items, b.defaults)
     result["skipped"] = errors
     return result
+
+
+# ---------------- 疑点复核工作台 ----------------
+
+@app.post("/api/doubts/sync")
+def api_doubts_sync():
+    return db.sync_doubts()
+
+
+@app.get("/api/doubts")
+def api_doubts(status: str = "", page: int = 1):
+    items, total, counts = db.list_doubts(status, page)
+    # 附带 doc_id 便于跳题
+    for it in items:
+        it["doc_id"] = db.doc_id_by_qid(it["qid"])
+    return {"items": items, "total": total, "counts": counts}
+
+
+class DoubtStatusIn(BaseModel):
+    qid: str
+    status: str            # pending / confirmed / dismissed
+
+
+@app.post("/api/doubt/status")
+def api_doubt_status(b: DoubtStatusIn):
+    if b.status not in ("pending", "confirmed", "dismissed"):
+        raise HTTPException(400, "非法状态")
+    db.set_doubt_status(b.qid, b.status)
+    return {"ok": True}
+
+
+@app.post("/api/doubt/recheck/{qid}")
+async def api_doubt_recheck(qid: str):
+    """AI 独立重算单条疑点，返回结论文本并保存。"""
+    items, _, _ = db.list_doubts()
+    target = next((x for x in items if x["qid"] == qid), None)
+    # list_doubts 分页默认 30，改用直接查询
+    if not target:
+        conn = db.connect()
+        db._ensure_doubt(conn)
+        row = conn.execute("SELECT * FROM doubts WHERE qid=?", (qid,)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(404)
+        target = dict(row)
+    doc_id = db.doc_id_by_qid(qid)
+    doc = db.get_doc(doc_id) if doc_id else None
+
+    parts = [
+        "你是行测命题质检员。下面是一道真题及其「疑点描述」，请你独立重算/重读，判断疑点是否成立，给出结论与理由，200 字以内。",
+        f"【疑点描述】{target['descr']}",
+    ]
+    if doc:
+        d = doc["data"]
+        if d.get("stem"):
+            parts.append(f"【题干】{d['stem'][:800]}")
+        if d.get("options"):
+            parts.append("【选项】" + "；".join(f"{o['label']}.{o['text']}" for o in d["options"]))
+        ans = next((o["label"] for o in d.get("options", []) if o.get("correct")), "")
+        if ans:
+            parts.append(f"【给定答案】{ans}")
+        if d.get("official"):
+            import re as _re2
+            off = _re2.sub(r"<[^>]+>", "", d["official"])[:600]
+            parts.append(f"【官方解析】{off}")
+    else:
+        parts.append("（题库中未找到原题，仅根据疑点描述判断）")
+
+    messages = [
+        {"role": "system", "content": "你是行测命题质检员，独立复核题目疑点，只给结论与依据。"},
+        {"role": "user", "content": "\n\n".join(parts)},
+    ]
+    buf = []
+    async for kind, payload in ai.stream_chat(messages):
+        if kind == "delta":
+            buf.append(payload)
+        elif kind == "error":
+            return {"ok": False, "error": payload}
+    note = "".join(buf).strip()
+    if note:
+        db.set_doubt_ai(qid, note)
+    return {"ok": True, "note": note}
+
+
+# ---------------- 变式题 ----------------
+
+@app.post("/api/variant/generate/{doc_id}")
+async def api_variant_generate(doc_id: int):
+    doc = db.get_doc(doc_id)
+    if not doc:
+        raise HTTPException(404)
+    q = await variant.generate_variant(doc)
+    if not q:
+        return {"ok": False, "error": "生成未通过校验（结构或盲选交叉验证失败），请重试"}
+    q["id"] = variant.save_variant(q)
+    return {"ok": True, "item": q}
+
+
+@app.get("/api/variant/list/{doc_id}")
+def api_variant_list(doc_id: int):
+    return {"items": variant.list_variants(doc_id)}
 
 
 # ---------------- 设置 ----------------

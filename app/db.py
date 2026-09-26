@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re as _re
 import sqlite3
 import time
 from pathlib import Path
@@ -400,6 +401,130 @@ def doc_id_by_qid(qid: str) -> int | None:
     return row["id"] if row else None
 
 
+# ---------------- 疑点复核工作台 ----------------
+
+_DOUBT_RE = _re.compile(
+    r"·\s*(\d{6,})\s+(\S+)\s+(\d{4})\s*〔([^〕]+)〕\s*—\s*(.+)"
+)
+
+
+def _ensure_doubt(conn: sqlite3.Connection):
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS doubts(
+            qid TEXT PRIMARY KEY,
+            region TEXT, year TEXT, kaodian_path TEXT, descr TEXT,
+            status TEXT DEFAULT 'pending',
+            ai_note TEXT DEFAULT '',
+            ts REAL DEFAULT 0)"""
+    )
+
+
+def sync_doubts() -> dict:
+    """从 vault 复核清单文档解析疑点条目入库（保留已有状态/AI备注）。"""
+    conn = connect()
+    _ensure_doubt(conn)
+    rows = conn.execute(
+        "SELECT data FROM documents WHERE kind='复核清单'"
+    ).fetchall()
+    found = {}
+    for r in rows:
+        d = json.loads(r["data"] or "{}")
+        texts = [d.get("preamble", "")] + list((d.get("sections") or {}).values())
+        for t in texts:
+            for line in t.splitlines():
+                m = _DOUBT_RE.search(line)
+                if m:
+                    qid, region, year, kp, desc = m.groups()
+                    found[qid] = (region, year, kp.strip(), desc.strip())
+    new = 0
+    for qid, (region, year, kp, desc) in found.items():
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO doubts(qid,region,year,kaodian_path,descr) VALUES(?,?,?,?,?)",
+            (qid, region, year, kp, desc),
+        )
+        new += cur.rowcount
+    conn.commit()
+    total = conn.execute("SELECT COUNT(*) c FROM doubts").fetchone()["c"]
+    pending = conn.execute(
+        "SELECT COUNT(*) c FROM doubts WHERE status='pending'"
+    ).fetchone()["c"]
+    conn.close()
+    return {"total": total, "pending": pending, "new": new}
+
+
+def list_doubts(status: str = "", page: int = 1, page_size: int = 30):
+    conn = connect()
+    _ensure_doubt(conn)
+    where, args = "", ()
+    if status:
+        where, args = "WHERE status=?", (status,)
+    rows = conn.execute(
+        f"SELECT * FROM doubts {where} ORDER BY ts DESC, qid LIMIT ? OFFSET ?",
+        args + (page_size, (page - 1) * page_size),
+    ).fetchall()
+    total = conn.execute(f"SELECT COUNT(*) c FROM doubts {where}", args).fetchone()["c"]
+    counts = {
+        r["status"]: r["c"]
+        for r in conn.execute("SELECT status, COUNT(*) c FROM doubts GROUP BY status")
+    }
+    conn.close()
+    return [dict(r) for r in rows], total, counts
+
+
+def set_doubt_status(qid: str, status: str):
+    conn = connect()
+    _ensure_doubt(conn)
+    conn.execute(
+        "UPDATE doubts SET status=?, ts=? WHERE qid=?",
+        (status, time.time(), qid),
+    )
+    conn.commit()
+    conn.close()
+
+
+def set_doubt_ai(qid: str, note: str):
+    conn = connect()
+    _ensure_doubt(conn)
+    conn.execute(
+        "UPDATE doubts SET ai_note=?, ts=? WHERE qid=?", (note, time.time(), qid)
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------- AI 讲解缓存 ----------------
+
+def _ensure_explain_cache(conn: sqlite3.Connection):
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS explain_cache(
+            doc_id INTEGER, mode TEXT, stuck_key TEXT,
+            content TEXT, ts REAL,
+            PRIMARY KEY(doc_id, mode, stuck_key))"""
+    )
+
+
+def get_explain_cache(doc_id: int, mode: str, stuck_key: str) -> str | None:
+    conn = connect()
+    _ensure_explain_cache(conn)
+    row = conn.execute(
+        "SELECT content FROM explain_cache WHERE doc_id=? AND mode=? AND stuck_key=?",
+        (doc_id, mode, stuck_key),
+    ).fetchone()
+    conn.close()
+    return row["content"] if row else None
+
+
+def set_explain_cache(doc_id: int, mode: str, stuck_key: str, content: str):
+    conn = connect()
+    _ensure_explain_cache(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO explain_cache(doc_id,mode,stuck_key,content,ts) VALUES(?,?,?,?,?)",
+        (doc_id, mode, stuck_key, content, time.time()),
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_related_brief(rel_paths: list[str]) -> list[dict]:
     if not rel_paths:
         return []
@@ -558,14 +683,50 @@ def set_mark(doc_id: int, mark: str) -> None:
     conn.close()
 
 
-def add_speed_round(config: dict, total: int, correct: int, avg_ms: int) -> None:
+def add_speed_round(config: dict, total: int, correct: int, avg_ms: int, details: list | None = None) -> None:
     conn = connect()
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO speed_rounds(config,total,correct,avg_ms,created_at) VALUES(?,?,?,?,?)",
         (json.dumps(config, ensure_ascii=False), total, correct, avg_ms, time.time()),
     )
+    if details:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS speed_items(
+                round_id INTEGER, qtype TEXT, correct INTEGER, ms REAL)"""
+        )
+        rid = cur.lastrowid
+        conn.executemany(
+            "INSERT INTO speed_items(round_id,qtype,correct,ms) VALUES(?,?,?,?)",
+            [(rid, d.get("type", ""), 1 if d.get("correct") else 0, d.get("ms", 0)) for d in details],
+        )
     conn.commit()
     conn.close()
+
+
+def speed_type_stats() -> list[dict]:
+    """分题型聚合：轮数、总题、正确数、正确率、平均用时。"""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """SELECT qtype,
+                      COUNT(*) n,
+                      SUM(correct) ok,
+                      AVG(ms) avg_ms
+               FROM speed_items GROUP BY qtype"""
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    conn.close()
+    out = []
+    for r in rows:
+        out.append({
+            "type": r["qtype"],
+            "n": r["n"],
+            "ok": r["ok"],
+            "rate": round(r["ok"] / r["n"] * 100) if r["n"] else 0,
+            "avg_s": round(r["avg_ms"] / 1000, 1),
+        })
+    return out
 
 
 def speed_history(limit: int = 50) -> list[dict]:

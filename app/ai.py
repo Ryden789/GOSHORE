@@ -163,6 +163,16 @@ def build_first_messages(doc: dict, mode: str, stuck: dict | None) -> list[dict]
     context = _build_context(doc)
     task = MODE_TASKS.get(mode, MODE_TASKS["deep"])
     user = task + "\n\n以下是题库底稿：\n\n" + context
+    # 多模态降级：题目依赖图片而当前模型无法读图时，明确告知 AI 不要臆测图形内容
+    stem_and_opt = (doc["data"].get("stem", "") or "") + json.dumps(
+        doc["data"].get("options") or [], ensure_ascii=False
+    )
+    if "/img?path=" in stem_and_opt or "<img" in stem_and_opt:
+        user += (
+            "\n\n【重要】本题题干/选项包含图片（图形推理等），你无法读取图片内容。"
+            "请只基于文字部分与底稿讲解，并明确告诉学生：图形部分需自行对照图片理解，"
+            "不要编造图中细节。"
+        )
     if mode == "stuck" and stuck:
         user += (
             f"\n\n【用户卡点】错选选项：{stuck.get('selected','未提供')}；"
