@@ -2276,28 +2276,34 @@ async function renderHistory() {
 ===================================================== */
 
 async function renderGrade() {
-  const [rub, hist] = await Promise.all([
+  const [rub, hist, qs] = await Promise.all([
     api("/api/essay/rubrics"),
     api("/api/essay/history"),
+    api("/api/essay/questions"),
   ]);
+  let curRef = "";
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">AI 批改 · 申论 / 综应</h1>
-      <p class="page-desc">按真实阅卷规则批改：小题踩点给分、作文按档赋分 · 粘贴题目与作答即可</p>
+      <p class="page-desc">按真实阅卷规则批改：小题踩点给分、作文按档赋分 · 可从真题库选题，也可自行粘贴</p>
     </div>
     <div class="panel rise rise-1">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <select id="gZhenti" style="padding:8px 10px;font-size:14px;max-width:340px">
+          <option value="">📄 从真题库选题（${qs.items.length} 道）…</option>
+          ${qs.items.map(q => `<option value="${esc(q.id)}">[${esc(q.exam)}] ${esc(q.title)}（${q.total_score}分）</option>`).join("")}
+        </select>
         <select id="gCat" style="padding:8px 10px;font-size:14px">
           ${rub.items.map(r => `<option value="${r.key}">${esc(r.name)}（${esc(r.hint)}）</option>`).join("")}
         </select>
         <label style="font-size:13px;color:var(--ink-2)">满分 <input id="gTotal" type="number" min="10" max="100" style="width:64px;padding:6px"> </label>
-        <span style="font-size:12px;color:var(--ink-3)">留空/0 用题型默认满分</span>
       </div>
       <textarea id="gQ" rows="3" placeholder="【题目】粘贴题干，含作答要求与字数限制（必填）" style="width:100%;margin-bottom:8px"></textarea>
       <textarea id="gM" rows="5" placeholder="【给定材料】粘贴题目对应的材料（建议提供，没有材料无法判要点命中）" style="width:100%;margin-bottom:8px"></textarea>
       <textarea id="gA" rows="8" placeholder="【你的作答】粘贴你的答案（必填）" style="width:100%;margin-bottom:8px"></textarea>
       <div style="display:flex;gap:10px;align-items:center">
         <button class="btn btn-primary" id="gGo">开始批改</button>
+        <button class="btn btn-sm" id="gRef" style="display:none">对照参考答案</button>
         <span id="gTip" style="font-size:12.5px;color:var(--ink-3)"></span>
       </div>
     </div>
@@ -2313,6 +2319,28 @@ async function renderGrade() {
     totalIn.placeholder = r ? r.default_score : "";
   };
   catSel.onchange = setDef; setDef();
+
+  // 从真题库选题：自动填充题型/题目/材料/满分
+  $("#gZhenti").onchange = async e => {
+    const qid = e.target.value;
+    if (!qid) return;
+    $("#gTip").textContent = "载入真题中…";
+    const q = await api("/api/essay/question/" + qid);
+    catSel.value = q.category; setDef();
+    $("#gQ").value = q.question;
+    $("#gM").value = q.material || "";
+    totalIn.value = q.total_score || "";
+    curRef = q.reference || "";
+    $("#gRef").style.display = curRef ? "" : "none";
+    $("#gTip").textContent = `已载入「${q.title}」`;
+  };
+  $("#gRef").onclick = () => {
+    if (!curRef) return;
+    $("#gOut").innerHTML = `<div class="panel" style="border-left:4px solid var(--bamboo);margin-top:14px">
+      <b>参考答案 / 赋分标准</b>
+      <div class="sz-content" style="margin-top:8px">${md(curRef)}</div></div>`;
+    window.scrollTo({ top: $("#gOut").offsetTop - 70, behavior: "smooth" });
+  };
 
   function drawHist() {
     $("#gHist").innerHTML = hist.items.length ? hist.items.map(it => `

@@ -764,6 +764,39 @@ def api_essay_history_detail(gid: int):
     return it
 
 
+# ---------------- 申论 / 综应 真题库 ----------------
+
+_ESSAY_Q_PATH = STATIC_DIR.parent / "data" / "essay_questions.json"
+
+
+def _load_essay_questions() -> list[dict]:
+    if not _ESSAY_Q_PATH.exists():
+        return []
+    try:
+        return json.loads(_ESSAY_Q_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+@app.get("/api/essay/questions")
+def api_essay_questions():
+    """真题列表（不含材料/答案正文，减小传输）。"""
+    return {"items": [
+        {"id": q["id"], "exam": q.get("exam", ""), "category": q.get("category", ""),
+         "title": q.get("title", ""), "total_score": q.get("total_score", 0),
+         "has_reference": bool(q.get("reference"))}
+        for q in _load_essay_questions()
+    ]}
+
+
+@app.get("/api/essay/question/{qid}")
+def api_essay_question_detail(qid: str):
+    for q in _load_essay_questions():
+        if q["id"] == qid:
+            return q
+    raise HTTPException(404)
+
+
 # ---------------- 真题套卷 ----------------
 
 @app.get("/api/exams")
