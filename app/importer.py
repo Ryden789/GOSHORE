@@ -93,10 +93,10 @@ def parse_json_bank(text: str) -> tuple[list[dict], list[str]]:
 # ---------------- Markdown 生成与入库 ----------------
 
 def to_markdown(item: dict, qid: str, defaults: dict) -> str:
-    region = item["region"] or defaults.get("region", "")
-    year = item["year"] or defaults.get("year", "")
-    exam = item["exam"] or defaults.get("exam", "")
-    kaodian = item["kaodian"] or defaults.get("kaodian", "")
+    region = item.get("region") or defaults.get("region", "")
+    year = item.get("year") or defaults.get("year", "")
+    exam = item.get("exam") or defaults.get("exam", "")
+    kaodian = item.get("kaodian") or defaults.get("kaodian", "")
     title = re.sub(r"\s+", "", item["stem"])[:24]
     opts = "\n".join(
         f"- {o['label']}. {o['text']}{' ✅' if o['label'] == item['answer'] else ''}"

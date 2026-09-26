@@ -16,10 +16,12 @@ from .config import load_settings
 from . import db
 
 GEN_PROMPT = """你是行测命题员。根据给定母题生成一道「变式题」：保持考点与解题方法不变，更换数字与情境。
-要求：
-1. 新题数字必须使答案可精确计算（优先整除/整百数）。
-2. 四个选项中干扰项应对应真实易错点（如基期题设置"现期×(1−r)"坑值）。
-3. 严格输出 JSON，不要 markdown 代码块。
+命题流程（必须遵守）：
+1. 先选定正确答案字母，再倒推构造数据：例如答案定为"1.4-1.5倍之间"，则构造的数据算出的真实值必须明确落在 1.42~1.48 这种区间中段。
+2. 数据简单可算：优先整十/整百/一位小数，避免 10 个以上数据点的复杂累计。
+3. 生成后在 analysis 中写出完整计算过程，用计算结果反推验证答案字母；若验证不通过，修正数据后重新验证。
+4. 四个选项中干扰项应对应真实易错点（如基期题设置"现期×(1−r)"坑值）。
+5. 严格输出 JSON，不要 markdown 代码块。
 
 输出 JSON：
 {"stem":"完整题干","options":[{"label":"A","text":"..."},{"label":"B","text":"..."},{"label":"C","text":"..."},{"label":"D","text":"..."}],"answer":"A","analysis":"含具体计算过程的解析"}"""
@@ -79,7 +81,7 @@ async def generate_variant(doc: dict) -> dict | None:
         f"【母题答案】{next((o['label'] for o in (d.get('options') or []) if o.get('correct')), '')}\n"
         f"【解题方法】{(d.get('fastest') or d.get('reasoning') or '')[:400]}"
     )
-    for _ in range(2):
+    for _ in range(3):
         try:
             raw = await _chat([
                 {"role": "system", "content": GEN_PROMPT},
