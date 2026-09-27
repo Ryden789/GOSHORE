@@ -21,6 +21,9 @@ android {
         python {
             version "3.13"
             buildPython "C:/Users/29364/AppData/Local/Programs/Python/Python313/python.exe"
+            pip {
+                install "httpx"
+            }
         }
     }
 
@@ -46,5 +49,9 @@ android {
         release {
             minifyEnabled false
         }
+    }
+
+    dependencies {
+        implementation 'androidx.core:core:1.13.1'
     }
 }

@@ -1,6 +1,7 @@
 """SQLite 存储层 + 增量索引 + 检索。"""
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re as _re
@@ -11,7 +12,9 @@ from pathlib import Path
 from . import parser
 from .config import DB_PATH, load_settings
 
-SCHEMA = """
+# ============ Schema 拆分 ============
+# 共享内容表（所有账号只读共享：题库、全文索引、时政库）
+SHARED_SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
     id        INTEGER PRIMARY KEY,
     path      TEXT UNIQUE NOT NULL,
@@ -28,16 +31,29 @@ CREATE TABLE IF NOT EXISTS documents (
     difficulty TEXT DEFAULT '',
     mtime     REAL DEFAULT 0,
     data      TEXT DEFAULT '{}',
-    search_text TEXT DEFAULT ''
+    search_text TEXT DEFAULT '',
+    material_fp TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_docs_kind ON documents(kind);
 CREATE INDEX IF NOT EXISTS idx_docs_mod ON documents(module, daclass);
 CREATE INDEX IF NOT EXISTS idx_docs_qid ON documents(qid);
+CREATE INDEX IF NOT EXISTS idx_docs_fp ON documents(material_fp);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
     title, content, tokenize='trigram'
 );
 
+CREATE TABLE IF NOT EXISTS shizheng (
+    period TEXT PRIMARY KEY,
+    title TEXT DEFAULT '',
+    content TEXT DEFAULT '',
+    quiz TEXT DEFAULT '',
+    created_at REAL
+);
+"""
+
+# 个人数据表（每个账号独立一份）
+PERSONAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS answers (
     id INTEGER PRIMARY KEY,
     doc_id INTEGER,
@@ -60,6 +76,10 @@ CREATE TABLE IF NOT EXISTS speed_rounds (
     correct INTEGER,
     avg_ms INTEGER,
     created_at REAL
+);
+
+CREATE TABLE IF NOT EXISTS speed_items(
+    round_id INTEGER, qtype TEXT, correct INTEGER, ms REAL
 );
 
 CREATE TABLE IF NOT EXISTS wordfill_questions (
@@ -124,13 +144,6 @@ CREATE TABLE IF NOT EXISTS card_plan (
     due_at REAL
 );
 
-CREATE TABLE IF NOT EXISTS shizheng (
-    period TEXT PRIMARY KEY,
-    title TEXT DEFAULT '',
-    content TEXT DEFAULT '',
-    created_at REAL
-);
-
 CREATE TABLE IF NOT EXISTS essay_grades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     category TEXT DEFAULT '',
@@ -138,6 +151,7 @@ CREATE TABLE IF NOT EXISTS essay_grades (
     answer TEXT DEFAULT '',
     total_score INTEGER DEFAULT 0,
     result TEXT DEFAULT '',
+    score REAL DEFAULT 0,
     created_at REAL
 );
 
@@ -156,17 +170,129 @@ CREATE TABLE IF NOT EXISTS formula_items (
     correct INTEGER,
     ms REAL
 );
+
+CREATE TABLE IF NOT EXISTS doubts(
+    qid TEXT PRIMARY KEY,
+    region TEXT, year TEXT, kaodian_path TEXT, descr TEXT,
+    status TEXT DEFAULT 'pending',
+    ai_note TEXT DEFAULT '',
+    ts REAL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS explain_cache(
+    doc_id INTEGER, mode TEXT, stuck_key TEXT,
+    content TEXT, ts REAL,
+    PRIMARY KEY(doc_id, mode, stuck_key)
+);
+
+-- 账号私有的导入真题（与 documents 同构）
+CREATE TABLE IF NOT EXISTS my_documents (
+    id        INTEGER PRIMARY KEY,
+    path      TEXT UNIQUE NOT NULL,
+    kind      TEXT DEFAULT '',
+    qid       TEXT DEFAULT '',
+    title     TEXT DEFAULT '',
+    module    TEXT DEFAULT '',
+    daclass   TEXT DEFAULT '',
+    region    TEXT DEFAULT '',
+    year      TEXT DEFAULT '',
+    exam      TEXT DEFAULT '',
+    kaodian   TEXT DEFAULT '',
+    tags      TEXT DEFAULT '',
+    difficulty TEXT DEFAULT '',
+    mtime     REAL DEFAULT 0,
+    data      TEXT DEFAULT '{}',
+    search_text TEXT DEFAULT '',
+    material_fp TEXT DEFAULT ''
+);
+
+-- 共享题库的个人难度覆写（题库只读，作答后难度变化存这里）
+CREATE TABLE IF NOT EXISTS doc_overrides (
+    doc_id INTEGER PRIMARY KEY,
+    difficulty TEXT
+);
+
+-- 时政自测题的个人缓存（AI 按期次生成，不入共享库）
+CREATE TABLE IF NOT EXISTS shizheng_quiz (
+    period TEXT PRIMARY KEY,
+    quiz TEXT
+);
 """
+
+# 桌面端：单库全量 schema（保持原行为）
+SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
 
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
 EBBINGHAUS_DAYS = [1, 2, 4, 7, 15, 30]
 
 
+# ---------------- 身份上下文（手机多账号） ----------------
+
+# 手机模式开关：goshor_server.configure() 打开；桌面端始终为 False
+IS_MOBILE = False
+MOBILE_CARDS_DIR: str = ""
+
+_current_uid = contextvars.ContextVar("current_uid", default=None)
+
+
+def enable_mobile() -> None:
+    global IS_MOBILE
+    IS_MOBILE = True
+
+
+def set_user(uid: int) -> None:
+    """切换当前连接身份（每个请求按会话调用）。"""
+    _current_uid.set(int(uid))
+
+
+def current_user() -> int | None:
+    return _current_uid.get()
+
+
 def connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    uid = _current_uid.get()
+    if not IS_MOBILE or uid is None:
+        # 桌面端 / 未设置身份：原路径，单库直连
+        DB_PATH.parent.mkdir(exist_ok=True)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
+    # 手机多身份：个人库为主库，共享题库只读附加
+    users_dir = DB_PATH.parent / "users"
+    users_dir.mkdir(exist_ok=True)
+    # uri=True：连接级开启 URI 识别，ATTACH 的只读 file: URI 才生效
+    own_uri = (users_dir / f"data_{uid}.db").resolve().as_uri()
+    conn = sqlite3.connect(own_uri, check_same_thread=False, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # 共享库以只读 URI 附加（file URI 自动识别）
+    shared_uri = DB_PATH.resolve().as_uri() + "?mode=ro"
+    conn.execute("ATTACH DATABASE ? AS shared", (shared_uri,))
+    conn.executescript(PERSONAL_SCHEMA)
+    # 共享表经 TEMP 视图暴露：documents = 共享题库 + 账号私有导入题
+    conn.execute("""
+        CREATE TEMP VIEW documents AS
+          SELECT d.id,d.path,d.kind,d.qid,d.title,d.module,d.daclass,d.region,
+                 d.year,d.exam,d.kaodian,d.tags,
+                 COALESCE(o.difficulty,d.difficulty) AS difficulty,
+                 d.mtime,d.data,d.search_text,d.material_fp
+          FROM shared.documents d
+          LEFT JOIN doc_overrides o ON o.doc_id=d.id
+        UNION ALL
+          SELECT m.id,m.path,m.kind,m.qid,m.title,m.module,m.daclass,m.region,
+                 m.year,m.exam,m.kaodian,m.tags,m.difficulty,m.mtime,m.data,
+                 m.search_text,m.material_fp
+          FROM my_documents m
+    """)
+    conn.execute("""
+        CREATE TEMP VIEW shizheng AS
+          SELECT s.period,s.title,s.content,s.created_at,
+                 q.quiz AS quiz
+          FROM shared.shizheng s
+          LEFT JOIN shizheng_quiz q ON q.period=s.period
+    """)
     return conn
 
 
@@ -350,7 +476,11 @@ def search_docs(
     where, args = [], []
     if q:
         q = q.strip()
-        if len(q) >= 3:
+        if IS_MOBILE:
+            # 手机库无 docs_fts：标题/检索文本/题干数据模糊匹配
+            where.append("(title LIKE ? OR search_text LIKE ? OR data LIKE ?)")
+            args += [f"%{q}%", f"%{q}%", f"%{q}%"]
+        elif len(q) >= 3:
             where.append(
                 "id IN (SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?)"
             )
@@ -1382,13 +1512,17 @@ def weekly_report() -> dict:
 # ---------------- F9 辨析卡（词语卡 + 错题考点卡） ----------------
 
 def import_cards() -> dict:
-    """从 data/cards/*.json 幂等导入辨析卡（按 id 去重）。"""
-    cards_dir = DB_PATH.parent / "cards"
-    if not cards_dir.exists():
-        return {"ok": False, "error": "data/cards 目录不存在"}
+    """从卡片目录幂等导入辨析卡（按 id 去重）。"""
+    if IS_MOBILE:
+        cards_dir = Path(MOBILE_CARDS_DIR) if MOBILE_CARDS_DIR else None
+    else:
+        cards_dir = DB_PATH.parent / "cards"
+    if not cards_dir or not cards_dir.exists():
+        return {"ok": False, "error": "卡片目录不存在"}
     conn = connect()
-    init_db(conn)
-    added = 0
+    if not IS_MOBILE:
+        init_db(conn)
+    before = conn.execute("SELECT COUNT(*) c FROM cards").fetchone()["c"]
     for fp in cards_dir.glob("*.json"):
         try:
             obj = json.loads(fp.read_text(encoding="utf-8"))
@@ -1409,12 +1543,12 @@ def import_cards() -> dict:
                         json.dumps(q.get("tags", []), ensure_ascii=False),
                     ),
                 )
-                added += conn.total_changes - added
             except Exception:
                 continue
     conn.commit()
+    after = conn.execute("SELECT COUNT(*) c FROM cards").fetchone()["c"]
     conn.close()
-    return {"ok": True, "added": added}
+    return {"ok": True, "added": after - before, "total": after}
 
 
 def list_cards(card_type: str = "", category: str = "", module: str = "") -> list[dict]:
@@ -1493,6 +1627,69 @@ def due_cards() -> list[dict]:
         out.append(d)
     conn.close()
     return out
+
+
+# ---------------- 手机端：自导入题目直写个人库 ----------------
+
+MOBILE_MYDOC_ID_BASE = 10_000_000
+_MOBILE_MODULES = ["常识判断", "言语理解", "数量关系", "判断推理",
+                   "资料分析", "综合分析"]
+
+
+def mobile_commit_items(items: list[dict], defaults: dict) -> dict:
+    """手机端导入：规范化题目直接写入当前账号 my_documents（无 vault md 环节）。
+
+    items 为已经过 importer.normalize_item 校验的题目。
+    """
+    conn = connect()
+    row = conn.execute(
+        "SELECT COALESCE(MAX(id),0) m FROM my_documents").fetchone()
+    next_id = max(int(row["m"]), MOBILE_MYDOC_ID_BASE)
+    batch = time.strftime("%Y%m%d%H%M%S")
+    now = time.time()
+    saved, failed = 0, []
+    for i, item in enumerate(items, 1):
+        new_id = next_id + i
+        module = (item["module"] if item["module"] in _MOBILE_MODULES
+                  else defaults.get("module")) or "未分类"
+        qid = f"imp-{batch}-{new_id}"
+        rel = f"99-自导入/{module}/{qid}.md"
+        region = item.get("region") or defaults.get("region", "")
+        year = item.get("year") or defaults.get("year", "")
+        exam = item.get("exam") or defaults.get("exam", "")
+        try:
+            dataobj = {
+                "stem": item["stem"],
+                "options": [{
+                    "label": o["label"], "text": o["text"],
+                    "correct": o["label"] == item["answer"],
+                } for o in item["options"]],
+                "official": item.get("analysis", ""),
+            }
+            data = json.dumps(dataobj, ensure_ascii=False)
+            title = _re.sub(r"\s+", "", item["stem"])[:24]
+            search_text = " ".join([
+                item["stem"],
+                " ".join(o["text"] for o in item["options"]),
+                item.get("analysis", ""),
+            ])
+            conn.execute(
+                """INSERT INTO my_documents(
+                    id,path,kind,qid,title,module,daclass,region,year,exam,
+                    kaodian,tags,difficulty,mtime,data,search_text,material_fp)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (new_id, rel, "真题", qid, title, module, "", region, year,
+                 exam, item.get("kaodian", ""), '["自导入"]', "", now,
+                 data, search_text, ""),
+            )
+            saved += 1
+        except Exception as e:
+            failed.append(f"第{i}题入库失败：{e}")
+    conn.commit()
+    total = conn.execute(
+        "SELECT COUNT(*) c FROM documents WHERE kind='真题'").fetchone()["c"]
+    conn.close()
+    return {"ok": True, "saved": saved, "failed": failed, "total": total}
 
 
 # ---------------- F5 真实配比模考 ----------------
@@ -1681,7 +1878,13 @@ def _recompute_difficulty(doc_id: int) -> None:
     if n >= 2:
         rate = w / n
         diff = "hard" if rate >= 0.5 else ("mid" if rate >= 0.25 else "easy")
-        conn.execute("UPDATE documents SET difficulty=? WHERE id=?", (diff, doc_id))
+        if IS_MOBILE:
+            # 共享题库只读：难度变化写入个人覆写表
+            conn.execute(
+                "INSERT OR REPLACE INTO doc_overrides(doc_id,difficulty) VALUES(?,?)",
+                (doc_id, diff))
+        else:
+            conn.execute("UPDATE documents SET difficulty=? WHERE id=?", (diff, doc_id))
         conn.commit()
     conn.close()
 
@@ -1751,16 +1954,26 @@ def _ensure_sz_quiz(conn: sqlite3.Connection) -> None:
 def save_shizheng_quiz(period: str, quiz: str) -> None:
     """保存某期时政的自测题 JSON 文本。"""
     conn = connect()
-    _ensure_sz_quiz(conn)
-    conn.execute("UPDATE shizheng SET quiz=? WHERE period=?", (quiz, period))
+    if IS_MOBILE:
+        conn.execute(
+            "INSERT OR REPLACE INTO shizheng_quiz(period,quiz) VALUES(?,?)",
+            (period, quiz))
+    else:
+        _ensure_sz_quiz(conn)
+        conn.execute("UPDATE shizheng SET quiz=? WHERE period=?", (quiz, period))
     conn.commit()
     conn.close()
 
 
 def get_shizheng_quiz(period: str) -> str:
     conn = connect()
-    _ensure_sz_quiz(conn)
-    row = conn.execute("SELECT quiz FROM shizheng WHERE period=?", (period,)).fetchone()
+    if IS_MOBILE:
+        row = conn.execute(
+            "SELECT quiz FROM shizheng_quiz WHERE period=?", (period,)).fetchone()
+    else:
+        _ensure_sz_quiz(conn)
+        row = conn.execute(
+            "SELECT quiz FROM shizheng WHERE period=?", (period,)).fetchone()
     conn.close()
     return (row["quiz"] if row else "") or ""
 

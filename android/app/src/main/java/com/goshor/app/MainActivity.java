@@ -1,13 +1,20 @@
 package com.goshor.app;
 
 import android.app.Activity;
+import android.content.ContentValues;
+import android.content.Intent;
 import android.graphics.Color;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -16,10 +23,13 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import androidx.core.content.FileProvider;
+
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -43,6 +53,9 @@ public class MainActivity extends Activity {
     private TextView initPct;
     private ProgressBar bar;
     private int lastPct = -1;
+
+    private ValueCallback<Uri[]> filePathCallback;
+    private static final int REQ_FILE_CHOOSER = 71001;
 
     private File dbFile, imgDir, webDir, readyMarker;
 
@@ -267,8 +280,28 @@ public class MainActivity extends Activity {
                         "mweb", cm.message() + " @" + cm.sourceId() + ":" + cm.lineNumber());
                 return true;
             }
+
+            @Override
+            public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb,
+                    FileChooserParams params) {
+                if (filePathCallback != null) {
+                    filePathCallback.onReceiveValue(null);
+                }
+                filePathCallback = cb;
+                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("application/zip");
+                try {
+                    startActivityForResult(Intent.createChooser(intent, "选择备份 zip"),
+                            REQ_FILE_CHOOSER);
+                } catch (Exception e) {
+                    filePathCallback = null;
+                    return false;
+                }
+                return true;
+            }
         });
-        web.addJavascriptInterface(new NativeBridge(), "GoshorNative");
+        web.addJavascriptInterface(new NativeBridge(this), "GoshorNative");
         root.addView(web, match());
         web.loadUrl(url);
     }
@@ -303,6 +336,12 @@ public class MainActivity extends Activity {
 
     /** 供前端识别运行环境 */
     private static class NativeBridge {
+        private final MainActivity activity;
+
+        NativeBridge(MainActivity activity) {
+            this.activity = activity;
+        }
+
         @JavascriptInterface
         public String isHosted() {
             return "1";
@@ -312,12 +351,89 @@ public class MainActivity extends Activity {
         public String mode() {
             return "standalone";
         }
+
+        /** 系统分享面板：保存到网盘/微信/另一台手机 */
+        @JavascriptInterface
+        public void shareFile(final String path) {
+            activity.runOnUiThread(() -> {
+                try {
+                    File f = new File(path);
+                    Uri uri = FileProvider.getUriForFile(activity,
+                            activity.getPackageName() + ".fileprovider", f);
+                    Intent send = new Intent(Intent.ACTION_SEND);
+                    send.setType("application/zip");
+                    send.putExtra(Intent.EXTRA_STREAM, uri);
+                    send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    activity.startActivity(Intent.createChooser(send, "保存或发送备份"));
+                } catch (Exception e) {
+                    android.util.Log.e("mweb", "share fail", e);
+                }
+            });
+        }
+
+        /** 直接保存到公共 Download 目录（API 29+ MediaStore） */
+        @JavascriptInterface
+        public String saveToDownloads(final String path) {
+            if (Build.VERSION.SDK_INT < 29) {
+                return "ERROR:系统版本过低，请用「系统分享」发送";
+            }
+            try {
+                File f = new File(path);
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Downloads.DISPLAY_NAME, f.getName());
+                v.put(MediaStore.Downloads.MIME_TYPE, "application/zip");
+                v.put(MediaStore.Downloads.RELATIVE_PATH,
+                        Environment.DIRECTORY_DOWNLOADS);
+                Uri uri = activity.getContentResolver().insert(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                if (uri == null) return "ERROR:无法写入下载目录";
+                try (InputStream in = new FileInputStream(f);
+                     OutputStream out =
+                             activity.getContentResolver().openOutputStream(uri)) {
+                    byte[] b = new byte[BUF];
+                    int n;
+                    while ((n = in.read(b)) > 0) out.write(b, 0, n);
+                }
+                return "已保存到 下载/" + f.getName();
+            } catch (Exception e) {
+                return "ERROR:" + e.getMessage();
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_FILE_CHOOSER) {
+            Uri[] results = null;
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                results = new Uri[]{data.getData()};
+            }
+            if (filePathCallback != null) {
+                filePathCallback.onReceiveValue(results);
+                filePathCallback = null;
+            }
+        }
     }
 
     @Override
     public void onBackPressed() {
-        if (web != null && web.canGoBack()) web.goBack();
-        else super.onBackPressed();
+        if (web == null) {
+            super.onBackPressed();
+            return;
+        }
+        // 先问页面：做题流中（无历史记录）由 JS 退出做题，而不是退出 App
+        web.evaluateJavascript("(window.GoshorBack ? GoshorBack() : false)", value -> {
+            if (!"true".equals(value)) defaultBack();
+        });
+    }
+
+    private void defaultBack() {
+        // hash 路由（同文档导航）不进 WebView 历史栈，用页面自身 history 回退
+        web.evaluateJavascript("(history.length>1?(history.back(),true):false)",
+            value -> {
+                if (!"true".equals(value)) finish();
+            });
     }
 
     private FrameLayout.LayoutParams match() {
