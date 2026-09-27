@@ -414,9 +414,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"items": db.get_docs_batch(b.get("ids", []))})
             elif path == "/api/answer":
                 with _lock:
-                    db.add_answer(int(b["doc_id"]), b.get("selected", ""),
-                                  bool(b.get("correct")), int(b.get("ms", 0)))
-                self._json({"ok": True})
+                    info = db.add_answer(int(b["doc_id"]), b.get("selected", ""),
+                                         bool(b.get("correct")), int(b.get("ms", 0)),
+                                         bool(b.get("guessed")))
+                self._json({"ok": True, "annihilated": bool(info.get("annihilated"))})
+            elif path == "/api/focus/add":
+                with _lock:
+                    total = db.add_focus(int(b.get("seconds", 0)))
+                self._json({"ok": True, "today_total": total})
             elif path == "/api/wrong-reason":
                 with _lock:
                     db.set_wrong_reason(int(b["doc_id"]), b.get("reason", ""))
@@ -449,7 +454,11 @@ class _Handler(BaseHTTPRequestHandler):
                     db.add_speed_round(b.get("config", {}), int(b["total"]),
                                        int(b["correct"]), int(b["avg_ms"]),
                                        b.get("details", []))
-                self._json({"ok": True})
+                    rec = None
+                    if b.get("best_key") and b.get("round_ms"):
+                        rec = db.speed_best_check(
+                            str(b["best_key"]), int(b["round_ms"]))
+                self._json({"ok": True, "record": rec})
             elif path == "/api/wordfill/generate":
                 self._json(_run_async(self._wordfill_generate(b)))
             elif path == "/api/wordfill/practice":

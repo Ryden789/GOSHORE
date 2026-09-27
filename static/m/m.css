@@ -71,6 +71,23 @@ img { max-width: 100%; height: auto; }
 .btn-block { display: block; width: 100%; text-align: center; padding: 13px; font-size: 16px; }
 .btn:disabled { opacity: .45; }
 .btn:active { transform: scale(.98); }
+.btn-ghost { background: transparent; color: var(--ink-3); border-color: var(--line-soft); }
+
+/* 选项富文本（公式/排序图片等） */
+.opt-text { flex: 1; min-width: 0; line-height: 1.55; }
+.opt-text p { margin: 0; }
+.opt-text img { max-width: 100%; height: auto; display: block; margin: 2px auto; }
+.opt-text table { max-width: 100%; border-collapse: collapse; font-size: 13px; }
+#skipBtn, #fSkipBtn { margin-bottom: 12px; padding: 10px; font-size: 14px; }
+.opt.skipped { opacity: .55; }
+
+/* 页面/题目切入动画 */
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: none; }
+}
+.page-in { animation: pageIn .21s ease-out; }
+@media (prefers-reduced-motion: reduce) { .page-in { animation: none; } }
 
 /* 首页数据格 */
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -681,3 +698,148 @@ h2.sec { font-family: var(--serif); font-size: 15px; color: var(--ink-3); letter
 }
 .bk-check input { width: 16px; height: 16px; }
 .bk-actions { display: inline-flex; gap: 8px; margin-top: 8px; }
+
+/* ============ 趣味功能样式 ============ */
+
+/* U-7 大字 / 小字 */
+body.bigfont { font-size: 18.5px; }
+body.bigfont .stem, body.bigfont .opt { font-size: 18px; }
+body.bigfont .btn-block { font-size: 17.5px; padding: 15px; }
+body.smallfont { font-size: 14.5px; }
+body.smallfont .stem, body.smallfont .opt { font-size: 14px; }
+
+/* F-1 撒花 */
+.confetti-box {
+  position: fixed; inset: 0; pointer-events: none; z-index: 80; overflow: hidden;
+}
+.confetti-box i {
+  position: absolute; top: -12px; width: 8px; height: 13px;
+  animation: confettiFall linear forwards;
+}
+@keyframes confettiFall {
+  to { transform: translateY(105vh) rotate(540deg); opacity: .85; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .confetti-box i { animation-duration: .01s; }
+}
+
+/* U-1 番茄钟悬浮球 */
+.pomo {
+  position: fixed; right: 12px;
+  bottom: calc(72px + env(safe-area-inset-bottom));
+  z-index: 35;
+  background: rgba(35, 32, 26, .82); color: #f6eeda;
+  border-radius: 999px; padding: 7px 14px; font-size: 13px;
+  box-shadow: var(--shadow); user-select: none;
+}
+.pomo.paused { opacity: .6; }
+
+/* F-2 称号徽章 */
+.rank-badge .rank-line {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 8px;
+}
+.rank-name { font-family: var(--serif); font-size: 18px; font-weight: 700; }
+.rank-track {
+  height: 8px; background: var(--paper-2); border-radius: 5px;
+  overflow: hidden; margin-bottom: 5px;
+}
+.rank-track span {
+  display: block; height: 100%; background: var(--cinnabar); border-radius: 5px;
+  transition: width .4s ease-out;
+}
+
+/* U-2 开门卡 */
+.daily-door {
+  border: 1.5px dashed var(--cinnabar); text-align: center;
+}
+.door-title { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+
+/* U-6 热力墙 */
+.heat-row {
+  display: grid; grid-template-columns: 74px 1fr auto; gap: 9px;
+  align-items: center; padding: 6px 0; cursor: pointer;
+}
+.heat-name { font-size: 13px; color: var(--ink-2); }
+.heat-track { height: 9px; background: var(--paper-2); border-radius: 5px; overflow: hidden; }
+.heat-fill {
+  display: block; height: 100%; border-radius: 5px;
+  transition: width .45s ease-out;
+}
+.heat-fill.heat-r, .chip.heat-r { background: #b04a38; border-color: #b04a38; color: #fff; min-width: 7px; }
+.heat-fill.heat-y, .chip.heat-y { background: #c9922f; border-color: #c9922f; color: #fff; }
+.heat-fill.heat-g, .chip.heat-g { background: var(--green); border-color: var(--green); color: #fff; }
+.heat-val { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.heat-dot {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  vertical-align: 0;
+}
+.heat-dot.heat-r { background: #b04a38; }
+.heat-dot.heat-y { background: #c9922f; }
+.heat-dot.heat-g { background: var(--green); }
+
+/* 做题页小操作行 */
+.run-mini-actions { display: flex; gap: 9px; margin-bottom: 12px; }
+.run-mini-actions .btn { flex: 1; padding: 10px; font-size: 14px; }
+.run-mini-actions .btn.on {
+  background: var(--paper-2); border-color: var(--amber); color: var(--amber);
+}
+
+/* U-5 错题笔记输入框 */
+.wn-note {
+  width: 100%; margin-top: 9px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--paper); padding: 9px 11px; font-size: 14px; outline: none;
+}
+.wn-note:focus { border-color: var(--cinnabar); background: var(--panel); }
+
+/* F-5 抽卡翻面 */
+.flip-card { perspective: 1100px; margin-bottom: 11px; }
+.flip-inner {
+  display: grid;
+  transform-style: preserve-3d; transition: transform .5s cubic-bezier(.4,.1,.2,1);
+}
+.flip-front, .flip-back {
+  grid-area: 1 / 1;
+  background: #fbf6ec; border: 1px solid var(--line-soft);
+  border-radius: 11px; padding: 14px 15px;
+  backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  box-shadow: 0 2px 8px rgba(90, 60, 30, .05);
+}
+.flip-front { cursor: pointer; }
+.flip-back { transform: rotateY(180deg); }
+.flip-card.on .flip-inner { transform: rotateY(180deg); }
+.flip-hint { margin-top: 11px; text-align: center; font-size: 12px; color: var(--ink-3); }
+@media (prefers-reduced-motion: reduce) {
+  .flip-inner { transition: none; }
+}
+
+/* F-3 纪录横幅 */
+.record-banner {
+  background: var(--paper-2); border-radius: 8px; padding: 9px 12px;
+  font-size: 13.5px; text-align: center; margin-bottom: 12px;
+}
+.record-banner.new {
+  background: #f4e4c8; color: var(--amber); font-weight: 700;
+  animation: bannerPulse .9s ease-out;
+}
+@keyframes bannerPulse {
+  0% { transform: scale(.92); }
+  55% { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+
+/* U-8 操作速记条 */
+.hint-bar {
+  position: fixed; left: 10px; right: 10px;
+  bottom: calc(64px + env(safe-area-inset-bottom));
+  z-index: 40;
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(35, 32, 26, .92); color: #f4ecd9;
+  border-radius: 10px; padding: 9px 13px; font-size: 12.5px;
+  box-shadow: var(--shadow);
+}
+.hint-bar span { flex: 1; line-height: 1.45; }
+.hint-bar b { cursor: pointer; font-size: 14px; opacity: .8; }
+.hint-bar b:active { opacity: 1; }
+body.hint-on #view { padding-bottom: calc(150px + env(safe-area-inset-bottom)); }

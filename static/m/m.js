@@ -8,6 +8,189 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const rawHtml = s => String(s ?? "").replace(/<script[\s\S]*?<\/script>/gi, "");
 
+/* 安全富文本：保留题面自带的白名单 HTML（公式/排序图片、表格、上下标等），
+   其余全部转义；事件属性与 javascript: 协议一律剔除。 */
+const RICH_OPEN = /<(p|br|img|table|thead|tbody|tr|td|th|div|span|sub|sup)(\s[^<>]*?)?\s*\/?>/gi;
+const RICH_CLOSE = /<\/(p|table|thead|tbody|tr|td|th|div|span|sub|sup)>/gi;
+function rich(s) {
+  s = String(s ?? "");
+  const stash = [];
+  const keep = m => {
+    let tag = m.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, " ");
+    tag = tag.replace(/javascript:/gi, "");
+    stash.push(tag);
+    return "\u0001" + (stash.length - 1) + "\u0002";
+  };
+  s = s.replace(RICH_OPEN, keep).replace(RICH_CLOSE, keep);
+  s = esc(s);
+  return s.replace(/\u0001(\d+)\u0002/g, (_, i) => stash[+i]);
+}
+
+/* ============ 趣味功能：本地偏好 / 连对 / 音效 / 撒花 / 番茄钟 ============ */
+
+const Pref = {
+  get(k, d) {
+    try { const v = localStorage.getItem("g:" + k); return v == null ? d : JSON.parse(v); }
+    catch (e) { return d; }
+  },
+  set(k, v) { try { localStorage.setItem("g:" + k, JSON.stringify(v)); } catch (e) {} },
+};
+
+/* ---- F-6 音效（WebAudio 实时合成，不打包音频文件） ---- */
+const Snd = {
+  ctx: null,
+  ensure() {
+    if (!this.ctx) {
+      try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (e) { return null; }
+    }
+    if (this.ctx.state === "suspended") this.ctx.resume();
+    return this.ctx;
+  },
+  get on() { return Pref.get("sound", true); },
+  tone(freq, dur, type = "sine", gain = .12, when = 0) {
+    const c = this.ensure(); if (!c || !this.on) return;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.value = freq;
+    o.connect(g); g.connect(c.destination);
+    const t = c.currentTime + when;
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+    o.start(t); o.stop(t + dur);
+  },
+  noise(dur = .25, gain = .1) {
+    const c = this.ensure(); if (!c || !this.on) return;
+    const n = Math.floor(c.sampleRate * dur);
+    const buf = c.createBuffer(1, n, c.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const src = c.createBufferSource(); src.buffer = buf;
+    const f = c.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 1100;
+    const g = c.createGain(); g.gain.value = gain;
+    src.connect(f); f.connect(g); g.connect(c.destination); src.start();
+  },
+  start() { this.noise(.28, .11); },
+  warn() { this.tone(880, .16); this.tone(660, .28, "sine", .1, .2); },
+  pop() { this.tone(620, .07, "triangle", .07); },
+};
+
+/* ---- F-1 连对 streak（断一次清零，每 10 连对撒花） ---- */
+const Streak = {
+  _read() {
+    const day = new Date().toDateString();
+    let s = Pref.get("stk", { day: "", n: 0 });
+    if (s.day !== day) s = { day, n: 0 };
+    return s;
+  },
+  hit() {
+    const s = this._read(); s.n++; Pref.set("stk", s);
+    if (s.n % 10 === 0) confetti();
+    return s.n;
+  },
+  reset() { Pref.set("stk", { day: new Date().toDateString(), n: 0 }); },
+  get n() { return this._read().n; },
+};
+
+/* 统一记录做题结果：对 → 连对+音效；错 → 连对清零 */
+function noteResult(correct) {
+  if (correct) { Streak.hit(); Snd.pop(); }
+  else Streak.reset();
+}
+
+/* 轻量撒花（纯 DOM/CSS） */
+function confetti(n = 42) {
+  const box = document.createElement("div");
+  box.className = "confetti-box";
+  document.body.appendChild(box);
+  const colors = ["#b3402f", "#c98a2e", "#5e7a5a", "#43546b"];
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement("i");
+    p.style.left = Math.random() * 100 + "vw";
+    p.style.background = colors[i % colors.length];
+    p.style.animationDuration = (1.5 + Math.random() * 1.3) + "s";
+    p.style.animationDelay = (Math.random() * .3) + "s";
+    if (i % 3 === 0) p.style.borderRadius = "50%";
+    box.appendChild(p);
+  }
+  setTimeout(() => box.remove(), 3300);
+}
+
+/* ---- F-2 称号系统 ---- */
+const RANKS = [
+  [0, "尚未入列"], [100, "上岸学徒"], [300, "苦海战考生"],
+  [800, "题海划桨人"], [1500, "卷海弄潮儿"], [3000, "岸上候补生"],
+  [5000, "题海老炮"],
+];
+function gameRank(n) {
+  let t = RANKS[0][1];
+  for (const [k, v] of RANKS) if (n >= k) t = v;
+  return t;
+}
+
+/* ---- U-1 番茄钟（做题时悬浮，自动计时，按 30s 落库专注时长） ---- */
+const Pomo = {
+  el: null, sec: 0, flushed: 0, on: false, h: null, last: 0,
+  fmt(s) {
+    const m = Math.floor(s / 60), x = s % 60;
+    return (m < 10 ? "0" : "") + m + ":" + (x < 10 ? "0" : "") + x;
+  },
+  mount() {
+    if (!Pref.get("pomo", true)) return;
+    if (!this.el) {
+      this.el = document.createElement("div");
+      this.el.className = "pomo";
+      this.el.title = "点击暂停/继续";
+      this.el.onclick = () => this.toggle();
+      document.body.appendChild(this.el);
+    }
+    this.el.style.display = "";
+    this.sec = 0; this.flushed = 0; this.on = true;
+    this.last = Date.now();
+    this.el.classList.remove("paused");
+    this.draw();
+    clearInterval(this.h);
+    this.h = setInterval(() => this.tick(), 1000);
+  },
+  unmount() {
+    if (this.el) this.el.style.display = "none";
+    clearInterval(this.h);
+    this.flush(true);
+  },
+  tick() {
+    if (!this.on) return;
+    const now = Date.now();
+    this.sec += Math.round((now - this.last) / 1000);
+    this.last = now;
+    if (this.sec % 25 === 0) this.flush();
+    if (this.sec > 0 && this.sec % (25 * 60) === 0) {
+      toast("🍅 一个番茄完成，起来喝口水");
+      Snd.warn();
+    }
+    this.draw();
+  },
+  flush(force) {
+    const due = this.sec - this.flushed;
+    if (due < 10 && !force) return;
+    this.flushed = this.sec;
+    if (due > 0) api("/api/focus/add", { seconds: due }).catch(() => {});
+  },
+  toggle() {
+    this.on = !this.on;
+    if (this.on) this.last = Date.now();
+    this.el.classList.toggle("paused", !this.on);
+    this.draw();
+  },
+  draw() {
+    this.el.textContent = "🍅 " + this.fmt(this.sec) + (this.on ? "" : " 暂停");
+  },
+};
+
+/* ---- U-7 大字模式：开机即应用 ---- */
+function applyFontSize() {
+  const z = Pref.get("fontsize", "m");
+  document.body.classList.toggle("bigfont", z === "b");
+  document.body.classList.toggle("smallfont", z === "s");
+}
+
 function toast(msg, ms = 1800) {
   const t = $("#toast");
   t.textContent = msg;
@@ -94,6 +277,13 @@ const TODO_ROUTES = [];
 
 let ME = null;
 
+/* 页面/题目切入动画：重排后重播，毫秒级、无白屏 */
+function animIn(el) {
+  el.classList.remove("page-in");
+  void el.offsetWidth;
+  el.classList.add("page-in");
+}
+
 function route() {
   inRun = false;
   const h = location.hash || "#/home";
@@ -103,10 +293,17 @@ function route() {
   const tabName = ALIAS[name] || name;
   $$("#tabbar a").forEach(a => a.classList.toggle("active", a.dataset.tab === tabName));
   $("#mTitle").textContent = TITLES[name] || "上岸自习室";
+  // U-2 每日开门守卫：未做开门题时，学习类页面一律先回首页
+  if (DAILY_DONE === false && DAILY_LOCKED.has(name)) {
+    toast("📅 先完成今日开门一题，再进入其他功能");
+    location.hash = "#/home";
+    return;
+  }
   // 游客提示条：游客身份且不在登录/注册页
   $("#guestBar").hidden = !(ME && ME.isGuest && !isAuth);
   window.scrollTo(0, 0);
   document.onkeydown = null;
+  animIn(view);
   const go = ROUTES[tabName] || renderHome;
   Promise.resolve(go()).catch(e => {
     view.innerHTML = `<div class="card">加载失败：${esc(e.message)}<br><br>
@@ -115,7 +312,25 @@ function route() {
 }
 window.addEventListener("hashchange", route);
 
+/* U-8 操作速记条：每天首次出现，可关闭 */
+function mountHintBar() {
+  if (Pref.get("hintseen", "") === todayStr()) return;
+  const bar = document.createElement("div");
+  bar.className = "hint-bar";
+  bar.innerHTML = `<span>操作速记：点选项直接判分 → 自动下一题　·　⚑蒙的　·　⏭跳过　·　🍅点钟暂停</span>
+    <b id="hintClose">✕</b>`;
+  document.body.appendChild(bar);
+  document.body.classList.add("hint-on");
+  $("#hintClose", bar).onclick = () => {
+    Pref.set("hintseen", todayStr());
+    bar.remove();
+    document.body.classList.remove("hint-on");
+  };
+}
+
 async function boot() {
+  applyFontSize();
+  mountHintBar();
   try {
     ME = await api("/api/auth/me");
   } catch (e) {
@@ -144,6 +359,7 @@ let runFrom = "";
 /** 退出做题流，回到来源页（默认刷题页） */
 function exitRun() {
   inRun = false;
+  Pomo.unmount();
   const name = (runFrom || "").replace(/^#\//, "").split("/")[0];
   const hasRoute = name && (ROUTES[ALIAS[name] || name]);
   const back = (runFrom && hasRoute && name !== "practice")
@@ -367,16 +583,57 @@ TODO_ROUTES.forEach(r => {
 
 /* ---------- 首页 ---------- */
 
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/* U-2 每日开门状态：null=尚未从服务器确认，true/false */
+let DAILY_DONE = null;
+const DAILY_LOCKED = new Set([
+  "practice", "paper", "logic", "formula", "speed", "wordfill",
+  "cards", "review", "wrong", "marks", "exam", "shizheng",
+]);
+
 async function renderHome() {
   const s = await api("/api/stats");
   const rate = s.today_answers ? Math.round(s.today_correct / s.today_answers * 100) : 0;
   const totalRate = s.answers_total ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
+  const rank = gameRank(s.answers_total);
+  let nextAt = 0;
+  for (const [k] of RANKS) if (k > s.answers_total) { nextAt = k; break; }
+  const rankPct = nextAt
+    ? Math.min(100, Math.round(s.answers_total / nextAt * 100)) : 100;
+  DAILY_DONE = s.today_answers > 0 || Pref.get("dskip", "") === todayStr();
+  const focusMin = Math.round((s.today_focus || 0) / 60);
   view.innerHTML = `
+    <div class="card rank-badge">
+      <div class="rank-line">
+        <span class="rank-name">🏅 ${esc(rank)}</span>
+        <span class="muted">累计作答 ${s.answers_total} 题</span>
+      </div>
+      ${nextAt ? `
+      <div class="rank-track"><span style="width:${rankPct}%"></span></div>
+      <div class="muted" style="font-size:12px">距「${gameRank(nextAt)}」还差 ${nextAt - s.answers_total} 题</div>
+      ` : `<div class="muted" style="font-size:12px;margin-top:6px">已登顶称号榜</div>`}
+    </div>
+
+    ${DAILY_DONE ? "" : `
+    <div class="card daily-door">
+      <div class="door-title">📅 每日一题 · 开门打卡</div>
+      <div class="muted">先完成今天的开门一题，其余功能才会解锁</div>
+      <button class="btn btn-primary btn-block" id="dailyGo" style="margin-top:10px">抽今日一题</button>
+    </div>`}
+
     <div class="stat-grid">
       <div class="stat"><b>${s.today_answers}</b><span>今日作答 · 对 ${s.today_correct}</span></div>
       <div class="stat"><b>${s.streak} 天</b><span>连续学习</span></div>
       <div class="stat"><b>${totalRate}%</b><span>总正确率 · 共 ${s.answers_total} 题</span></div>
       <div class="stat"><b>${s.wrong_count}</b><span>待消灭错题</span></div>
+      <div class="stat"><b>${focusMin} 分</b><span>今日专注</span></div>
+      <div class="stat"><b>🔥 ${Streak.n}</b><span>今日连对</span></div>
+      <div class="stat"><b>${s.annihilated || 0}</b><span>累计歼灭错题</span></div>
+      <div class="stat"><b>${s.today_guessed || 0}</b><span>今日蒙题</span></div>
     </div>
     <h2 class="sec">开始学习</h2>
     <a class="entry" href="#/practice"><span class="ei">✎</span>
@@ -384,7 +641,61 @@ async function renderHome() {
     <a class="entry" href="#/review"><span class="ei">◌</span>
       <span class="et"><b>复习巩固</b><small>错题 ${s.wrong_count} · 待复习 ${s.review_due}</small></span><span class="go">›</span></a>
     <a class="entry" href="#/me"><span class="ei">报</span>
-      <span class="et"><b>本周诊断</b><small>正确率涨跌与建议</small></span><span class="go">›</span></a>`;
+      <span class="et"><b>本周诊断</b><small>正确率涨跌与建议</small></span><span class="go">›</span></a>
+    <button class="btn btn-ghost btn-block" id="exportToday" style="margin-top:12px">
+      📤 导出今日学习报告（txt，存到系统下载目录）</button>`;
+
+  const dg = $("#dailyGo");
+  if (dg) dg.onclick = async () => {
+    dg.disabled = true; dg.textContent = "抽题中…";
+    try {
+      const r = await api("/api/paper", { n: 1 });
+      if (!r.ids.length) toast("题库暂不可用");
+      else runPaper(r.ids, { title: "每日一题", daily: true });
+    } finally { dg.disabled = false; dg.textContent = "抽今日一题"; }
+  };
+  $("#exportToday").onclick = () => exportToday(s);
+}
+
+/* U-9 拼今日报告并通过原生桥保存为 txt */
+function buildTodayReport(s) {
+  const totalRate = s.answers_total
+    ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
+  const todayRate = s.today_answers
+    ? Math.round(s.today_correct / s.today_answers * 100) : 0;
+  const lines = [
+    `上岸自习室 · 今日学习报告`,
+    `日期：${todayStr()}`,
+    ``,
+    `【今日】作答 ${s.today_answers} 题，答对 ${s.today_correct}，正确率 ${todayRate}%；蒙题 ${s.today_guessed || 0} 次；专注 ${Math.round((s.today_focus || 0) / 60)} 分钟；连对 🔥${Streak.n}`,
+    `【累计】作答 ${s.answers_total} 题，总正确率 ${totalRate}%；连续学习 ${s.streak} 天`,
+    `【称号】${gameRank(s.answers_total)}`,
+    `【错题】待消灭 ${s.wrong_count}，累计歼灭 ${s.annihilated || 0}`,
+  ];
+  if ((s.module_stats || []).length) {
+    lines.push(``, `【各模块正确率】`);
+    s.module_stats.forEach(m =>
+      lines.push(`- ${m.module}：${m.rate}%（${m.n} 题）`));
+  }
+  lines.push(``, `—— 由上岸自习室 App 生成`);
+  return lines.join("\n");
+}
+
+async function exportToday(s) {
+  const text = buildTodayReport(s);
+  const name = `上岸学习报告-${todayStr()}.txt`;
+  const native = window.GoshorNative;
+  if (native && native.saveTextFile) {
+    const r = native.saveTextFile(name, text, "text/plain");
+    if (typeof r === "string" && r.startsWith("ERROR")) toast("保存失败：" + r.slice(6));
+    else toast(r || "已保存");
+    return;
+  }
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
 /* ---------- 刷题入口页 ---------- */
@@ -398,13 +709,20 @@ const FORMULA_TYPES = [
 
 async function renderPractice() {
   const facets = await api("/api/facets");
+  const stats = await api("/api/stats").catch(() => ({}));
+  const rateMap = {};
+  (stats.module_stats || []).forEach(m => { rateMap[m.module] = m; });
+  const heatCls = r => r < 40 ? "heat-r" : r < 70 ? "heat-y" : "heat-g";
   const mods = (facets.modules || []).filter(m => m && m !== "未分类");
   view.innerHTML = `
     <div class="card">
       <h3>随机组卷</h3>
       <div class="chips" id="pMods">
         <span class="chip on" data-m="">全部</span>
-        ${mods.map(m => `<span class="chip" data-m="${esc(m)}">${esc(m)}</span>`).join("")}
+        ${mods.map(m => {
+          const st = rateMap[m];
+          return `<span class="chip ${st ? heatCls(st.rate) : ""}" data-m="${esc(m)}">${esc(m)}</span>`;
+        }).join("")}
       </div>
       <div style="display:flex;gap:8px;margin-top:12px">
         <span class="chip" data-n="5">5 题</span>
@@ -412,6 +730,26 @@ async function renderPractice() {
         <span class="chip" data-n="20">20 题</span>
       </div>
       <div style="margin-top:14px"><button class="btn btn-primary btn-block" id="pGo">开始组卷</button></div>
+    </div>
+    <div class="card">
+      <h3>考点正确率热力墙</h3>
+      <p class="muted" style="margin:0 0 10px;font-size:12px">
+        <span class="heat-dot heat-r"></span>&lt;40% 薄弱　
+        <span class="heat-dot heat-y"></span>40-70% 一般　
+        <span class="heat-dot heat-g"></span>&gt;70% 掌握（至少 3 题才上色）</p>
+      ${mods.map(m => {
+        const st = rateMap[m];
+        const r = st ? st.rate : null;
+        return `
+        <div class="heat-row" data-m="${esc(m)}">
+          <span class="heat-name">${esc(m)}</span>
+          <span class="heat-track">
+            <span class="heat-fill ${r == null ? "" : heatCls(r)}"
+              style="width:${r == null ? 0 : r}%"></span>
+          </span>
+          <span class="heat-val">${r == null ? "待积累" : r + "%"}${st ? ` · ${st.n}题` : ""}</span>
+        </div>`;
+      }).join("")}
     </div>
     <div class="card">
       <h3>判断推理 · 考点专项</h3>
@@ -465,6 +803,13 @@ async function renderPractice() {
     }
   };
 
+  $$(".heat-row").forEach(row => row.onclick = async () => {
+    const m = row.dataset.m;
+    const r = await api("/api/paper", { module: m, n });
+    if (!r.ids.length) return toast("该范围暂无真题");
+    runPaper(r.ids, { title: `${m} · ${n}题` });
+  });
+
   // 判断考点树
   try {
     const r = await api("/api/kaodian-tree?module=" + encodeURIComponent("判断推理"));
@@ -498,6 +843,7 @@ async function renderPractice() {
 async function runPaper(ids, opt = {}) {
   inRun = true;
   runFrom = location.hash;
+  Pomo.mount();
   $("#mTitle").textContent = opt.title || "做题中";
   view.innerHTML = `<div class="empty">题目加载中…</div>`;
   const res = await api("/api/docs/batch", { ids });
@@ -507,8 +853,10 @@ async function runPaper(ids, opt = {}) {
   const answers = new Array(docs.length).fill(null);
   let cur = 0, t0 = Date.now(), qStart = Date.now();
 
+  let guessedNow = false;
   function show(i) {
     cur = i; qStart = Date.now();
+    guessedNow = false;
     const doc = docs[i], d = doc.data;
     view.innerHTML = `
       <div class="qhead">
@@ -523,11 +871,25 @@ async function runPaper(ids, opt = {}) {
       <div class="stem">${normalizeStem(d.stem || "")}</div>
       ${(d.options || []).map(o => `
         <div class="opt" data-label="${o.label}">
-          <span class="ol">${o.label}</span><span>${esc(o.text)}</span>
+          <span class="ol">${o.label}</span><div class="opt-text">${rich(o.text)}</div>
         </div>`).join("")}
+      <div class="run-mini-actions">
+        <button class="btn btn-ghost" id="guessBtn">⚑ 蒙的</button>
+        <button class="btn btn-ghost" id="skipBtn">⏭ 跳过</button>
+      </div>
       <div id="anaBox"></div>`;
+    animIn(view);
     $("#runExit").onclick = exitRun;
     $$(".opt").forEach(el => el.onclick = () => judge(el, doc, d));
+    $("#guessBtn").onclick = () => {
+      guessedNow = !guessedNow;
+      $("#guessBtn").classList.toggle("on", guessedNow);
+    };
+    $("#skipBtn").onclick = () => {
+      answers[cur] = { skip: true, ms: Date.now() - qStart };
+      if (opt.daily) { Pref.set("dskip", todayStr()); DAILY_DONE = true; }
+      if (cur + 1 < docs.length) show(cur + 1); else summary();
+    };
   }
 
   async function judge(el, doc, d) {
@@ -541,11 +903,23 @@ async function runPaper(ids, opt = {}) {
       if (opt && opt.correct) o.classList.add("correct");
     });
     if (!correct) el.classList.add("wrong");
-    api("/api/answer", { doc_id: doc.id, selected: sel, correct, ms: answers[cur].ms })
-      .catch(() => {});
+    api("/api/answer", {
+      doc_id: doc.id, selected: sel, correct, ms: answers[cur].ms,
+      guessed: guessedNow,
+    }).then(r => {
+      if (r && r.annihilated) {
+        Snd.pop(); confetti(46);
+        toast("💥 错题歼灭 +1");
+      }
+    }).catch(() => {});
+    if (opt.daily) DAILY_DONE = true;
+    noteResult(correct);
+    const headMark = correct
+      ? (guessedNow ? "⚑ 蒙对了 · 按未掌握安排复习" : "✓ 回答正确")
+      : "✗ 正确答案 " +
+        esc(((d.options || []).find(o => o.correct) || {}).label || "");
     $("#anaBox").innerHTML = `
-      <div class="analysis"><b>${correct ? "✓ 回答正确" : "✗ 正确答案 " +
-        esc(((d.options || []).find(o => o.correct) || {}).label || "")}</b>
+      <div class="analysis"><b>${headMark}</b>
 ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
       <button class="btn btn-primary btn-block" id="nextBtn">
         ${cur + 1 < docs.length ? "下一题" : "查看结算"}</button>`;
@@ -554,15 +928,19 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
   }
 
   function summary() {
+    Pomo.unmount();
+    const skippedN = answers.filter(a => a && a.skip).length;
+    const judgedN = docs.length - skippedN;
     const ok = answers.filter(a => a && a.correct).length;
     const used = Math.round((Date.now() - t0) / 1000);
-    const wrongIdx = answers.map((a, i) => a && !a.correct ? i : -1).filter(i => i >= 0);
+    const wrongIdx = answers.map((a, i) => a && !a.correct && !a.skip ? i : -1).filter(i => i >= 0);
     view.innerHTML = `
       <div class="card" style="text-align:center">
         <div class="muted">${esc(opt.title || "本次练习")}</div>
-        <div class="sum-num" style="color:${ok / docs.length >= .6 ? "var(--green)" : "var(--cinnabar)"}">
-          ${ok} / ${docs.length}</div>
-        <div class="muted">正确率 ${Math.round(ok / docs.length * 100)}% · 用时 ${Math.floor(used / 60)}分${used % 60}秒</div>
+        <div class="sum-num" style="color:${judgedN && ok / judgedN >= .6 ? "var(--green)" : "var(--cinnabar)"}">
+          ${ok} / ${judgedN}</div>
+        <div class="muted">正确率 ${judgedN ? Math.round(ok / judgedN * 100) : 0}% · 用时 ${Math.floor(used / 60)}分${used % 60}秒</div>
+        ${skippedN ? `<div class="muted" style="margin-top:6px">⏭ 已跳过 ${skippedN} 题（不计入正确率）</div>` : ""}
       </div>
       ${wrongIdx.length ? `<h2 class="sec">错题回顾（${wrongIdx.length}）</h2>` +
         wrongIdx.map(i => `
@@ -585,6 +963,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
 
 function runFormula(items, cfg) {
   inRun = true;
+  Pomo.mount();
   $("#mTitle").textContent = "列式专项";
   let cur = 0, qStart = Date.now();
   const details = [];
@@ -602,10 +981,16 @@ function runFormula(items, cfg) {
       <div class="stem"><b>${esc(it.q)}</b></div></div>
       ${it.options.map(o => `
         <div class="opt" data-label="${o.label}">
-          <span class="ol">${o.label}</span><span>${esc(o.text)}</span>
+          <span class="ol">${o.label}</span><div class="opt-text">${rich(o.text)}</div>
         </div>`).join("")}
+      <button class="btn btn-ghost btn-block" id="fSkipBtn">⏭ 跳过本题（不计对错）</button>
       <div id="anaBox"></div>`;
+    animIn(view);
     $("#runExit").onclick = exitRun;
+    $("#fSkipBtn").onclick = () => {
+      details[cur] = { skip: true, type: it.type, ms: Date.now() - qStart };
+      if (cur + 1 < items.length) show(cur + 1); else finish();
+    };
     $$(".opt").forEach(el => el.onclick = () => {
       if (details[cur]) return;
       const sel = el.dataset.label;
@@ -616,6 +1001,7 @@ function runFormula(items, cfg) {
         if (o.dataset.label === it.answer) o.classList.add("correct");
       });
       if (!correct) el.classList.add("wrong");
+      noteResult(correct);
       $("#anaBox").innerHTML = `
         <div class="analysis"><b>${correct ? "✓ 列式正确" : "✗ 正确列式 " + esc(it.answer)}</b>
 ${esc(it.tip || "")}</div>
@@ -626,17 +1012,22 @@ ${esc(it.tip || "")}</div>
   }
 
   async function finish() {
-    const ok = details.filter(d => d && d.correct).length;
-    const avg = Math.round(details.reduce((a, d) => a + (d ? d.ms : 0), 0) / details.length);
+    Pomo.unmount();
+    const skippedN = details.filter(d => d && d.skip).length;
+    const judged = details.filter(d => d && !d.skip);
+    const ok = judged.filter(d => d.correct).length;
+    const avg = judged.length
+      ? Math.round(judged.reduce((a, d) => a + d.ms, 0) / judged.length) : 0;
     api("/api/formula/result", {
       config: cfg, total: details.length, correct: ok, avg_ms: avg, details,
     }).catch(() => {});
     view.innerHTML = `
       <div class="card" style="text-align:center">
         <div class="muted">列式专项</div>
-        <div class="sum-num" style="color:${ok / details.length >= .6 ? "var(--green)" : "var(--cinnabar)"}">
-          ${ok} / ${details.length}</div>
-        <div class="muted">正确率 ${Math.round(ok / details.length * 100)}% · 平均 ${(avg / 1000).toFixed(1)} 秒/题</div>
+        <div class="sum-num" style="color:${judged.length && ok / judged.length >= .6 ? "var(--green)" : "var(--cinnabar)"}">
+          ${ok} / ${judged.length}</div>
+        <div class="muted">正确率 ${judged.length ? Math.round(ok / judged.length * 100) : 0}% · 平均 ${(avg / 1000).toFixed(1)} 秒/题</div>
+        ${skippedN ? `<div class="muted" style="margin-top:6px">⏭ 已跳过 ${skippedN} 题（不计入正确率）</div>` : ""}
       </div>
       <div style="display:flex;gap:10px;margin-top:14px">
         <button class="btn btn-block" onclick="location.hash='#/practice'">返回刷题</button>
@@ -727,6 +1118,9 @@ async function drawWrong(box, tok) {
       <div class="item">
         <b>${esc(w.title)}</b>
         <div class="meta">${esc(w.kaodian || w.module || "")} · 错 ${w.wrongs}/${w.tries} 次 · 上次选 ${esc(w.last_selected || "-")}</div>
+        <input class="wn-note" data-id="${w.id}"
+          placeholder="一句话记下坑因，如：把基期当现期（失焦即存）"
+          value="${esc(rmap[w.id] || "")}">
         ${reasonChips(w)}
         <div class="row">
           <button class="btn w-ai" data-id="${w.id}">AI 预归因</button>
@@ -758,6 +1152,20 @@ async function drawWrong(box, tok) {
   });
   $$(".w-one").forEach(b => b.onclick = () =>
     runPaper([+b.dataset.id], { title: "错题重做" }));
+  $$(".wn-note").forEach(inp => {
+    const save = async () => {
+      const v = inp.value.trim();
+      if ((rmap[inp.dataset.id] || "") === v) return;
+      try {
+        await api("/api/wrong-reason", { doc_id: +inp.dataset.id, reason: v });
+        rmap[inp.dataset.id] = v;
+      } catch (e) { toast("保存失败"); }
+    };
+    inp.onblur = save;
+    inp.onkeydown = e => {
+      if (e.key === "Enter") { e.preventDefault(); inp.blur(); }
+    };
+  });
 }
 
 /* 收藏 */
@@ -889,6 +1297,30 @@ async function drawCardLibrary(box, tok) {
       </select></div>`;
   }
 
+  const metaOf = c => esc([c.module, c.category, c.card_type]
+    .filter(Boolean).join(" · "));
+  const flipCard = c => `
+    <div class="flip-card" data-id="${esc(c.id)}">
+      <div class="flip-inner">
+        <div class="flip-front">
+          <div class="cd-meta">${metaOf(c)}</div>
+          <div class="cd-stem-mini">${esc(c.stem)}</div>
+          <div class="flip-hint">点击翻面看释义</div>
+        </div>
+        <div class="flip-back">
+          <div class="cd-meta">${metaOf(c)}</div>
+          <div class="cd-answer">${esc(c.answer)}</div>
+          ${c.analysis ? `<div class="cd-analysis">${esc(c.analysis)}</div>` : ""}
+          <div class="cd-rate">
+            <button class="btn cd-rate-btn" data-l="0">不会</button>
+            <button class="btn cd-rate-btn" data-l="1">模糊</button>
+            <button class="btn btn-primary cd-rate-btn" data-l="2">认识</button>
+          </div>
+          <div class="flip-hint">评分后自动翻回</div>
+        </div>
+      </div>
+    </div>`;
+
   function render() {
     box.innerHTML = `
       <div class="card cd-filters">
@@ -896,13 +1328,9 @@ async function drawCardLibrary(box, tok) {
         ${selectRow("module", "模块")}
         ${selectRow("category", "分类")}
       </div>
-      <div class="cd-count">共 ${cards.length} 张，点击卡片翻看</div>
+      <div class="cd-count">共 ${cards.length} 张 · 抽卡翻面，看释义评分</div>
       <div id="cdList">
-        ${cards.map(c => `
-          <div class="cd-mini" data-id="${esc(c.id)}">
-            <div class="cd-meta">${esc([c.module, c.category, c.card_type].filter(Boolean).join(" · "))}</div>
-            <div class="cd-stem-mini">${esc(c.stem)}</div>
-          </div>`).join("") || `<div class="empty">没有符合条件的卡片</div>`}
+        ${cards.map(flipCard).join("") || `<div class="empty">没有符合条件的卡片</div>`}
       </div>`;
     $$(".cd-filters select").forEach(s => s.onchange = async () => {
       filters[s.dataset.k] = s.value;
@@ -913,42 +1341,23 @@ async function drawCardLibrary(box, tok) {
       cards = r.items || [];
       render();
     });
-    $$(".cd-mini").forEach(el => el.onclick = () => {
-      const c = cards.find(x => String(x.id) === el.dataset.id);
-      openMiniCard(c, el);
-    });
+    $$(".flip-card").forEach(bindFlip);
   }
 
-  function openMiniCard(c, el) {
-    const expanded = document.createElement("div");
-    expanded.className = "cd-mini cd-mini-open";
-    expanded.dataset.id = c.id;
-    expanded.innerHTML = `
-      <div class="cd-meta">${esc([c.module, c.category, c.card_type].filter(Boolean).join(" · "))}</div>
-      <div class="cd-stem-mini">${esc(c.stem)}</div>
-      <div class="cd-divider"></div>
-      <div class="cd-answer">${esc(c.answer)}</div>
-      ${c.analysis ? `<div class="cd-analysis">${esc(c.analysis)}</div>` : ""}
-      <div class="cd-rate">
-        <button class="btn cd-rate-btn" data-l="0">不会</button>
-        <button class="btn cd-rate-btn" data-l="1">模糊</button>
-        <button class="btn btn-primary cd-rate-btn" data-l="2">认识</button>
-      </div>`;
-    expanded.querySelectorAll(".cd-rate-btn").forEach(b => b.onclick = async () => {
-      await api("/api/card-review", { card_id: c.id, level: +b.dataset.l });
-      if (tok !== cardToken) return;
-      toast("已记录评分");
-      expanded.replaceWith(document.createRange()
-        .createContextualFragment(`
-        <div class="cd-mini" data-id="${esc(c.id)}">
-          <div class="cd-meta">${esc([c.module, c.category, c.card_type].filter(Boolean).join(" · "))}</div>
-          <div class="cd-stem-mini">${esc(c.stem)}</div>
-        </div>`));
-      const fresh = $(".cd-mini[data-id='" + CSS.escape(c.id) + "']");
-      if (fresh) fresh.onclick = () => openMiniCard(c, fresh);
+  function bindFlip(cardEl) {
+    cardEl.addEventListener("click", e => {
+      if (e.target.closest(".cd-rate-btn")) return;
+      cardEl.classList.toggle("on");
     });
-    el.replaceWith(expanded);
-    expanded.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    cardEl.querySelectorAll(".cd-rate-btn").forEach(b =>
+      b.addEventListener("click", async () => {
+        const c = cards.find(x => String(x.id) === cardEl.dataset.id);
+        await api("/api/card-review", { card_id: c.id, level: +b.dataset.l });
+        if (tok !== cardToken) return;
+        Snd.pop();
+        cardEl.classList.remove("on");
+        toast("已记录评分");
+      }));
   }
 
   render();
@@ -1292,6 +1701,18 @@ async function renderSettings() {
       <div class="set-status" id="setStatus"></div>
     </div>
     <div class="card">
+      <h3>学习偏好</h3>
+      <div class="cfg-label">字号</div>
+      <div class="type-checks" id="fontPick">
+        ${[["s", "小字"], ["m", "标准"], ["b", "大字"]].map(([k, v]) =>
+          `<div class="type-check ${Pref.get("fontsize", "m") === k ? "on" : ""}" data-f="${k}">${v}</div>`).join("")}
+      </div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="prefSound"
+        ${Pref.get("sound", true) ? "checked" : ""}/> 考场音效（答对、翻页、提醒）</label>
+      <label class="check"><input type="checkbox" id="prefPomo"
+        ${Pref.get("pomo", true) ? "checked" : ""}/> 做题时显示番茄钟并统计专注时长</label>
+    </div>
+    <div class="card">
       <h3>备份与恢复</h3>
       <label class="bk-check"><input type="checkbox" id="bkKey"/>
         备份同时包含 API Key（默认不包含）</label>
@@ -1301,6 +1722,18 @@ async function renderSettings() {
       <div class="set-status" id="bkStatus"></div>
       <div class="muted">备份含本账号全部做题数据，可发送到网盘或另一台手机后恢复</div>
     </div>`;
+
+  $$("#fontPick .type-check").forEach(t => t.onclick = () => {
+    Pref.set("fontsize", t.dataset.f);
+    $$("#fontPick .type-check").forEach(x =>
+      x.classList.toggle("on", x === t));
+    applyFontSize();
+  });
+  $("#prefSound").onchange = e => Pref.set("sound", e.target.checked);
+  $("#prefPomo").onchange = e => {
+    Pref.set("pomo", e.target.checked);
+    if (!e.target.checked) Pomo.unmount();
+  };
 
   $("#setSave").onclick = async () => {
     const patch = {
@@ -1531,8 +1964,10 @@ async function renderSpeed() {
   async function start() {
     if (!cfg.types.length) return toast("请至少选择一种题型");
     inRun = true; runFrom = "#/speed";
+    Pomo.mount();
     run.items = []; run.idx = 0; run.correct = 0;
     run.times = []; run.records = []; run.finished = false;
+    run.roundStart = Date.now();
     if (cfg.challenge) {
       run.deadline = Date.now() + 60000;
       run.timerH = setInterval(() => {
@@ -1582,6 +2017,7 @@ async function renderSpeed() {
           </div>`}
         <div class="speed-explain" id="explain"></div>
       </div>`;
+    animIn(body);
 
     const judge = (isCorrect) => {
       if (run.answered) return;
@@ -1589,6 +2025,7 @@ async function renderSpeed() {
       run.times.push(Date.now() - qStart);
       if (isCorrect) run.correct++;
       run.records.push({ item: p, right: isCorrect });
+      noteResult(isCorrect);
       $("#explain").innerHTML =
         (isCorrect ? '<span class="right-yes">✔ 正确　</span>'
                    : '<span class="right-no">✘ 错误　</span>')
@@ -1655,9 +2092,11 @@ async function renderSpeed() {
     } else showProblem();
   }
 
+  let recordInfo = null;
   async function finish() {
     if (run.finished) return;
     run.finished = true;
+    Pomo.unmount();
     clearInterval(run.timerH);
     const done = run.records.length;
     const total = cfg.challenge ? done : run.items.length;
@@ -1666,15 +2105,32 @@ async function renderSpeed() {
     if (total > 0) {
       const details = run.records.map((r, i) =>
         ({ type: r.item.type, correct: r.right, ms: run.times[i] || 0 }));
-      await api("/api/speed/result", {
+      const payload = {
         config: { types: cfg.types, digits: cfg.digits, challenge: cfg.challenge },
         total, correct: run.correct, avg_ms: avgMs, details,
-      });
+      };
+      // 普通模式按“完成一轮的总用时”记个人纪录（越短越快）
+      if (!cfg.challenge && done) {
+        payload.best_key = `normal:${cfg.types.join("+")}:${cfg.digits}d:${total}q`;
+        payload.round_ms = Date.now() - run.roundStart;
+      }
+      const rr = await api("/api/speed/result", payload);
+      recordInfo = rr && rr.record ? rr.record : null;
+      if (recordInfo && recordInfo.new_record) {
+        Snd.pop(); confetti(40);
+      }
     }
     const wrongs = run.records.filter(r => !r.right);
     body.innerHTML = `
       <div class="card result-card">
         <h3>${cfg.challenge ? "60 秒挑战结束" : "本轮完成"}</h3>
+        ${recordInfo ? `<div class="record-banner ${recordInfo.new_record ? "new" : ""}">
+          ${recordInfo.new_record
+            ? `🏆 刷新个人纪录！`
+            : (recordInfo.first ? "已建立个人纪录基准" : "个人纪录")}
+          ${Math.floor(recordInfo.best_ms / 60000)}分
+          ${Math.round((recordInfo.best_ms % 60000) / 1000)}秒
+        </div>` : ""}
         <div class="result-grid">
           <div><b>${run.correct}</b><span>正确数</span></div>
           <div><b>${total}</b><span>总题数</span></div>
@@ -1761,6 +2217,7 @@ async function renderWordfill() {
       run.idx = 0;
       run.correct = 0;
       inRun = true; runFrom = "#/wordfill";
+      Pomo.mount();
       showQ();
     } catch (e) {
       body.innerHTML = `
@@ -1791,6 +2248,7 @@ async function renderWordfill() {
         </div>
         <div id="wfAnalysis"></div>
       </div>`;
+    animIn(body);
 
     $$(".opt", body).forEach(op => op.onclick = () => {
       if (run.answered) return;
@@ -1805,6 +2263,7 @@ async function renderWordfill() {
       });
       const ms = Date.now() - run.startedAt;
       api("/api/wordfill/answer", { qid: q.id, selected: sel, correct, ms });
+      noteResult(correct);
       $("#wfAnalysis").innerHTML = `
         <div class="note-section">
           <div class="sec-title">${correct ? "✔ 回答正确" : "✘ 回答错误"} · 解析</div>
@@ -1823,6 +2282,7 @@ async function renderWordfill() {
   }
 
   function finish() {
+    Pomo.unmount();
     const total = run.items.length;
     body.innerHTML = `
       <div class="card result-card" style="text-align:center">

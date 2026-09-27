@@ -60,6 +60,20 @@ CREATE TABLE IF NOT EXISTS answers (
     selected TEXT,
     correct INTEGER,
     ms INTEGER,
+    created_at REAL,
+    guessed INTEGER DEFAULT 0
+);
+
+-- 番茄钟专注时长（按本地日累计，秒）
+CREATE TABLE IF NOT EXISTS focus_log (
+    day TEXT PRIMARY KEY,
+    seconds INTEGER DEFAULT 0
+);
+
+-- 速算各配置个人最快纪录（一轮总用时，毫秒）
+CREATE TABLE IF NOT EXISTS speed_best (
+    key TEXT PRIMARY KEY,
+    best_ms INTEGER,
     created_at REAL
 );
 
@@ -271,6 +285,10 @@ def connect() -> sqlite3.Connection:
     shared_uri = DB_PATH.resolve().as_uri() + "?mode=ro"
     conn.execute("ATTACH DATABASE ? AS shared", (shared_uri,))
     conn.executescript(PERSONAL_SCHEMA)
+    # 旧版个人库补列（CREATE IF NOT EXISTS 不会加列）
+    _acols = [r["name"] for r in conn.execute("PRAGMA table_info(answers)")]
+    if "guessed" not in _acols:
+        conn.execute("ALTER TABLE answers ADD COLUMN guessed INTEGER DEFAULT 0")
     # 共享表经 TEMP 视图暴露：documents = 共享题库 + 账号私有导入题
     conn.execute("""
         CREATE TEMP VIEW documents AS
@@ -775,15 +793,26 @@ def facets() -> dict:
     return out
 
 
-def add_answer(doc_id: int, selected: str, correct: bool, ms: int) -> None:
+def add_answer(doc_id: int, selected: str, correct: bool, ms: int,
+               guessed: bool = False) -> dict:
     conn = connect()
+    prev = conn.execute(
+        """SELECT MAX(CASE WHEN correct=0 THEN id END) lw,
+                  MAX(CASE WHEN correct=1 THEN id END) lr
+           FROM answers WHERE doc_id=?""",
+        (doc_id,)).fetchone()
     conn.execute(
-        "INSERT INTO answers(doc_id,selected,correct,ms,created_at) VALUES(?,?,?,?,?)",
-        (doc_id, selected, int(correct), ms, time.time()),
+        """INSERT INTO answers(doc_id,selected,correct,ms,created_at,guessed)
+           VALUES(?,?,?,?,?,?)""",
+        (doc_id, selected, int(correct), ms, time.time(), int(guessed)),
     )
+    # F-4 此前最后一次是错的，本次答对 → 错题歼灭
+    annihilated = bool(correct and (prev["lw"] or 0) > (prev["lr"] or 0))
     conn.commit()
     conn.close()
-    _schedule_review(doc_id, correct)
+    # 蒙对也按"未掌握"处理：回第 1 档复习
+    _schedule_review(doc_id, bool(correct) and not bool(guessed))
+    return {"annihilated": annihilated}
 
 
 def _schedule_review(doc_id: int, correct: bool) -> None:
@@ -919,6 +948,51 @@ def add_speed_round(config: dict, total: int, correct: int, avg_ms: int, details
         )
     conn.commit()
     conn.close()
+
+
+def speed_best_check(key: str, total_ms: int) -> dict:
+    """同配置一轮总用时与个人纪录比较；破纪录则更新。"""
+    total_ms = max(0, int(total_ms))
+    conn = connect()
+    row = conn.execute("SELECT best_ms FROM speed_best WHERE key=?", (key,)).fetchone()
+    prev = row["best_ms"] if row else None
+    broken = prev is None or total_ms < prev
+    if broken:
+        conn.execute(
+            "INSERT OR REPLACE INTO speed_best(key,best_ms,created_at) VALUES(?,?,?)",
+            (key, total_ms, time.time()))
+        conn.commit()
+    conn.close()
+    return {"new_record": bool(broken and prev is not None),
+            "first": prev is None,
+            "best_ms": total_ms if broken else prev}
+
+
+# ---------------- 番茄钟专注时长 ----------------
+
+def add_focus(seconds: int) -> int:
+    """累计今日专注秒数，返回今日累计值。"""
+    seconds = int(seconds)
+    if seconds <= 0:
+        return focus_today()
+    day = time.strftime("%Y-%m-%d")
+    conn = connect()
+    conn.execute(
+        """INSERT INTO focus_log(day,seconds) VALUES(?,?)
+           ON CONFLICT(day) DO UPDATE SET seconds=seconds+excluded.seconds""",
+        (day, seconds))
+    conn.commit()
+    row = conn.execute("SELECT seconds FROM focus_log WHERE day=?", (day,)).fetchone()
+    conn.close()
+    return row["seconds"]
+
+
+def focus_today() -> int:
+    day = time.strftime("%Y-%m-%d")
+    conn = connect()
+    row = conn.execute("SELECT seconds FROM focus_log WHERE day=?", (day,)).fetchone()
+    conn.close()
+    return row["seconds"] if row else 0
 
 
 def speed_type_stats() -> list[dict]:
@@ -1207,6 +1281,13 @@ def stats_overview() -> dict:
     today_ans = conn.execute(
         "SELECT COUNT(*) c, SUM(correct=1) ok FROM answers WHERE created_at>=?",
         (day_start,)).fetchone()
+    today_guessed = conn.execute(
+        "SELECT COUNT(*) c FROM answers WHERE created_at>=? AND guessed=1",
+        (day_start,)).fetchone()["c"]
+    focus_row = conn.execute(
+        "SELECT seconds FROM focus_log WHERE day=?",
+        (time.strftime("%Y-%m-%d"),)).fetchone()
+    today_focus = focus_row["seconds"] if focus_row else 0
 
     # 连续学习天数（有作答或速算记录的日子）
     days = set()
@@ -1214,6 +1295,8 @@ def stats_overview() -> dict:
         days.add(time.strftime("%Y-%m-%d", time.localtime(r["created_at"])))
     for r in conn.execute("SELECT created_at FROM speed_rounds"):
         days.add(time.strftime("%Y-%m-%d", time.localtime(r["created_at"])))
+    for r in conn.execute("SELECT day FROM focus_log WHERE seconds>0"):
+        days.add(r["day"])
     streak = 0
     d = lt
     while True:
@@ -1232,6 +1315,15 @@ def stats_overview() -> dict:
         """SELECT COUNT(*) c FROM (
              SELECT doc_id, MAX(id) mid FROM answers GROUP BY doc_id) s
            JOIN answers a ON a.id = s.mid WHERE a.correct=0"""
+    ).fetchone()["c"]
+    # F-4 已歼灭错题：曾经错过、且最近一次作答为对
+    annihilated = conn.execute(
+        """SELECT COUNT(*) c FROM (
+             SELECT doc_id,
+                    MAX(CASE WHEN correct=0 THEN id END) lw,
+                    MAX(CASE WHEN correct=1 THEN id END) lr
+             FROM answers GROUP BY doc_id) s
+           WHERE s.lw IS NOT NULL AND s.lr > s.lw"""
     ).fetchone()["c"]
     mark_count = conn.execute("SELECT COUNT(*) c FROM marks").fetchone()["c"]
 
@@ -1309,8 +1401,11 @@ def stats_overview() -> dict:
         "answers_correct": ans_correct,
         "today_answers": today_ans["c"] or 0,
         "today_correct": today_ans["ok"] or 0,
+        "today_guessed": today_guessed or 0,
+        "today_focus": today_focus,
         "streak": streak,
         "wrong_count": wrong_count,
+        "annihilated": annihilated,
         "mark_count": mark_count,
         "speed_best_challenge": speed_best,
         "daily": daily,

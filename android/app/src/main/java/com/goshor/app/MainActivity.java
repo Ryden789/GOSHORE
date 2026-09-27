@@ -28,6 +28,7 @@ import androidx.core.content.FileProvider;
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -395,6 +396,38 @@ public class MainActivity extends Activity {
                     while ((n = in.read(b)) > 0) out.write(b, 0, n);
                 }
                 return "已保存到 下载/" + f.getName();
+            } catch (Exception e) {
+                return "ERROR:" + e.getMessage();
+            }
+        }
+
+        /** 文本/Markdown 报告直接保存到系统下载目录 */
+        @JavascriptInterface
+        public String saveTextFile(final String name, final String text,
+                                   final String mime) {
+            if (Build.VERSION.SDK_INT < 29) {
+                return "ERROR:系统版本过低，请用分享方式";
+            }
+            try {
+                byte[] bytes = text.getBytes("UTF-8");
+                String m = (mime == null || mime.isEmpty())
+                        ? "text/plain" : mime;
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                v.put(MediaStore.Downloads.MIME_TYPE, m);
+                v.put(MediaStore.Downloads.RELATIVE_PATH,
+                        Environment.DIRECTORY_DOWNLOADS);
+                Uri uri = activity.getContentResolver().insert(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                if (uri == null) return "ERROR:无法写入下载目录";
+                try (ByteArrayInputStream in = new ByteArrayInputStream(bytes);
+                     OutputStream out =
+                             activity.getContentResolver().openOutputStream(uri)) {
+                    byte[] b = new byte[BUF];
+                    int n;
+                    while ((n = in.read(b)) > 0) out.write(b, 0, n);
+                }
+                return "已保存到 下载/" + name;
             } catch (Exception e) {
                 return "ERROR:" + e.getMessage();
             }
