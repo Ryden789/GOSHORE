@@ -550,6 +550,54 @@ input, select, textarea { font-family: var(--sans); }
 .diff-mid { color: var(--amber); border-color: var(--amber); }
 .diff-hard { color: var(--cinnabar); border-color: var(--cinnabar); }
 
+/* ===== ⚔ 变式歼灭弹层 + 撒花 ===== */
+.anni-done { filter: none; }
+.anni-mask {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(40, 34, 26, .45);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; animation: anniFade .18s ease-out;
+}
+.anni-panel {
+  position: relative; width: min(680px, 100%);
+  max-height: 88vh; overflow-y: auto;
+  background: var(--paper); border: 1px solid var(--line-soft);
+  border-radius: 12px; padding: 26px 28px;
+  box-shadow: 0 18px 60px rgba(40, 34, 26, .28);
+  animation: anniPop .22s ease-out;
+}
+.anni-x {
+  position: absolute; top: 10px; right: 14px;
+  border: 0; background: transparent; font-size: 26px; line-height: 1;
+  color: var(--ink-3); cursor: pointer; padding: 4px 8px;
+}
+.anni-x:hover { color: var(--cinnabar); }
+.anni-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; margin-bottom: 14px; }
+.anni-prog { font-family: var(--serif); font-weight: 700; font-size: 16px; color: var(--cinnabar); }
+.anni-tip { color: var(--ink-2); font-size: 13px; }
+.anni-exp { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line-soft); }
+.anni-exp-text { margin: 8px 0 12px; }
+.anni-loading, .anni-result { text-align: center; padding: 34px 10px; }
+.anni-loading h3, .anni-result h3 { font-family: var(--serif); margin: 16px 0 8px; }
+.anni-loading p, .anni-result p { color: var(--ink-2); font-size: 14px; line-height: 1.8; margin: 0; }
+.anni-trophy { font-size: 52px; line-height: 1; }
+.anni-actions { margin-top: 18px; display: flex; gap: 10px; justify-content: center; }
+.anni-spin {
+  width: 34px; height: 34px; margin: 0 auto;
+  border: 3px solid var(--paper-2); border-top-color: var(--cinnabar);
+  border-radius: 50%; animation: anniSpin .8s linear infinite;
+}
+.confetti-box { position: fixed; inset: 0; pointer-events: none; z-index: 100; overflow: hidden; }
+.confetti-box i { position: absolute; top: -12px; width: 8px; height: 13px; animation: confettiFall linear forwards; }
+@keyframes anniFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes anniPop { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes anniSpin { to { transform: rotate(360deg); } }
+@keyframes confettiFall { to { transform: translateY(105vh) rotate(540deg); opacity: .85; } }
+@media (prefers-reduced-motion: reduce) {
+  .confetti-box i { animation-duration: .01s; }
+  .anni-mask, .anni-panel { animation: none; }
+}
+
 /* ===== 今日复习 ===== */
 .review-head { display: flex; align-items: center; gap: 34px; flex-wrap: wrap; }
 .review-num { font-size: 30px; font-weight: 900; font-family: var(--mono); color: var(--ink); line-height: 1.1; }

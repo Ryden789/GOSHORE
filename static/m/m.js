@@ -1308,7 +1308,7 @@ async function drawWrong(box, tok) {
     <button class="btn btn-primary btn-block" id="wAll">错题全部重练（${wrongs.length}）</button>
     ${wrongs.map(w => `
       <div class="item">
-        <b>${esc(w.title)}</b>
+        <b>${esc(w.title)}${w.annihilated ? ' <span class="anni-flag" title="变式歼灭已通过">💥</span>' : ""}</b>
         <div class="meta">${esc(w.kaodian || w.module || "")} · 错 ${w.wrongs}/${w.tries} 次 · 上次选 ${esc(w.last_selected || "-")}</div>
         <input class="wn-note" data-id="${w.id}"
           placeholder="一句话记下坑因，如：把基期当现期（失焦即存）"
@@ -1318,6 +1318,7 @@ async function drawWrong(box, tok) {
           <button class="btn w-ai" data-id="${w.id}">AI 预归因</button>
           <button class="btn w-one" data-id="${w.id}">重做此题</button>
         </div>
+        <div class="row"><button class="btn btn-primary btn-block w-anni" data-id="${w.id}">${w.annihilated ? "💥 再歼灭一轮" : "⚔ 变式歼灭（AI 出 3 题）"}</button></div>
       </div>`).join("")}`;
 
   $("#wAll").onclick = () =>
@@ -1344,6 +1345,8 @@ async function drawWrong(box, tok) {
   });
   $$(".w-one").forEach(b => b.onclick = () =>
     runPaper([+b.dataset.id], { title: "错题重做" }));
+  $$(".w-anni").forEach(b => b.onclick = () =>
+    annihilateFlow(+b.dataset.id, box, tok));
   $$(".wn-note").forEach(inp => {
     const save = async () => {
       const v = inp.value.trim();
@@ -1357,6 +1360,116 @@ async function drawWrong(box, tok) {
     inp.onkeydown = e => {
       if (e.key === "Enter") { e.preventDefault(); inp.blur(); }
     };
+  });
+}
+
+/* ⚔ 变式歼灭闭环：AI 归因 → 变式连做 → 全对歼灭（全屏弹层） */
+function annihilateFlow(docId, wrongBox, wrongTok) {
+  if (!navigator.onLine) return toast("当前离线，无法生成变式题");
+  const mask = document.createElement("div");
+  mask.className = "anni-mask";
+  mask.innerHTML = `
+    <div class="anni-panel">
+      <button class="anni-x" id="anniX">×</button>
+      <div id="anniBody"></div>
+    </div>`;
+  document.body.appendChild(mask);
+  const body = $("#anniBody", mask);
+  let closed = false;
+  const close = () => { closed = true; mask.remove(); };
+  $("#anniX", mask).onclick = close;
+
+  const failView = msg => {
+    body.innerHTML = `
+      <div class="anni-result">
+        <div class="anni-trophy">📚</div>
+        <h3>没能开始歼灭</h3>
+        <p>${esc(msg)}</p>
+        <button class="btn btn-primary btn-block" id="anniFailBtn">知道了</button>
+      </div>`;
+    $("#anniFailBtn", body).onclick = close;
+  };
+
+  body.innerHTML = `
+    <div class="anni-loading">
+      <div class="anni-spin"></div>
+      <h3>AI 正在备课</h3>
+      <p>归因错因 · 并发生成变式题<br>约需 20–60 秒，请稍候</p>
+    </div>`;
+
+  Promise.race([
+    api("/api/annihilate/start", { doc_id: docId }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error("生成超时（120 秒），请稍后重试")), 120000)),
+  ]).then(r => {
+    if (closed) return;
+    if (!r.ok) { failView(r.error || "生成失败，请重试"); return; }
+    let idx = 0, passedAll = true;
+    const tag = r.reason ? `<span class="chip on">${esc(r.reason)}</span>` : "";
+    const renderQ = () => {
+      if (idx >= r.items.length) return showResult(passedAll);
+      const q = r.items[idx];
+      body.innerHTML = `
+        <div class="anni-head">
+          <span class="anni-prog">⚔ 第 ${idx + 1}/${r.items.length} 题</span>
+          <span class="anni-tip">${tag} ${esc(r.tip || "")}</span>
+        </div>
+        <div class="anni-stem">${md(q.stem)}</div>
+        <div class="anni-opts">
+          ${q.options.map(o => `<div class="opt anni-opt" data-label="${o.label}"><span class="ol">${o.label}</span><span class="opt-text">${esc(o.text)}</span></div>`).join("")}
+        </div>
+        <div class="anni-exp"></div>`;
+      let done = false;
+      $$(".anni-opt", body).forEach(op => op.onclick = () => {
+        if (done) return;
+        done = true;
+        const right = op.dataset.label === q.answer;
+        if (!right) passedAll = false;
+        $$(".anni-opt", body).forEach(o => {
+          o.classList.add("disabled");
+          if (o.dataset.label === q.answer) o.classList.add("correct");
+          if (o === op && !right) o.classList.add("wrong");
+        });
+        const exp = $(".anni-exp", body);
+        exp.innerHTML = `
+          <div class="analysis"><b>${right ? "✓ 答对了" : "✗ 答错了，正解 " + esc(q.answer)}</b>
+${rawHtml(String(q.analysis || "（AI 未给出解析）"))}</div>
+          <button class="btn btn-primary btn-block" id="anniNext">${idx + 1 < r.items.length ? "下一题" : "查看结果"}</button>`;
+        $("#anniNext", exp).onclick = () => { idx++; renderQ(); };
+        $("#anniNext", exp).scrollIntoView({ block: "nearest" });
+      });
+    };
+    const showResult = pass => {
+      if (pass) {
+        api("/api/annihilate/finish", { doc_id: docId }).catch(() => {});
+        Snd.pop(); confetti(60);
+      }
+      body.innerHTML = pass ? `
+        <div class="anni-result">
+          <div class="anni-trophy">💥</div>
+          <h3>变式歼灭成功！</h3>
+          <p>${r.items.length} 道同考点变式题全部答对，<br>这道错题算真正拿下了。</p>
+          <button class="btn btn-primary btn-block" id="anniDone">完成</button>
+        </div>` : `
+        <div class="anni-result">
+          <div class="anni-trophy">📚</div>
+          <h3>还差一口气</h3>
+          <p>有变式题答错，考点还没彻底掌握，<br>建议看完解析后再来一轮。</p>
+          <button class="btn btn-primary btn-block" id="anniAgain">再来一轮</button>
+          <button class="btn btn-block" id="anniClose2">关闭</button>
+        </div>`;
+      const doneBtn = $("#anniDone", body);
+      if (doneBtn) doneBtn.onclick = () => {
+        close();
+        if (location.hash === "#/wrong") route();
+      };
+      const againBtn = $("#anniAgain", body);
+      if (againBtn) againBtn.onclick = () => { close(); annihilateFlow(docId, wrongBox, wrongTok); };
+      const close2 = $("#anniClose2", body);
+      if (close2) close2.onclick = close;
+    };
+    renderQ();
+  }).catch(e => {
+    if (!closed) failView(String((e && e.message) || e));
   });
 }
 

@@ -1171,12 +1171,19 @@ def list_wrong_book() -> list[dict]:
             WHERE a.correct = 0 AND d.kind = '真题'
             ORDER BY a.created_at DESC"""
     ).fetchall()
+    # 变式歼灭标记（annihilations 表由 variant.finish_annihilation 惰性创建）
+    try:
+        anni_rows = conn.execute("SELECT doc_id FROM annihilations").fetchall()
+        anni_ids = {r["doc_id"] for r in anni_rows}
+    except sqlite3.Error:
+        anni_ids = set()
     out = []
     for r in rows:
         d = {k: r[k] for k in _LIST_COLS.split(",") if k in r.keys()}
         d.update({
             "last_selected": r["last_selected"], "last_ms": r["last_ms"],
             "last_at": r["last_at"], "tries": r["tries"], "wrongs": r["wrongs"],
+            "annihilated": r["id"] in anni_ids,
         })
         # 正确答案
         data = json.loads(r["data"]) if "data" in r.keys() else {}

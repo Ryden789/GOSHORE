@@ -595,11 +595,14 @@ async function renderDoc(id, tabName) {
           <button class="btn btn-sm" id="showDraft">📄 看底稿解析</button>
           <button class="btn btn-sm btn-primary" id="askAi"${!online ? ' disabled title="当前离线，可看底稿解析"' : ''}>让 AI 讲这道题</button>
           <button class="btn btn-sm" id="variantBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式题（AI 无法读取图形）"' : ''}>🧬 变式题</button>
+          ${correct ? "" : `<button class="btn btn-sm btn-primary" id="anniBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式（AI 无法读取图形）"' : ""}>⚔ 变式歼灭</button>`}
           <button class="btn btn-sm" id="exportBtn" title="打印/导出本题">⬇ 导出</button>
           <button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>
           ${nextBtnHtml}`;
         $("#exportBtn").onclick = () => window.open(`/api/export/print?doc_ids=${id}`, "_blank");
         $("#askAi").onclick = () => (location.hash = `#/doc/${id}/ai`);
+        const anniBtn = $("#anniBtn");
+        if (anniBtn) anniBtn.onclick = () => annihilateFlow(id);
         $("#variantBtn").onclick = async () => {
           const b = $("#variantBtn");
           b.disabled = true; b.textContent = "生成中…";
@@ -916,11 +919,12 @@ async function renderWrong() {
   $("#list").innerHTML = items.length
     ? items.map(it => {
         const badge = it.wrongs >= 3 ? ' <span class="hot-badge">🔥</span>' : it.wrongs >= 2 ? ' <span class="hot-badge">⭐</span>' : "";
+        const anniBadge = it.annihilated ? ' <span class="hot-badge anni-done" title="变式歼灭已通过">💥</span>' : "";
         const reason = reasons[it.id] || "";
         return `
         <div class="doc-item wrong-item" data-id="${it.id}">
           <div class="doc-main">
-            <div class="doc-title">${esc(it.title)}${badge}</div>
+            <div class="doc-title">${esc(it.title)}${badge}${anniBadge}</div>
             <div class="doc-sub">${esc([it.kaodian, it.region + " " + it.year].filter(Boolean).join(" · "))}</div>
             <div class="reason-row" data-id="${it.id}">
               ${WRONG_REASONS.map(r =>
@@ -932,6 +936,7 @@ async function renderWrong() {
               <span>选 <b>${esc(it.last_selected || "-")}</b> / 正解 <b style="color:var(--bamboo)">${esc(it.answer || "?")}</b></span>
               <span>${it.wrongs}/${it.tries} 次错</span>
             </div>
+            <button class="btn btn-sm btn-primary anni-btn" data-id="${it.id}">${it.annihilated ? "💥 再歼灭一轮" : "⚔ 变式歼灭"}</button>
           </div>
         </div>`;
       }).join("")
@@ -939,10 +944,15 @@ async function renderWrong() {
   $$("#list .doc-item").forEach(el =>
     el.onclick = e => {
       if (e.target.classList.contains("reason-chip")) return;
+      if (e.target.classList.contains("anni-btn")) return;
       setQueue(items.map(i => i.id));
       location.hash = `#/doc/${el.dataset.id}/answer`;
     }
   );
+  $$(".anni-btn").forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    annihilateFlow(+b.dataset.id);
+  });
   $$(".reason-chip").forEach(ch => ch.onclick = async e => {
     e.stopPropagation();
     const row = ch.closest(".reason-row");
@@ -977,6 +987,139 @@ async function renderWrong() {
     aiBtn.disabled = false; aiBtn.textContent = "🤖 AI 预归因未打标题";
     toast(`AI 预归因完成：${done} 题`);
   };
+}
+
+/* =====================================================
+   ⚔ 变式歼灭闭环：AI 归因 → 3 道变式连做 → 全对歼灭
+===================================================== */
+function anniConfetti(n = 60) {
+  const box = document.createElement("div");
+  box.className = "confetti-box";
+  document.body.appendChild(box);
+  const colors = ["#b3402f", "#c98a2e", "#5e7a5a", "#43546b"];
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement("i");
+    p.style.left = Math.random() * 100 + "vw";
+    p.style.background = colors[i % colors.length];
+    p.style.animationDuration = (1.5 + Math.random() * 1.3) + "s";
+    p.style.animationDelay = (Math.random() * .3) + "s";
+    if (i % 3 === 0) p.style.borderRadius = "50%";
+    box.appendChild(p);
+  }
+  setTimeout(() => box.remove(), 3300);
+}
+
+function annihilateFlow(docId) {
+  if (!navigator.onLine) return toast("当前离线，无法生成变式题");
+  const mask = document.createElement("div");
+  mask.className = "anni-mask";
+  mask.innerHTML = `
+    <div class="anni-panel" role="dialog" aria-modal="true">
+      <button class="anni-x" id="anniX" aria-label="关闭">×</button>
+      <div id="anniBody"></div>
+    </div>`;
+  document.body.appendChild(mask);
+  const body = $("#anniBody", mask);
+  let closed = false;
+  const close = () => { closed = true; mask.remove(); };
+  $("#anniX", mask).onclick = close;
+  mask.onclick = e => { if (e.target === mask) close(); };
+
+  const failView = (msg, label = "关闭") => {
+    body.innerHTML = `
+      <div class="anni-result no">
+        <div class="anni-trophy">📚</div>
+        <h3>没能开始歼灭</h3>
+        <p>${esc(msg)}</p>
+        <button class="btn btn-sm btn-primary" id="anniFailBtn">${label}</button>
+      </div>`;
+    $("#anniFailBtn", body).onclick = close;
+  };
+
+  body.innerHTML = `
+    <div class="anni-loading">
+      <div class="anni-spin"></div>
+      <h3>AI 正在备课</h3>
+      <p>归因错因 · 并发生成 3 道同考点变式题<br>约需 20–60 秒，请稍候</p>
+    </div>`;
+
+  Promise.race([
+    api("/api/annihilate/start", { doc_id: docId }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error("生成超时（120 秒），请稍后重试")), 120000)),
+  ]).then(r => {
+    if (closed) return;
+    if (!r.ok) { failView(r.error || "生成失败，请重试"); return; }
+    let idx = 0, passedAll = true;
+    const tag = r.reason ? `<span class="badge">${esc(r.reason)}</span>` : "";
+    const renderQ = () => {
+      if (idx >= r.items.length) return showResult(passedAll);
+      const q = r.items[idx];
+      body.innerHTML = `
+        <div class="anni-head">
+          <span class="anni-prog">⚔ 变式歼灭 · 第 ${idx + 1}/${r.items.length} 题</span>
+          <span class="anni-tip">${tag} ${esc(r.tip || "")}</span>
+        </div>
+        <div class="stem">${md(q.stem)}</div>
+        <div class="options">
+          ${q.options.map(o => `<div class="option" data-l="${o.label}"><span class="ol">${o.label}</span><span>${esc(o.text)}</span></div>`).join("")}
+        </div>
+        <div class="anni-exp" style="display:none"></div>`;
+      let done = false;
+      $$(".option", body).forEach(op => op.onclick = () => {
+        if (done) return;
+        done = true;
+        const right = op.dataset.l === q.answer;
+        if (!right) passedAll = false;
+        $$(".option", body).forEach(o => {
+          o.classList.add("disabled");
+          if (o.dataset.l === q.answer) o.classList.add("correct");
+          if (o === op && !right) o.classList.add("wrong");
+        });
+        const exp = $(".anni-exp", body);
+        exp.style.display = "";
+        exp.innerHTML = `
+          <div class="anni-exp-line">${right ? '<span class="badge ok">答对了</span>' : '<span class="badge no">答错了</span>'}</div>
+          <div class="anni-exp-text">${md(q.analysis || "（AI 未给出解析）")}</div>
+          <button class="btn btn-sm btn-primary" id="anniNext">${idx + 1 < r.items.length ? "下一题 →" : "查看结果"}</button>`;
+        $("#anniNext", exp).onclick = () => { idx++; renderQ(); };
+        $("#anniNext", exp).scrollIntoView({ block: "nearest" });
+      });
+    };
+    const showResult = pass => {
+      if (pass) {
+        api("/api/annihilate/finish", { doc_id: docId }).catch(() => {});
+        anniConfetti(60);
+      }
+      body.innerHTML = pass ? `
+        <div class="anni-result ok">
+          <div class="anni-trophy">💥</div>
+          <h3>变式歼灭成功！</h3>
+          <p>${r.items.length} 道同考点变式题全部答对，<br>这道错题算真正拿下了。</p>
+          <button class="btn btn-sm btn-primary" id="anniDone">完成</button>
+        </div>` : `
+        <div class="anni-result no">
+          <div class="anni-trophy">📚</div>
+          <h3>还差一口气</h3>
+          <p>有变式题答错，说明考点还没彻底掌握，<br>建议看完解析后再来一轮。</p>
+          <div class="anni-actions">
+            <button class="btn btn-sm" id="anniClose2">关闭</button>
+            <button class="btn btn-sm btn-primary" id="anniAgain">再来一轮</button>
+          </div>
+        </div>`;
+      const doneBtn = $("#anniDone", body);
+      if (doneBtn) doneBtn.onclick = () => {
+        close();
+        if (location.hash === "#/wrong") route();
+      };
+      const againBtn = $("#anniAgain", body);
+      if (againBtn) againBtn.onclick = () => { close(); annihilateFlow(docId); };
+      const close2 = $("#anniClose2", body);
+      if (close2) close2.onclick = close;
+    };
+    renderQ();
+  }).catch(e => {
+    if (!closed) failView(String((e && e.message) || e));
+  });
 }
 
 /* =====================================================

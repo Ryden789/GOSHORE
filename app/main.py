@@ -581,6 +581,27 @@ def api_variant_list(doc_id: int):
     return {"items": variant.list_variants(doc_id)}
 
 
+# ---------------- 变式歼灭闭环 ----------------
+
+class AnnihilateIn(BaseModel):
+    doc_id: int
+
+
+@app.post("/api/annihilate/start")
+async def api_annihilate_start(b: AnnihilateIn):
+    """归因 + 并发生成 3 道同考点变式题（约 20–60 秒）。"""
+    return await variant.start_annihilation(b.doc_id)
+
+
+@app.post("/api/annihilate/finish")
+def api_annihilate_finish(b: AnnihilateIn):
+    """连对全部变式后落库歼灭记录。"""
+    if not db.get_doc(b.doc_id):
+        raise HTTPException(404)
+    variant.finish_annihilation(b.doc_id)
+    return {"ok": True}
+
+
 # ---------------- 设置 ----------------
 
 @app.get("/api/settings")

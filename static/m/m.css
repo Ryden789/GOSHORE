@@ -874,6 +874,53 @@ body.smallfont .stem, body.smallfont .opt { font-size: 14px; }
   font-size: 13px; line-height: 1.7; white-space: pre-wrap;
   font-family: var(--mono, monospace); color: var(--ink, #333);
 }
+
+/* ===== ⚔ 变式歼灭全屏弹层 ===== */
+.anni-flag { margin-left: 4px; }
+.anni-mask {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(35, 32, 26, .5);
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.anni-panel {
+  position: relative; width: 100%;
+  max-height: 92vh; overflow-y: auto;
+  background: var(--paper);
+  border-radius: 16px 16px 0 0;
+  padding: 20px 18px calc(22px + env(safe-area-inset-bottom));
+  box-shadow: 0 -10px 40px rgba(20, 16, 10, .35);
+  animation: anniUp .22s ease-out;
+}
+@keyframes anniUp { from { transform: translateY(40px); opacity: .6; } to { transform: none; opacity: 1; } }
+.anni-x {
+  position: absolute; top: 8px; right: 14px;
+  border: 0; background: transparent; font-size: 28px; line-height: 1;
+  color: var(--ink-3); padding: 4px 8px;
+}
+.anni-head { margin-bottom: 10px; }
+.anni-prog { font-weight: 700; color: var(--cinnabar); font-size: 16px; }
+.anni-tip { display: block; margin-top: 6px; color: var(--ink-2); font-size: 13px; line-height: 1.6; }
+.anni-stem { margin: 10px 0; line-height: 1.75; font-size: 15px; }
+.anni-opts { display: flex; flex-direction: column; gap: 9px; }
+.anni-exp { margin-top: 14px; }
+.anni-exp .analysis { margin-bottom: 12px; max-height: 42vh; overflow-y: auto; }
+.anni-loading, .anni-result { text-align: center; padding: 46px 14px; }
+.anni-loading h3, .anni-result h3 { margin: 16px 0 8px; font-size: 19px; }
+.anni-loading p, .anni-result p {
+  color: var(--ink-2); font-size: 14px; line-height: 1.9; margin: 0;
+}
+.anni-result .btn { margin-top: 16px; }
+.anni-result .btn-block + .btn-block { margin-top: 8px; }
+.anni-trophy { font-size: 56px; line-height: 1; }
+.anni-spin {
+  width: 36px; height: 36px; margin: 0 auto;
+  border: 3px solid var(--paper-2); border-top-color: var(--cinnabar);
+  border-radius: 50%; animation: anniSpin .8s linear infinite;
+}
+@keyframes anniSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .anni-panel { animation: none; }
+}
 .rp-actions {
   display: flex; gap: 8px; padding: 12px 18px 16px;
   border-top: 1px solid var(--line, #eee);

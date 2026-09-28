@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, wordfill
+from app import accounts, ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -835,6 +835,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             elif path == "/api/wrong-reason/ai-suggest":
                 self._json(_run_async(self._wrong_reason_ai(b)))
+            elif path == "/api/annihilate/start":
+                self._json(_run_async(variant.start_annihilation(int(b["doc_id"]))))
+            elif path == "/api/annihilate/finish":
+                with _lock:
+                    variant.finish_annihilation(int(b["doc_id"]))
+                self._json({"ok": True})
             elif path == "/api/cards/import":
                 with _lock:
                     r = db.import_cards()
