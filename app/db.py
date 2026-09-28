@@ -359,6 +359,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _migrate(conn)
+    # 补充列：answers.guessed（旧库可能缺此列）
+    _acols = [r["name"] for r in conn.execute("PRAGMA table_info(answers)")]
+    if "guessed" not in _acols:
+        conn.execute("ALTER TABLE answers ADD COLUMN guessed INTEGER DEFAULT 0")
+        conn.commit()
     # 补充列：material_fp（材料指纹，用于资料分析同材料归组）
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(documents)")]
     if "difficulty" not in cols:
