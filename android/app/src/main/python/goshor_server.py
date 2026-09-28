@@ -845,6 +845,7 @@ class _Handler(BaseHTTPRequestHandler):
                 ov = argument.list_materials()
                 ov["taxonomy"] = argument._TAXONOMY
                 ov["quiz_stats"] = argument.quiz_stats()
+                ov["quiz_type_stats"] = argument.quiz_type_stats()
                 self._json(ov)
             elif path.startswith("/api/argument/material/"):
                 m = argument.get_material(path.rsplit("/", 1)[-1])
@@ -860,7 +861,10 @@ class _Handler(BaseHTTPRequestHandler):
                         argument.ai_comment(str(b.get("mid", "")), r["detail"]))
                 self._json(r)
             elif path == "/api/argument/quiz/draw":
-                self._json(argument.quiz_draw(int(b.get("n", 5))))
+                types = b.get("types") or None
+                if types and not isinstance(types, list):
+                    types = None
+                self._json(argument.quiz_draw(max(1, min(20, int(b.get("n", 5)))), types=types))
             elif path == "/api/argument/quiz/check":
                 self._json(argument.quiz_check(b.get("answers", [])))
             elif path == "/api/cards/import":

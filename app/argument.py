@@ -25,6 +25,23 @@ from .config import load_settings
 from . import db
 
 _DATA = Path(__file__).resolve().parent.parent / "data" / "argument_materials.json"
+_BANK = Path(__file__).resolve().parent.parent / "data" / "argument_quiz.json"
+
+# 易混类型映射：辨析题干扰项优先取易混类型，训练区分能力
+_CONFUSE = {
+    "强加因果": ["因果倒置", "忽略他因"],
+    "因果倒置": ["强加因果", "忽略他因"],
+    "忽略他因": ["强加因果", "因果倒置"],
+    "以偏概全": ["样本偏差", "数据误用"],
+    "样本偏差": ["以偏概全", "数据误用"],
+    "数据误用": ["以偏概全", "绝对化表述"],
+    "偷换概念": ["预设结论", "绝对化表述"],
+    "预设结论": ["偷换概念", "诉诸无知"],
+    "绝对化表述": ["以偏概全", "数据误用"],
+    "诉诸权威": ["诉诸无知", "预设结论"],
+    "诉诸无知": ["诉诸权威", "绝对化表述"],
+    "类比不当": ["以偏概全", "偷换概念"],
+}
 
 
 def _load() -> dict:
@@ -33,6 +50,7 @@ def _load() -> dict:
 
 _TAXONOMY: list[str] = []
 _MATERIALS: dict[str, dict] = {}
+_BANK_CACHE: list[dict] | None = None
 
 
 def _init_cache() -> None:
@@ -174,37 +192,75 @@ def submit(mid: str, marks: list[dict]) -> dict:
 
 # ---------------- 辨析快练 ----------------
 
+def _bank_items() -> list[dict]:
+    """独立辨析题库（data/argument_quiz.json，84 条自编）。"""
+    global _BANK_CACHE
+    if _BANK_CACHE is None:
+        try:
+            _BANK_CACHE = json.loads(_BANK.read_text(encoding="utf-8")).get("items", [])
+        except Exception as e:
+            print(f"[argument] 辨析题库加载失败: {e}")
+            _BANK_CACHE = []
+    return _BANK_CACHE
+
+
 def _quiz_pool() -> list[dict]:
+    """辨析题全池 = 自编题库 + 材料 flaw 标注。"""
     _init_cache()
     pool = []
+    for it in _bank_items():
+        pool.append({
+            "qid": it["id"], "text": it["text"], "quote": it["text"],
+            "type": it["type"], "why": it["why"], "src": "辨析题库",
+        })
     for m in _MATERIALS.values():
         for k, f in enumerate(m["flaws"]):
             if f["s"] < 0:
                 continue
             pool.append({
                 "qid": f"{m['id']}#{k}",
-                "quote": f["quote"], "type": f["type"],
-                "why": f["a"] + "：" + f["b"],
+                "text": f["quote"], "quote": f["quote"],
+                "type": f["type"], "why": f["a"] + "：" + f["b"],
                 "src": m["title"],
             })
     return pool
 
 
-def quiz_draw(n: int = 5) -> dict:
-    """抽 n 道辨析题（选项顺序随机，正确项必含）。"""
+def quiz_draw(n: int = 5, types: list[str] | None = None) -> dict:
+    """抽 n 道辨析题。types 非空时只抽指定类型（类型专练）。
+
+    干扰项优先取易混类型（_CONFUSE），训练"区分相近错误"的能力。
+    """
     pool = _quiz_pool()
+    if types:
+        allow = set(types)
+        pool = [q for q in pool if q["type"] in allow]
     random.shuffle(pool)
     items = []
     for q in pool[: max(1, min(n, len(pool)))]:
-        distract = [t for t in _TAXONOMY if t != q["type"]]
-        random.shuffle(distract)
-        options = [q["type"]] + distract[:3]
+        confuse = [t for t in _CONFUSE.get(q["type"], []) if t != q["type"]]
+        random.shuffle(confuse)
+        rest = [t for t in _TAXONOMY if t != q["type"] and t not in confuse]
+        random.shuffle(rest)
+        options = [q["type"]] + confuse[:2] + rest[: max(0, 3 - len(confuse[:2]))]
+        seen, uniq = set(), []
+        for t in options:
+            if t not in seen:
+                seen.add(t)
+                uniq.append(t)
+        for t in rest:
+            if len(uniq) >= 4:
+                break
+            if t not in seen:
+                seen.add(t)
+                uniq.append(t)
+        options = uniq[:4]
         random.shuffle(options)
         items.append({
-            "qid": q["qid"], "quote": q["quote"], "src": q["src"],
-            "options": options,
+            "qid": q["qid"], "text": q["text"], "quote": q["text"],
+            "src": q["src"], "options": options,
         })
-    return {"items": items}
+    return {"items": items, "total": len(pool), "type_stats": quiz_type_stats()}
 
 
 def quiz_check(answers: list[dict]) -> dict:
@@ -244,6 +300,29 @@ def quiz_stats() -> dict:
         "SELECT COUNT(*) n, SUM(correct) c FROM argument_quiz_log").fetchone()
     conn.close()
     return {"total": row["n"], "right": row["c"] or 0}
+
+
+def quiz_type_stats() -> list[dict]:
+    """各类型题量与累计正确率（题库 + 材料 flaw 合并统计）。"""
+    _init_cache()
+    ensure_tables()
+    pool = _quiz_pool()
+    by_type: dict[str, dict] = {}
+    for q in pool:
+        t = by_type.setdefault(
+            q["type"], {"type": q["type"], "count": 0, "done": 0, "right": 0})
+        t["count"] += 1
+    qid2type = {q["qid"]: q["type"] for q in pool}
+    conn = db.connect()
+    rows = conn.execute("SELECT qid, correct FROM argument_quiz_log").fetchall()
+    conn.close()
+    for r in rows:
+        t = qid2type.get(r["qid"])
+        if t:
+            by_type[t]["done"] += 1
+            by_type[t]["right"] += r["correct"] or 0
+    order = {t: i for i, t in enumerate(_TAXONOMY)}
+    return sorted(by_type.values(), key=lambda x: (order.get(x["type"], 99), x["type"]))
 
 
 # ---------------- AI 理由点评 ----------------

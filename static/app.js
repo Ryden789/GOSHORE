@@ -1331,19 +1331,33 @@ async function renderArgumentDo(mid) {
 }
 
 async function renderArgumentQuiz() {
+  const ov = await api("/api/argument/overview");
+  const stats = ov.quiz_type_stats || [];
   view.innerHTML = `
     <div class="arg-do-head">
       <a class="btn btn-sm" href="#/argument">← 返回</a>
       <h1 class="page-title" style="margin:0">⚡ 错误辨析快练</h1>
     </div>
+    <div class="arg-type-bar panel rise rise-1">
+      <div class="arg-type-lbl">选类型专练，或混合挑战（共 ${stats.reduce((a, b) => a + b.count, 0)} 题）</div>
+      <div class="arg-type-chips">
+        <button class="btn arg-type-chip arg-type-all" data-type="">全部混合</button>
+        ${stats.map(t => {
+          const acc = t.done ? Math.round(t.right / t.done * 100) + "%" : "未练";
+          return `<button class="btn arg-type-chip" data-type="${esc(t.type)}">${esc(t.type)}<small>${t.count}题 · ${acc}</small></button>`;
+        }).join("")}
+      </div>
+    </div>
     <div id="argQuizBody" class="arg-quiz-wrap">
-      <div class="empty">抽题中…</div>
+      <div class="empty">选好类型开始抽题…</div>
     </div>`;
 
   const body = $("#argQuizBody");
-  const draw = await api("/api/argument/quiz/draw", { n: 5 });
-  let idx = 0, right = 0;
-  const picks = [];
+  const start = async (types) => {
+    body.innerHTML = `<div class="empty">抽题中…</div>`;
+    const draw = await api("/api/argument/quiz/draw", { n: 5, types: types || undefined });
+    let idx = 0, right = 0;
+    const picks = [];
 
   const showQ = () => {
     if (idx >= draw.items.length) return showEnd();
@@ -1390,6 +1404,12 @@ async function renderArgumentQuiz() {
       </div>`;
   };
   showQ();
+  };
+  $$(".arg-type-chip").forEach(ch => ch.onclick = () => {
+    $$(".arg-type-chip").forEach(x => x.classList.remove("active"));
+    ch.classList.add("active");
+    start(ch.dataset.type || null);
+  });
 }
 
 /* =====================================================
@@ -1625,6 +1645,11 @@ async function runPaper(ids, opt = {}) {
           <span id="pTimer" style="color:var(--ink-3)"></span>
         </div>
         ${dots()}
+        ${d.material ? `
+        <details class="material-box" open style="margin-top:10px">
+          <summary style="cursor:pointer;font-weight:600">给定材料</summary>
+          <div style="margin-top:8px">${rawHtml(d.material)}</div>
+        </details>` : ""}
         <div class="stem" style="margin-top:14px">${md(d.stem || "")}</div>
         <div class="options">
           ${(d.options || []).map(o => `

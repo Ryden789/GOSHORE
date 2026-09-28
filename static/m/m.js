@@ -2883,7 +2883,7 @@ async function renderArgument() {
   if (seg[1]) return renderArgumentDo(seg[1]);
   const ov = await api("/api/argument/overview");
   const qs = ov.quiz_stats;
-  box.innerHTML = `
+  view.innerHTML = `
     <div class="card arg-quiz-entry">
       <b>⚡ 错误辨析快练</b>
       <div class="meta">${qs.total ? `累计 ${qs.total} 题 · 答对 ${qs.right}` : "给一句论证判断错在哪类，每组 5 题"}</div>
@@ -2911,7 +2911,7 @@ async function renderArgumentDo(mid) {
   try { tax = (await api("/api/argument/overview")).taxonomy; } catch {}
   const state = { marks: {} };
 
-  box.innerHTML = `
+  view.innerHTML = `
     <div class="card arg-prompt">${esc(m.prompt)}</div>
     <div class="card arg-material" id="argSents">
       ${m.sentences.map(s => `
@@ -2997,7 +2997,7 @@ async function renderArgumentDo(mid) {
         else if (w) { el.classList.add("wrong"); bg.textContent = "误标"; }
         else bg.style.display = "none";
       });
-      box.querySelector(".arg-submit-bar").style.display = "none";
+      view.querySelector(".arg-submit-bar").style.display = "none";
       const rows = r.detail.map((d, k) => `
         <div class="card arg-flaw ${d.hit ? (d.type_hit ? "flaw-hit" : "flaw-half") : "flaw-miss"}">
           <b>第 ${k + 1} 处 · ${d.got ? `得 ${d.got} 分` : "0 分"}</b>
@@ -3025,48 +3025,73 @@ async function renderArgumentDo(mid) {
 }
 
 async function renderArgumentQuiz() {
-  box.innerHTML = `<div class="card"><div class="meta">抽题中…</div></div>`;
-  const draw = await api("/api/argument/quiz/draw", { n: 5 });
-  let idx = 0, right = 0;
-  const showQ = () => {
-    if (idx >= draw.items.length) {
-      box.innerHTML = `
-        <div class="card" style="text-align:center">
-          <div class="arg-score-num">${right}<small>/${draw.items.length}</small></div>
-          <div class="meta">${right >= 4 ? "语感很准，继续保持" : "把 12 类错误的典型例句再过一遍"}</div>
-          <button class="btn btn-primary btn-block" onclick="location.reload()">再来一组</button>
-          <button class="btn btn-block" onclick="location.hash='#/argument'">返回</button>
+  let stats = [];
+  try { stats = (await api("/api/argument/overview")).quiz_type_stats || []; } catch (e) {}
+  view.innerHTML = `
+    <div class="card">
+      <div class="meta">选类型专练，或混合挑战（共 ${stats.reduce((a, b) => a + b.count, 0)} 题）</div>
+      <div class="arg-type-chips">
+        <button class="btn arg-type-chip arg-type-all" data-type="">全部混合</button>
+        ${stats.map(t => {
+          const acc = t.done ? Math.round(t.right / t.done * 100) + "%" : "未练";
+          return `<button class="btn arg-type-chip" data-type="${esc(t.type)}">${esc(t.type)}<small>${t.count}题 · ${acc}</small></button>`;
+        }).join("")}
+      </div>
+    </div>
+    <div id="argQuizBox"><div class="card"><div class="meta">选好类型开始抽题…</div></div></div>`;
+  const qbox = $("#argQuizBox");
+  const start = async (types) => {
+    qbox.innerHTML = `<div class="card"><div class="meta">抽题中…</div></div>`;
+    const draw = await api("/api/argument/quiz/draw", { n: 5, types: types || undefined });
+    let idx = 0, right = 0;
+    const showQ = () => {
+      if (idx >= draw.items.length) {
+        qbox.innerHTML = `
+          <div class="card" style="text-align:center">
+            <div class="arg-score-num">${right}<small>/${draw.items.length}</small></div>
+            <div class="meta">${right >= 4 ? "语感很准，继续保持" : "把 12 类错误的典型例句再过一遍"}</div>
+            <button class="btn btn-primary btn-block" id="argAgain">再来一组</button>
+            <button class="btn btn-block" id="argChange">换类型</button>
+            <button class="btn btn-block" onclick="location.hash='#/argument'">返回</button>
+          </div>`;
+        $("#argAgain").onclick = () => start(types);
+        $("#argChange").onclick = () => renderArgumentQuiz();
+        return;
+      }
+      const q = draw.items[idx];
+      qbox.innerHTML = `
+        <div class="card">
+          <div class="meta">第 ${idx + 1}/${draw.items.length} 题 · ${esc(q.src)}</div>
+          <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
+          <div class="arg-quiz-opts">
+            ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
+          </div>
+          <div class="arg-quiz-exp" style="display:none"></div>
         </div>`;
-      return;
-    }
-    const q = draw.items[idx];
-    box.innerHTML = `
-      <div class="card">
-        <div class="meta">第 ${idx + 1}/${draw.items.length} 题 · ${esc(q.src)}</div>
-        <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
-        <div class="arg-quiz-opts">
-          ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
-        </div>
-        <div class="arg-quiz-exp" style="display:none"></div>
-      </div>`;
-    $$(".arg-opt").forEach(b => b.onclick = () => {
-      $$(".arg-opt").forEach(x => (x.disabled = true));
-      api("/api/argument/quiz/check", { answers: [{ qid: q.qid, pick: b.dataset.o }] }).then(r => {
-        const res = r.results[0];
-        if (res.correct) { right++; Snd.pop(); }
-        b.classList.add(res.correct ? "opt-ok" : "opt-no");
-        $$(".arg-opt").forEach(x => { if (x.dataset.o === res.answer) x.classList.add("opt-answer"); });
-        const exp = box.querySelector(".arg-quiz-exp");
-        exp.style.display = "";
-        exp.innerHTML = `
-          <div class="${res.correct ? "arg-ok" : "arg-no"}">${res.correct ? "✓ 判断正确" : "✗ 正确答案：" + esc(res.answer)}</div>
-          <div class="arg-why">${esc(res.why)}</div>
-          <button class="btn btn-primary btn-block" id="argQNext">${idx + 1 < draw.items.length ? "下一题" : "看结果"}</button>`;
-        $("#argQNext").onclick = () => { idx++; showQ(); };
+      $$(".arg-opt").forEach(b => b.onclick = () => {
+        $$(".arg-opt").forEach(x => (x.disabled = true));
+        api("/api/argument/quiz/check", { answers: [{ qid: q.qid, pick: b.dataset.o }] }).then(r => {
+          const res = r.results[0];
+          if (res.correct) { right++; Snd.pop(); }
+          b.classList.add(res.correct ? "opt-ok" : "opt-no");
+          $$(".arg-opt").forEach(x => { if (x.dataset.o === res.answer) x.classList.add("opt-answer"); });
+          const exp = qbox.querySelector(".arg-quiz-exp");
+          exp.style.display = "";
+          exp.innerHTML = `
+            <div class="${res.correct ? "arg-ok" : "arg-no"}">${res.correct ? "✓ 判断正确" : "✗ 正确答案：" + esc(res.answer)}</div>
+            <div class="arg-why">${esc(res.why)}</div>
+            <button class="btn btn-primary btn-block" id="argQNext">${idx + 1 < draw.items.length ? "下一题" : "看结果"}</button>`;
+          $("#argQNext").onclick = () => { idx++; showQ(); };
+        });
       });
-    });
+    };
+    showQ();
   };
-  showQ();
+  $$(".arg-type-chip").forEach(ch => ch.onclick = () => {
+    $$(".arg-type-chip").forEach(x => x.classList.remove("active"));
+    ch.classList.add("active");
+    start(ch.dataset.type || null);
+  });
 }
 
 /* ---------- 申论综应方法论 ---------- */

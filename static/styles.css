@@ -691,6 +691,16 @@ input, select, textarea { font-family: var(--sans); }
 .arg-ok { color: var(--bamboo); font-weight: 700; }
 .arg-no { color: var(--cinnabar); font-weight: 700; }
 .arg-why { color: var(--ink-2); font-size: 13.5px; line-height: 1.75; margin: 6px 0 12px; }
+.arg-type-bar { margin-bottom: 14px; }
+.arg-type-lbl { font-size: 13px; color: var(--ink-3); margin-bottom: 10px; }
+.arg-type-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.arg-type-chip { border: 1px solid var(--line); border-radius: 999px; padding: 5px 14px; font-size: 13px; background: transparent; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.arg-type-chip small { color: var(--ink-3); font-size: 11.5px; }
+.arg-type-chip:hover { border-color: var(--cinnabar); color: var(--cinnabar); }
+.arg-type-chip.active { border-color: var(--cinnabar); background: var(--cinnabar); color: #fff; }
+.arg-type-chip.active small { color: rgba(255, 255, 255, .8); }
+.arg-type-all { border-color: var(--cinnabar); color: var(--cinnabar); font-weight: 600; }
+.arg-type-all.active { background: var(--cinnabar); color: #fff; }
 
 /* ===== 今日复习 ===== */
 .review-head { display: flex; align-items: center; gap: 34px; flex-wrap: wrap; }

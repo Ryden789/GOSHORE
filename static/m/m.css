@@ -989,6 +989,13 @@ body.smallfont .stem, body.smallfont .opt { font-size: 14px; }
 .arg-ok { color: var(--bamboo); font-weight: 700; }
 .arg-no { color: var(--cinnabar); font-weight: 700; }
 .arg-why { color: var(--ink-2); font-size: 13px; line-height: 1.7; margin: 6px 0 10px; }
+.arg-type-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.arg-type-chip { border: 1px solid var(--line); border-radius: 999px; padding: 6px 13px; font-size: 13px; background: transparent; display: inline-flex; align-items: center; gap: 5px; }
+.arg-type-chip small { color: var(--ink-3); font-size: 11px; }
+.arg-type-chip.active { border-color: var(--cinnabar); background: var(--cinnabar); color: #fff; }
+.arg-type-chip.active small { color: rgba(255, 255, 255, .8); }
+.arg-type-all { border-color: var(--cinnabar); color: var(--cinnabar); font-weight: 600; }
+.arg-type-all.active { background: var(--cinnabar); color: #fff; }
 .rp-actions {
   display: flex; gap: 8px; padding: 12px 18px 16px;
   border-top: 1px solid var(--line, #eee);

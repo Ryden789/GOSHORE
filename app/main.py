@@ -619,6 +619,7 @@ def api_argument_overview():
     ov = argument.list_materials()
     ov["taxonomy"] = argument._TAXONOMY
     ov["quiz_stats"] = argument.quiz_stats()
+    ov["quiz_type_stats"] = argument.quiz_type_stats()
     return ov
 
 
@@ -642,7 +643,10 @@ async def api_argument_submit(b: ArgumentSubmitIn):
 
 @app.post("/api/argument/quiz/draw")
 def api_argument_quiz_draw(b: dict):
-    return argument.quiz_draw(int(b.get("n", 5)))
+    types = b.get("types") or None
+    if types and not isinstance(types, list):
+        types = None
+    return argument.quiz_draw(max(1, min(20, int(b.get("n", 5)))), types=types)
 
 
 @app.post("/api/argument/quiz/check")
