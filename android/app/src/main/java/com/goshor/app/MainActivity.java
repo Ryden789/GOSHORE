@@ -293,10 +293,21 @@ public class MainActivity extends Activity {
                 while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
             }
         } else {
+            // 清空旧目录，避免残留文件（如已删除的 JSON 卡库）
+            if (dst.exists()) deleteRecursively(dst);
             //noinspection ResultOfMethodCallIgnored
             dst.mkdirs();
             for (String c : children) copyAssetDir(path + "/" + c, new File(dst, c));
         }
+    }
+
+    private void deleteRecursively(File f) {
+        if (f.isDirectory()) {
+            File[] cs = f.listFiles();
+            if (cs != null) for (File c : cs) deleteRecursively(c);
+        }
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
     }
 
     /* ================= WebView ================= */

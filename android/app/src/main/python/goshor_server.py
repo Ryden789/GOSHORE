@@ -676,6 +676,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(db.stats_overview())
             elif path == "/api/facets":
                 self._json(db.facets())
+            elif path == "/api/exams":
+                self._json({"items": db.list_exams()})
             elif path == "/api/kaodian-tree":
                 self._json({"items": db.kaodian_tree(q("module", "判断推理"))})
             elif path == "/api/wrong-book":
@@ -809,6 +811,12 @@ class _Handler(BaseHTTPRequestHandler):
                     b.get("module", ""), b.get("kaodian", ""),
                     max(1, min(30, int(b.get("n", 10)))))
                 self._json({"ids": ids})
+            elif path == "/api/exam-paper":
+                exam = str(b.get("exam", ""))
+                ids = db.exam_paper_ids(exam)
+                n = len(ids)
+                minutes = max(10, round(n * 0.89)) if n else 0
+                self._json({"ids": ids, "minutes": minutes, "name": exam})
             elif path == "/api/docs/batch":
                 self._json({"items": db.get_docs_batch(b.get("ids", []))})
             elif path == "/api/answer":

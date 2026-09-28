@@ -681,8 +681,8 @@ async function renderHome() {
       <span class="et"><b>复习巩固</b><small>错题 ${s.wrong_count} · 待复习 ${s.review_due}</small></span><span class="go">›</span></a>
     <a class="entry" href="#/me"><span class="ei">报</span>
       <span class="et"><b>本周诊断</b><small>正确率涨跌与建议</small></span><span class="go">›</span></a>
-    <button class="btn btn-ghost btn-block" id="exportToday" style="margin-top:12px">
-      📤 导出今日学习报告（txt，存到系统下载目录）</button>`;
+    <a class="entry" id="exportToday" style="margin-top:12px;cursor:pointer"><span class="ei">📤</span>
+      <span class="et"><b>导出今日学习报告</b><small>保存或分享今日学习成果</small></span><span class="go">›</span></a>`;
 
   const dg = $("#dailyGo");
   if (dg) dg.onclick = async () => {
@@ -693,7 +693,7 @@ async function renderHome() {
       else runPaper(r.ids, { title: "每日一题", daily: true });
     } finally { dg.disabled = false; dg.textContent = "抽今日一题"; }
   };
-  $("#exportToday").onclick = () => exportToday(s);
+  $("#exportToday").onclick = () => showReportPreview(s);
   maybeBackupGuide(s);
 }
 
@@ -753,22 +753,69 @@ function buildTodayReport(s) {
     ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
   const todayRate = s.today_answers
     ? Math.round(s.today_correct / s.today_answers * 100) : 0;
-  const lines = [
-    `上岸自习室 · 今日学习报告`,
-    `日期：${todayStr()}`,
-    ``,
-    `【今日】作答 ${s.today_answers} 题，答对 ${s.today_correct}，正确率 ${todayRate}%；蒙题 ${s.today_guessed || 0} 次；专注 ${Math.round((s.today_focus || 0) / 60)} 分钟；连对 🔥${Streak.n}`,
-    `【累计】作答 ${s.answers_total} 题，总正确率 ${totalRate}%；连续学习 ${s.streak} 天`,
-    `【称号】${gameRank(s.answers_total)}`,
-    `【错题】待消灭 ${s.wrong_count}，累计歼灭 ${s.annihilated || 0}`,
-  ];
+  const focusMin = Math.round((s.today_focus || 0) / 60);
+  const L = [];
+  L.push(`╔════════════════════════════════╗`);
+  L.push(`║     上岸自习室 · 今日学习报告     ║`);
+  L.push(`║          ${todayStr()}           ║`);
+  L.push(`╚════════════════════════════════╝`);
+  L.push(``);
+  L.push(`📊 今日战况`);
+  L.push(`  作答 ${s.today_answers} 题 · 答对 ${s.today_correct} · 正确率 ${todayRate}%`);
+  L.push(`  蒙题 ${s.today_guessed || 0} 次 · 专注 ${focusMin} 分钟`);
+  L.push(`  连对 🔥${Streak.n}`);
+  L.push(``);
+  L.push(`📈 累计成绩`);
+  L.push(`  总作答 ${s.answers_total} 题 · 总正确率 ${totalRate}%`);
+  L.push(`  连续学习 ${s.streak} 天`);
+  L.push(`  当前称号：${gameRank(s.answers_total)}`);
+  L.push(``);
+  L.push(`⚔️ 错题前线`);
+  L.push(`  待消灭 ${s.wrong_count} 题 · 累计歼灭 ${s.annihilated || 0} 题`);
   if ((s.module_stats || []).length) {
-    lines.push(``, `【各模块正确率】`);
+    L.push(``, `📚 各模块正确率`);
     s.module_stats.forEach(m =>
-      lines.push(`- ${m.module}：${m.rate}%（${m.n} 题）`));
+      L.push(`  ${m.module}　${m.rate}%（${m.n} 题）`));
   }
-  lines.push(``, `—— 由上岸自习室 App 生成`);
-  return lines.join("\n");
+  L.push(``, `—— 由上岸自习室 App 生成`);
+  return L.join("\n");
+}
+
+/* U-9 报告预览弹窗：先看再存/分享 */
+function showReportPreview(s) {
+  const text = buildTodayReport(s);
+  const native = window.GoshorNative;
+  const mask = document.createElement("div");
+  mask.className = "rp-mask";
+  mask.innerHTML = `
+    <div class="rp-card">
+      <div class="rp-head">今日学习报告</div>
+      <pre class="rp-body">${esc(text)}</pre>
+      <div class="rp-actions">
+        <button class="btn btn-ghost rp-close">关闭</button>
+        ${native && native.shareFile ? '<button class="btn btn-primary rp-share">分享</button>' : ''}
+        <button class="btn btn-primary rp-save">保存到手机</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.addEventListener("click", e => { if (e.target === mask) close(); });
+  $(".rp-close", mask).onclick = close;
+  const sv = $(".rp-save", mask);
+  if (sv) sv.onclick = async () => {
+    sv.disabled = true; sv.textContent = "保存中…";
+    await exportToday(s);
+    close();
+  };
+  const sh = $(".rp-share", mask);
+  if (sh) sh.onclick = async () => {
+    const name = `上岸学习报告-${todayStr()}.txt`;
+    if (native && native.saveTextFile) {
+      const r = native.saveTextFile(name, text, "text/plain");
+      if (typeof r === "string" && !r.startsWith("ERROR")) native.shareFile(r);
+      else toast("保存失败，无法分享");
+    }
+  };
 }
 
 async function exportToday(s) {
@@ -822,6 +869,12 @@ async function renderPractice() {
         <span class="chip" data-n="20">20 题</span>
       </div>
       <div style="margin-top:14px"><button class="btn btn-primary btn-block" id="pGo">开始组卷</button></div>
+    </div>
+    <div class="card">
+      <h3>真题套卷</h3>
+      <p class="muted" style="margin:0 0 10px;font-size:12px">按当年卷面顺序整卷练习，自动计时</p>
+      <select id="examSel" class="exam-sel" style="width:100%;margin-bottom:10px"><option value="">加载中…</option></select>
+      <button class="btn btn-primary btn-block" id="examGo" disabled>开始整卷</button>
     </div>
     <div class="card">
       <h3>考点正确率热力墙</h3>
@@ -880,6 +933,29 @@ async function renderPractice() {
       runPaper(r.ids, { title: mod ? `${mod} · ${n}题` : `随机 ${n} 题` });
     } finally {
       btn.disabled = false; btn.textContent = "开始组卷";
+    }
+  };
+
+  // 真题套卷下拉
+  api("/api/exams").then(r => {
+    const sel = $("#examSel");
+    if (!sel) return;
+    if (!r.items.length) { sel.innerHTML = `<option value="">题库中暂无成套试卷</option>`; return; }
+    sel.innerHTML = r.items.map(e =>
+      `<option value="${esc(e.exam)}">${esc(e.exam)}（${e.c} 题）</option>`).join("");
+    const go = $("#examGo"); if (go) go.disabled = false;
+  }).catch(() => {});
+  $("#examGo").onclick = async () => {
+    const exam = $("#examSel").value;
+    if (!exam) return;
+    const btn = $("#examGo");
+    btn.disabled = true; btn.textContent = "组卷中…";
+    try {
+      const r = await api("/api/exam-paper", { exam });
+      if (!r.ids.length) return toast("该套卷没有可用题目");
+      runPaper(r.ids, { title: r.name, minutes: r.minutes });
+    } finally {
+      const b = $("#examGo"); if (b) { b.disabled = false; b.textContent = "开始整卷"; }
     }
   };
 
@@ -944,6 +1020,28 @@ async function runPaper(ids, opt = {}) {
 
   const answers = new Array(docs.length).fill(null);
   let cur = 0, t0 = Date.now(), qStart = Date.now();
+  const deadline = opt.minutes ? Date.now() + opt.minutes * 60000 : 0;
+  let timerH = 0;
+  function fmtRemain() {
+    if (!deadline) return "";
+    const s = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+  function startTimer() {
+    if (!deadline) return;
+    clearInterval(timerH);
+    timerH = setInterval(() => {
+      const el = $("#paperTimer");
+      if (!el) { clearInterval(timerH); return; }
+      if (Date.now() >= deadline) {
+        clearInterval(timerH);
+        if (inRun) { toast("⏰ 时间到，自动交卷"); summary(); }
+        return;
+      }
+      el.textContent = fmtRemain();
+      el.classList.toggle("urgent", deadline - Date.now() < 60000);
+    }, 1000);
+  }
 
   let guessedNow = false;
   function show(i) {
@@ -954,7 +1052,7 @@ async function runPaper(ids, opt = {}) {
       <div class="qhead">
         <button class="run-exit" id="runExit">‹ 退出</button>
         <span class="prog">第 ${i + 1} / ${docs.length} 题</span>
-        <span class="tag">${esc(doc.kaodian || doc.module || "")}</span>
+        ${deadline ? `<span class="paper-timer" id="paperTimer">${fmtRemain()}</span>` : `<span class="tag">${esc(doc.kaodian || doc.module || "")}</span>`}
       </div>
       ${d.material ? `<details class="material" open>
         <summary>本则资料 · 点击折叠/展开</summary>
@@ -1020,6 +1118,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
   }
 
   function summary() {
+    clearInterval(timerH);
     Pomo.unmount();
     const skippedN = answers.filter(a => a && a.skip).length;
     const judgedN = docs.length - skippedN;
@@ -1049,6 +1148,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
   }
 
   show(0);
+  startTimer();
 }
 
 /* ---------- 做题流（列式专项） ---------- */
@@ -1287,11 +1387,10 @@ let cardToken = 0;
 
 async function renderCards() {
   const tok = ++cardToken;
-  // 首次进入：自动导入内置卡库（幂等）
+  // 首次进入：自动同步内置卡库（全量重建，清理已删除的旧卡）
   try {
-    const prog0 = await api("/api/cards/progress");
+    await api("/api/cards/import", {});
     if (tok !== cardToken) return;
-    if (!prog0.total) await api("/api/cards/import", {});
   } catch (e) {}
   if (tok !== cardToken) return;
   view.innerHTML = `
@@ -1370,15 +1469,16 @@ async function drawDueCards(box, tok) {
   show();
 }
 
-/* 卡片库：筛选 + 逐卡翻看 */
+/* 卡片库：筛选 + 搜索 + 逐卡翻看 */
 async function drawCardLibrary(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
   const facets = await api("/api/cards/facets");
   if (tok !== cardToken) return;
   const all = await api("/api/cards");
   if (tok !== cardToken) return;
-  let cards = all.items || [];
-  const filters = { card_type: "", category: "", module: "" };
+  let allCards = all.items || [];
+  let cards = allCards;
+  const filters = { card_type: "", category: "", module: "", q: "" };
 
   function selectRow(key, label) {
     const opts = facets[key + "s"] || [];
@@ -1387,6 +1487,16 @@ async function drawCardLibrary(box, tok) {
         <option value="">全部</option>
         ${opts.map(o => `<option value="${esc(o.k)}">${esc(o.k)}（${o.c}）</option>`).join("")}
       </select></div>`;
+  }
+
+  function applyFilters() {
+    cards = allCards.filter(c =>
+      (!filters.card_type || c.card_type === filters.card_type) &&
+      (!filters.module || c.module === filters.module) &&
+      (!filters.category || c.category === filters.category) &&
+      (!filters.q || (c.stem + " " + c.analysis + " " + c.answer).includes(filters.q))
+    );
+    render();
   }
 
   const metaOf = c => esc([c.module, c.category, c.card_type]
@@ -1419,20 +1529,27 @@ async function drawCardLibrary(box, tok) {
         ${selectRow("card_type", "类型")}
         ${selectRow("module", "模块")}
         ${selectRow("category", "分类")}
+        <div class="cd-search" style="margin-top:8px">
+          <input type="text" id="cardSearch" placeholder="搜索词语/成语/释义…" value="${esc(filters.q || "")}"
+            style="width:100%;padding:8px 10px;border:1px solid var(--line,#ddd);border-radius:6px;font-size:13px;background:var(--card,#fff);color:var(--ink,#333)">
+        </div>
       </div>
-      <div class="cd-count">共 ${cards.length} 张 · 抽卡翻面，看释义评分</div>
+      <div class="cd-count">共 ${allCards.length} 张 · 抽卡翻面，看释义评分</div>
       <div id="cdList">
         ${cards.map(flipCard).join("") || `<div class="empty">没有符合条件的卡片</div>`}
       </div>`;
     $$(".cd-filters select").forEach(s => s.onchange = async () => {
       filters[s.dataset.k] = s.value;
-      const params = new URLSearchParams();
-      Object.entries(filters).forEach(([k, v]) => v && params.append(k, v));
-      const r = await api("/api/cards" + (params.toString() ? "?" + params : ""));
-      if (tok !== cardToken) return;
-      cards = r.items || [];
-      render();
+      applyFilters();
     });
+    const inp = $("#cardSearch");
+    if (inp) {
+      let debH;
+      inp.oninput = () => {
+        clearTimeout(debH);
+        debH = setTimeout(() => { filters.q = inp.value.trim(); applyFilters(); }, 300);
+      };
+    }
     $$(".flip-card").forEach(bindFlip);
   }
 
@@ -1452,7 +1569,7 @@ async function drawCardLibrary(box, tok) {
       }));
   }
 
-  render();
+  applyFilters();
 }
 
 /* 学习进度 */

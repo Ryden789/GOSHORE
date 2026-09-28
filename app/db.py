@@ -1618,19 +1618,30 @@ def import_cards() -> dict:
     if not IS_MOBILE:
         init_db(conn)
     before = conn.execute("SELECT COUNT(*) c FROM cards").fetchone()["c"]
+    # 全量重建：清空卡库再导入（卡片是引用数据，安全重建）
+    conn.execute("DELETE FROM cards")
+    conn.execute("DELETE FROM card_plan")
+    conn.execute("DELETE FROM card_reviews")
+    conn.commit()
     for fp in cards_dir.glob("*.json"):
         try:
             obj = json.loads(fp.read_text(encoding="utf-8"))
         except Exception:
             continue
         for q in obj.get("questions", []) + obj.get("cards", []):
+            # 只导入言语理解模块的 word_card（其他模块的 error_card 无评判标准，不导入）
+            if q.get("type") != "word_card":
+                continue
+            module = q.get("module", "")
+            if module not in ("言语理解", "言语理解与表达"):
+                continue
             try:
                 conn.execute(
                     """INSERT OR IGNORE INTO cards
                        (id,card_type,module,subtype,category,stem,answer,analysis,user_answer,source,tags)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        q["id"], q.get("type", ""), q.get("module", ""),
+                        q["id"], q.get("type", ""), module,
                         q.get("subtype", ""), q.get("category", ""),
                         q.get("stem", ""), q.get("answer", ""),
                         q.get("analysis", ""), q.get("userAnswer", ""),

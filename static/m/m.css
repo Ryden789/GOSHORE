@@ -832,6 +832,63 @@ body.smallfont .stem, body.smallfont .opt { font-size: 14px; }
   100% { transform: scale(1); }
 }
 
+/* 真题套卷计时器 */
+.paper-timer {
+  margin-left: auto; font-family: var(--mono, monospace); font-size: 15px;
+  font-weight: 700; color: var(--ink-2, #666);
+  padding: 2px 8px; border-radius: 6px; background: var(--card-2, #f0f0f0);
+}
+.paper-timer.urgent { color: var(--cinnabar, #c0392b); animation: timerPulse 1s ease-in-out infinite; }
+@keyframes timerPulse { 50% { opacity: .5; } }
+
+/* 套卷下拉 */
+.exam-sel {
+  font-size: 14px; padding: 8px 10px; border: 1px solid var(--line, #ddd);
+  border-radius: 8px; background: var(--card, #fff); color: var(--ink, #333);
+  -webkit-appearance: none; appearance: none;
+}
+
+/* U-9 报告预览弹窗 */
+.rp-mask {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  animation: rpFade .15s ease-out;
+}
+@keyframes rpFade { from { opacity: 0; } to { opacity: 1; } }
+.rp-card {
+  background: var(--bg, #fff); border-radius: 16px;
+  max-width: 380px; width: 100%; max-height: 80vh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  animation: rpRise .2s ease-out;
+}
+@keyframes rpRise { from { transform: translateY(20px); opacity: 0; } to { transform: none; opacity: 1; } }
+.rp-head {
+  padding: 16px 18px 8px; font-size: 16px; font-weight: 700;
+  border-bottom: 1px solid var(--line, #eee);
+}
+.rp-body {
+  flex: 1; overflow-y: auto; margin: 0; padding: 14px 18px;
+  font-size: 13px; line-height: 1.7; white-space: pre-wrap;
+  font-family: var(--mono, monospace); color: var(--ink, #333);
+}
+.rp-actions {
+  display: flex; gap: 8px; padding: 12px 18px 16px;
+  border-top: 1px solid var(--line, #eee);
+}
+.rp-actions .btn { flex: 1; }
+
+/* 卡片库搜索 */
+.cd-search input {
+  transition: border-color .15s ease;
+}
+.cd-search input:focus {
+  border-color: var(--green, #2e7d32) !important;
+  outline: none;
+}
+
 /* U-8 操作速记条 */
 .hint-bar {
   position: fixed; left: 10px; right: 10px;
