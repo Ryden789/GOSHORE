@@ -2100,9 +2100,16 @@ def tag_difficulty_batch(progress=None) -> dict:
             r["tags"] or "", r["qid"] or "", r["path"] or ""
         )
         if IS_MOBILE:
-            conn.execute(
-                "INSERT OR REPLACE INTO doc_overrides(doc_id,difficulty) VALUES(?,?)",
-                (r["id"], diff))
+            # 先尝试更新 my_documents（用户私有导入题可直接写）
+            cur = conn.execute(
+                "UPDATE my_documents SET difficulty=? WHERE id=? "
+                "AND (difficulty IS NULL OR difficulty='')",
+                (diff, r["id"]))
+            if cur.rowcount == 0:
+                # 不在 my_documents → 共享题库，写入个人覆写
+                conn.execute(
+                    "INSERT OR REPLACE INTO doc_overrides(doc_id,difficulty) VALUES(?,?)",
+                    (r["id"], diff))
         else:
             conn.execute(
                 "UPDATE documents SET difficulty=? WHERE id=?", (diff, r["id"]))
