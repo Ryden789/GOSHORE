@@ -182,14 +182,20 @@ function route() {
   const name = parts[0] || "home";
   setActive(name);
   window.scrollTo(0, 0);
-  const dispatch = fn => Promise.resolve().then(fn).catch(err => {
-    if (seq !== navSeq) return;   // 已切走，忽略旧页报错
-    view.innerHTML = `<div class="panel" style="margin-top:24px">
-      <h3>页面加载出错</h3>
-      <p style="color:var(--ink-2);font-size:14px">${esc(String((err && err.message) || err))}</p>
-      <button class="btn btn-primary" onclick="location.reload()">刷新重试</button>
-    </div>`;
-  });
+  const dispatch = fn => {
+    view.classList.add("route-loading");
+    return Promise.resolve().then(fn).then(() => {
+      if (seq === navSeq) view.classList.remove("route-loading");
+    }).catch(err => {
+      if (seq !== navSeq) return;   // 已切走，忽略旧页报错
+      view.classList.remove("route-loading");
+      view.innerHTML = `<div class="panel" style="margin-top:24px">
+        <h3>页面加载出错</h3>
+        <p style="color:var(--ink-2);font-size:14px">${esc(String((err && err.message) || err))}</p>
+        <button class="btn btn-primary" onclick="location.reload()">刷新重试</button>
+      </div>`;
+    });
+  };
   if (name === "doc") dispatch(() => renderDoc(+parts[1], parts[2] || "answer"));
   else if (parts[0] === "wordfill") dispatch(renderWordfill);
   else if (parts[0] === "speed") dispatch(renderSpeed);

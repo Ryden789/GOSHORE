@@ -303,12 +303,17 @@ function route() {
   $("#guestBar").hidden = !(ME && ME.isGuest && !isAuth);
   window.scrollTo(0, 0);
   document.onkeydown = null;
-  animIn(view);
+  // 入场动画必须在渲染完成后播放：否则等待接口期间旧页面会先淡入，
+  // 新内容替换时再闪一次（用户感知为“闪两次再跳转”）
   const go = ROUTES[tabName] || renderHome;
-  Promise.resolve(go()).catch(e => {
-    view.innerHTML = `<div class="card">加载失败：${esc(e.message)}<br><br>
-      <button class="btn btn-block" onclick="route()">重试</button></div>`;
-  });
+  view.classList.add("route-loading");
+  Promise.resolve(go())
+    .then(() => { view.classList.remove("route-loading"); animIn(view); })
+    .catch(e => {
+      view.classList.remove("route-loading");
+      view.innerHTML = `<div class="card">加载失败：${esc(e.message)}<br><br>
+        <button class="btn btn-block" onclick="route()">重试</button></div>`;
+    });
 }
 window.addEventListener("hashchange", route);
 
@@ -411,6 +416,9 @@ async function renderLogin() {
         <div class="auth-switch">还没有账号？<a href="#/register">注册新账号</a></div>
       </div>
       <button class="btn btn-block" id="guestBtn">以游客身份继续</button>
+      <button class="btn btn-ghost btn-block" id="auRestore" style="margin-top:10px">
+        📦 从备份恢复（重装后找回账号）</button>
+      <input type="file" id="auRestoreFile" accept=".zip,application/zip" hidden>
       <div class="auth-profiles" id="auProfiles"></div>
     </div>`;
 
@@ -439,6 +447,37 @@ async function renderLogin() {
     b.disabled = true;
     try { enterApp(await api("/api/auth/logout", {})); }
     catch (e) { errEl.textContent = e.message; b.disabled = false; }
+  };
+
+  /* 从备份恢复：整包还原账号与数据，恢复原账号密码直接登录 */
+  $("#auRestore").onclick = () => $("#auRestoreFile").click();
+  $("#auRestoreFile").onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    errEl.textContent = "";
+    const b = $("#auRestore");
+    b.disabled = true; b.textContent = "正在恢复…";
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      const r = await api("/api/backup/import",
+                          { name: file.name, data_b64: btoa(bin) });
+      if (!r.ok) { errEl.textContent = "恢复失败：" + r.error; return; }
+      if (r.accounts) {
+        toast(`✅ 已恢复 ${r.accounts.length} 个账号（${r.answers} 次作答），请直接登录`);
+        renderLogin();  // 刷新本机账号列表
+      } else {
+        toast("✅ 备份已恢复");
+      }
+    } catch (e2) {
+      errEl.textContent = "恢复失败：" + e2.message;
+    } finally {
+      b.disabled = false;
+      b.textContent = "📦 从备份恢复（重装后找回账号）";
+    }
   };
 
   // 已注册账号快捷填充
@@ -655,6 +694,57 @@ async function renderHome() {
     } finally { dg.disabled = false; dg.textContent = "抽今日一题"; }
   };
   $("#exportToday").onclick = () => exportToday(s);
+  maybeBackupGuide(s);
+}
+
+/* 备份导出：App 内优先调起系统分享，浏览器环境回退为 HTTP 下载 */
+async function exportBackup(includeKey) {
+  const r = await api("/api/backup/export", { include_key: !!includeKey });
+  const native = window.GoshorNative;
+  if (native && native.shareFile) {
+    native.shareFile(r.path);  // 系统分享面板：发微信 / 存网盘
+    return { ...r, shared: true };
+  }
+  const a = document.createElement("a");
+  a.href = "/api/backup/download?name=" + encodeURIComponent(r.name);
+  a.download = r.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  return { ...r, shared: false };
+}
+
+/* 方案三：备份引导弹窗——累计答题 ≥50 或首用满 7 天（先到为准），
+   首页弹一次备份卡；关闭后 30 天内不再弹 */
+function maybeBackupGuide(s) {
+  const today = todayStr();
+  if (!Pref.get("firstuse", "")) Pref.set("firstuse", today);
+  const first = new Date(Pref.get("firstuse", today));
+  const days = (Date.now() - first.getTime()) / 86400000;
+  if ((s.answers_total || 0) < 50 && days < 7) return;
+  const hide = Pref.get("bkguide_hide", "");
+  if (hide && (Date.now() - new Date(hide).getTime()) / 86400000 < 30) return;
+  const card = document.createElement("div");
+  card.className = "card daily-door";
+  card.id = "bkGuide";
+  card.innerHTML = `
+    <div class="door-title">💾 备份学习数据</div>
+    <div class="muted">你已积累 ${s.answers_total} 次作答。卸载 App 会清空本机数据，
+      建议导出备份（可发微信 / 存网盘），换机或重装后一键恢复。</div>
+    <button class="btn btn-primary btn-block" id="bkGuideGo" style="margin-top:10px">立即备份</button>
+    <button class="btn btn-ghost btn-block" id="bkGuideNo" style="margin-top:8px">暂不，30 天内不再提醒</button>`;
+  view.insertBefore(card, view.firstChild);
+  const dismiss = () => { Pref.set("bkguide_hide", todayStr()); card.remove(); };
+  $("#bkGuideNo", card).onclick = dismiss;
+  $("#bkGuideGo", card).onclick = async () => {
+    const b = $("#bkGuideGo", card);
+    b.disabled = true; b.textContent = "正在生成备份…";
+    try {
+      await exportBackup(false);
+      toast("✅ 备份已生成");
+    } catch (e) {
+      toast("备份失败：" + e.message);
+    }
+    dismiss();
+  };
 }
 
 /* U-9 拼今日报告并通过原生桥保存为 txt */
@@ -708,8 +798,10 @@ const FORMULA_TYPES = [
 ];
 
 async function renderPractice() {
-  const facets = await api("/api/facets");
-  const stats = await api("/api/stats").catch(() => ({}));
+  const [facets, stats] = await Promise.all([
+    api("/api/facets"),
+    api("/api/stats").catch(() => ({}))
+  ]);
   const rateMap = {};
   (stats.module_stats || []).forEach(m => { rateMap[m.module] = m; });
   const heatCls = r => r < 40 ? "heat-r" : r < 70 ? "heat-y" : "heat-g";
@@ -1467,11 +1559,22 @@ async function renderSearch() {
 
 /* ---------- 导入题库 ---------- */
 
-function renderImport() {
+async function renderImport() {
   const MODULES = ["常识判断", "言语理解", "数量关系", "判断推理", "资料分析", "综合分析"];
   const st = { tab: "json", items: [] };
+  const bank = await api("/api/update/current").catch(() => null);
 
   view.innerHTML = `
+    <div class="card">
+      <h3>题库更新</h3>
+      <div class="kd-row"><span class="kn">当前题库</span>
+        <span>${bank ? `v${bank.version} · ${bank.docs} 题` : "读取失败"}</span></div>
+      <p class="muted">选择题库更新包（goshor-update-vN.zip），校验通过后自动替换题库，
+        重启 App 生效；旧库自动留档，答题记录不受影响。</p>
+      <button class="btn btn-primary btn-block" id="updPick">选择题库更新包</button>
+      <input type="file" id="updFile" accept=".zip,application/zip" hidden/>
+      <div class="set-status" id="updStatus"></div>
+    </div>
     <div class="card">
       <div class="chips" style="margin-bottom:12px">
         <span class="chip on" data-tab="json">JSON 题库</span>
@@ -1521,6 +1624,37 @@ function renderImport() {
   $("#jsonFile").onchange = async e => {
     const file = e.target.files[0];
     if (file) $("#jsonText").value = await file.text();
+  };
+
+  /* ---- 题库更新包：选 zip → 校验 → 备份旧库 → 替换 → 提示重启 ---- */
+  $("#updPick").onclick = () => $("#updFile").click();
+  $("#updFile").onchange = async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const el = $("#updStatus");
+    el.classList.remove("ok", "err");
+    el.textContent = "正在校验更新包…";
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      const r = await api("/api/update/apply",
+                          { data_b64: btoa(bin) });
+      if (!r.ok) {
+        el.textContent = "更新失败：" + r.error;
+        el.classList.add("err");
+        return;
+      }
+      el.textContent = `✅ 更新成功：v${r.version}（${r.docs} 题）` +
+        (r.images ? `，新增图片 ${r.images} 张` : "") +
+        "，重启 App 后生效";
+      el.classList.add("ok");
+    } catch (e2) {
+      el.textContent = "更新失败：" + e2.message;
+      el.classList.add("err");
+    }
   };
 
   const showPreview = res => {
@@ -1674,6 +1808,7 @@ async function renderDoubts(page = 1, status = "") {
 
 async function renderSettings() {
   const s = await api("/api/settings");
+  const bank = await api("/api/update/current").catch(() => null);
   const keyPh = s.deepseek_api_key
     ? `已配置（${s.deepseek_api_key}），不修改请留空` : "sk-...";
   view.innerHTML = `
@@ -1691,6 +1826,20 @@ async function renderSettings() {
         <label>模型</label>
         <input id="setModel" class="m-input" value="${esc(s.deepseek_model)}"/>
         <div class="muted">deepseek-chat（快、省）/ deepseek-reasoner（更强更慢）</div>
+      </div>
+      <div class="key-guide">
+        <b>🔑 免费申请 DeepSeek Key（约 2 分钟）</b>
+        <ol class="guide-steps">
+          <li>浏览器打开 <b>platform.deepseek.com</b>，手机号注册并登录</li>
+          <li>左侧菜单进入「API keys」→「创建 API key」</li>
+          <li>复制 sk- 开头的密钥，粘贴到上方「API Key」框</li>
+          <li>点保存，显示「✓ 已连通」即解锁 AI 命题 / AI 批改</li>
+        </ol>
+        <div class="guide-copy">
+          <button class="btn btn-sm" id="cpBase">复制接口地址</button>
+          <button class="btn btn-sm" id="cpModel">复制模型名</button>
+        </div>
+        <div class="muted">Key 只保存在本机当前账号下，不会上传。不配 Key 也能用：词语填空走预置题库，批改用对照自评。</div>
       </div>
       <div class="field">
         <label>每日学习提醒</label>
@@ -1716,11 +1865,19 @@ async function renderSettings() {
       <h3>备份与恢复</h3>
       <label class="bk-check"><input type="checkbox" id="bkKey"/>
         备份同时包含 API Key（默认不包含）</label>
-      <button class="btn btn-primary btn-block" id="bkExport">导出我的备份</button>
+      <button class="btn btn-primary btn-block" id="bkExport">导出备份并分享</button>
       <button class="btn btn-block" id="bkImport">选择备份文件恢复</button>
       <input type="file" id="bkFile" accept=".zip,application/zip" hidden/>
       <div class="set-status" id="bkStatus"></div>
-      <div class="muted">备份含本账号全部做题数据，可发送到网盘或另一台手机后恢复</div>
+      <div class="muted">备份含本机全部账号与做题数据，可发微信/存网盘；恢复后账号密码原样可用</div>
+    </div>
+    <div class="card">
+      <h3>题库更新</h3>
+      <div class="kd-row"><span class="kn">当前题库版本</span>
+        <span>${bank ? `v${bank.version} · ${bank.docs} 题` : "读取失败"}</span></div>
+      <button class="btn btn-block" id="updCheck" style="margin-top:10px">检查更新</button>
+      <div class="set-status" id="updCheckStatus"></div>
+      <div class="muted">有更新时下载更新包，到「导入 → 题库更新」手动安装；答题记录不受影响</div>
     </div>`;
 
   $$("#fontPick .type-check").forEach(t => t.onclick = () => {
@@ -1735,6 +1892,22 @@ async function renderSettings() {
     if (!e.target.checked) Pomo.unmount();
   };
 
+  /* 复制接口地址 / 模型名（兼容无 clipboard 权限的 WebView） */
+  const copyText = async (text, btn) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta);
+      ta.select(); document.execCommand("copy"); ta.remove();
+    }
+    const old = btn.textContent;
+    btn.textContent = "已复制 ✓";
+    setTimeout(() => (btn.textContent = old), 1200);
+  };
+  $("#cpBase").onclick = e => copyText($("#setBase").value.trim(), e.target);
+  $("#cpModel").onclick = e => copyText($("#setModel").value.trim(), e.target);
+
   $("#setSave").onclick = async () => {
     const patch = {
       deepseek_base_url: $("#setBase").value.trim(),
@@ -1745,30 +1918,57 @@ async function renderSettings() {
     localStorage.setItem("remind_time", $("#setRemind").value || "20:00");
     await api("/api/settings", patch);
     const el = $("#setStatus");
-    el.textContent = "已保存";
-    el.classList.add("ok");
+    el.classList.remove("ok", "err");
+    // 保存后自动验证连通性（已配过 Key 或本次新填了 Key 才验证）
+    const hasKey = !!k || !!s.deepseek_api_key;
+    if (!hasKey) {
+      el.textContent = "已保存（未配置 Key：词填用预置题、批改用对照自评）";
+      return;
+    }
+    el.textContent = "已保存，正在验证连通性…";
+    try {
+      const r = await api("/api/settings/test", {});
+      if (r.ok) {
+        el.textContent = "✓ 已连通，AI 命题 / AI 批改已解锁";
+        el.classList.add("ok");
+        s.deepseek_api_key = s.deepseek_api_key || "***";  // 本页状态同步
+      } else {
+        el.textContent = "已保存，但连接失败：" + (r.error || "未知原因");
+        el.classList.add("err");
+      }
+    } catch (e) {
+      el.textContent = "已保存，验证请求失败：" + e.message;
+      el.classList.add("err");
+    }
   };
 
   /* ---- 备份与恢复 ---- */
   $("#bkExport").onclick = async () => {
     const el = $("#bkStatus");
-    el.classList.remove("ok");
+    el.classList.remove("ok", "err");
     el.textContent = "正在生成备份…";
-    const r = await api("/api/backup/export",
-                        { include_key: $("#bkKey").checked });
-    const size = (r.size / 1024 / 1024).toFixed(1);
-    el.classList.add("ok");
-    el.innerHTML = `备份已生成（${size} MB）<br>
-      <span class="bk-actions">
-        <button class="btn btn-sm" id="bkShare">系统分享 / 发送</button>
-        <button class="btn btn-sm" id="bkSaveDl">保存到下载目录</button>
-      </span>`;
-    $("#bkShare").onclick = () => window.GoshorNative.shareFile(r.path);
-    $("#bkSaveDl").onclick = () => {
-      const res = window.GoshorNative.saveToDownloads(r.path);
-      el.textContent = res;
-      el.classList.toggle("ok", !res.startsWith("ERROR"));
-    };
+    try {
+      const r = await exportBackup($("#bkKey").checked);
+      const size = (r.size / 1024 / 1024).toFixed(1);
+      el.classList.add("ok");
+      if (r.shared) {
+        // App 内：已调起系统分享，保留「存下载目录」作为备选
+        el.innerHTML = `✅ 备份已生成（${size} MB），已调起系统分享<br>
+          <span class="bk-actions">
+            <button class="btn btn-sm" id="bkSaveDl">改为保存到下载目录</button>
+          </span>`;
+        $("#bkSaveDl").onclick = () => {
+          const res = window.GoshorNative.saveToDownloads(r.path);
+          el.textContent = res;
+          el.classList.toggle("ok", !res.startsWith("ERROR"));
+        };
+      } else {
+        el.textContent = `✅ 备份已生成（${size} MB），已开始下载`;
+      }
+    } catch (e) {
+      el.textContent = "备份失败：" + e.message;
+      el.classList.add("err");
+    }
   };
 
   $("#bkImport").onclick = () => $("#bkFile").click();
@@ -1789,9 +1989,40 @@ async function renderSettings() {
       el.textContent = "恢复失败：" + r.error;
       return;
     }
+    if (r.accounts) {
+      // 整包恢复：账号库已替换，回到登录页用原账号密码登录
+      el.textContent = `✅ 已恢复 ${r.accounts.length} 个账号（${r.answers} 次作答），请重新登录`;
+      el.classList.add("ok");
+      setTimeout(() => { location.hash = "#/login"; }, 1200);
+      return;
+    }
     el.textContent = `✅ 已恢复：${r.answers} 次作答等数据`;
     el.classList.add("ok");
     route();  // 用恢复后的数据重渲染
+  };
+
+  /* ---- 题库更新：检查 GitHub Releases ---- */
+  $("#updCheck").onclick = async () => {
+    const el = $("#updCheckStatus");
+    el.classList.remove("ok", "err");
+    el.textContent = "正在检查…";
+    try {
+      const r = await api("/api/update/check");
+      if (!r.ok) {
+        el.textContent = r.error || "检查失败，可手动选择更新包";
+        el.classList.add("err");
+      } else if (r.has_update) {
+        el.textContent = `发现新版本 v${r.latest}（当前 v${r.current.version}），` +
+          "请下载更新包后到「导入 → 题库更新」安装";
+        el.classList.add("ok");
+      } else {
+        el.textContent = `已是最新（v${r.current.version}）`;
+        el.classList.add("ok");
+      }
+    } catch (e) {
+      el.textContent = "检查失败，可手动选择更新包";
+      el.classList.add("err");
+    }
   };
 }
 
@@ -2151,17 +2382,24 @@ async function renderSpeed() {
 /* ---------- 词语填空 ---------- */
 
 async function renderWordfill() {
-  const stats = await api("/api/wordfill/stats");
+  const [stats, set] = await Promise.all([
+    api("/api/wordfill/stats"), api("/api/settings")]);
+  const hasKey = !!set.deepseek_api_key;  // 有 Key=AI 命题；无 Key=预置题降级
   const cfg = { category: "", difficulty: "mid", n: 5 };
   const run = { items: [], idx: 0, correct: 0, startedAt: 0, answered: false };
 
   view.innerHTML = `
     <div class="page-head">
       <h2>词语填空</h2>
-      <p class="muted">DeepSeek 按真题风格命题 · 题库已有 ${stats.total_questions} 道 · 累计作答 ${stats.total_answers} 次</p>
+      <p class="muted">${hasKey
+        ? "DeepSeek 按真题风格命题"
+        : "免 Key 模式 · 预置真题风格题库"} · 题库已有 ${stats.total_questions} 道 · 累计作答 ${stats.total_answers} 次</p>
+      ${hasKey ? "" : `<div class="key-tip" id="wfKeyTip">配置 DeepSeek Key 可解锁 AI 命题 →</div>`}
     </div>
     <div id="wfBody"></div>`;
   const body = $("#wfBody");
+  const keyTip = $("#wfKeyTip");
+  if (keyTip) keyTip.onclick = () => (location.hash = "#/settings");
 
   function showConfig() {
     body.innerHTML = `
@@ -2179,7 +2417,9 @@ async function renderWordfill() {
         <div class="cfg-line">
           <span>题量 <input type="number" id="wfN" value="${cfg.n}" min="3" max="10" style="width:72px"></span>
         </div>
-        <p class="muted">AI 生成约 10～30 秒/题，生成后自动入库</p>
+        <p class="muted">${hasKey
+          ? "AI 生成约 10～30 秒/题，生成后自动入库"
+          : "预置题库即时开始，无需等待；配 Key 后可用 AI 命题扩充题量"}</p>
         <button class="btn btn-primary btn-block" id="wfStart">开始练习</button>
       </div>`;
 
@@ -2199,8 +2439,8 @@ async function renderWordfill() {
   async function start() {
     body.innerHTML = `
       <div class="card" style="text-align:center;padding:40px 0">
-        <div>DeepSeek 正在命题中，请稍候…</div>
-        <p class="muted">通常需要 10～60 秒</p>
+        <div>${hasKey ? "DeepSeek 正在命题中，请稍候…" : "正在抽题…"}</div>
+        <p class="muted">${hasKey ? "通常需要 10～60 秒" : "预置题库随机出题"}</p>
       </div>`;
     try {
       const res = await api("/api/wordfill/practice", cfg);
@@ -2645,16 +2885,22 @@ async function renderShizheng() {
 /* ---------- AI 批改 ---------- */
 
 async function renderGrade() {
-  const [rub, hist, qs] = await Promise.all([
+  const [rub, hist, qs, set] = await Promise.all([
     api("/api/essay/rubrics"),
     api("/api/essay/history"),
     api("/api/essay/questions"),
+    api("/api/settings"),
   ]);
+  const hasKey = !!set.deepseek_api_key;  // 有 Key=AI 批改；无 Key=对照自评
   let history = hist.items;
+  let curRef = "";  // 当前载入真题的参考答案（自评模式对照用）
   view.innerHTML = `
     <div class="page-head">
-      <h2>AI 批改 · 申论 / 综应</h2>
-      <p class="muted">按真实阅卷规则批改：小题踩点给分、作文按档赋分 · 可从真题库选题，也可自行粘贴</p>
+      <h2>${hasKey ? "AI 批改" : "对照自评"} · 申论 / 综应</h2>
+      <p class="muted">${hasKey
+        ? "按真实阅卷规则批改：小题踩点给分、作文按档赋分 · 可从真题库选题，也可自行粘贴"
+        : "免 Key 模式：对照参考答案与评分细则自行评分，自评照常进统计"}</p>
+      ${hasKey ? "" : `<div class="key-tip" id="gKeyTip">配置 DeepSeek Key 可解锁 AI 批改 →</div>`}
     </div>
     <div class="card">
       <select id="gZhenti" class="g-field">
@@ -2667,7 +2913,7 @@ async function renderGrade() {
       <textarea id="gM" rows="5" placeholder="【给定材料】粘贴题目对应的材料（建议提供）"></textarea>
       <textarea id="gA" rows="7" placeholder="【你的作答】粘贴你的答案（必填）"></textarea>
       <div class="g-actions">
-        <button class="btn btn-primary" id="gGo">开始批改</button>
+        <button class="btn btn-primary" id="gGo">${hasKey ? "开始批改" : "对照自评"}</button>
         <span id="gTip" class="muted"></span>
       </div>
     </div>
@@ -2678,6 +2924,9 @@ async function renderGrade() {
       <h3 class="sec" style="margin-top:14px">批改记录</h3>
       <div id="gHist"></div>
     </div>`;
+
+  const gKeyTip = $("#gKeyTip");
+  if (gKeyTip) gKeyTip.onclick = () => (location.hash = "#/settings");
 
   const catSel = $("#gCat"), totalIn = $("#gTotal");
   catSel.innerHTML = rub.items.map(
@@ -2697,6 +2946,7 @@ async function renderGrade() {
     $("#gQ").value = q.question;
     $("#gM").value = q.material || "";
     totalIn.value = q.total_score || "";
+    curRef = q.reference || "";
     $("#gTip").textContent = `已载入「${q.title}」`;
   };
 
@@ -2745,9 +2995,74 @@ async function renderGrade() {
   }
   drawProf(); drawHist();
 
+  /* ---- 免 Key 对照自评：参考答案 + 按 rubric 维度勾选评分 ---- */
+  function runSelfGrade() {
+    const question = $("#gQ").value.trim(), answer = $("#gA").value.trim();
+    if (!question || !answer) { toast("题目与作答必填"); return; }
+    const r0 = rub.items.find(x => x.key === catSel.value);
+    const total = parseInt(totalIn.value) || (r0 ? r0.default_score : 0);
+    const points = (r0 && r0.points && r0.points.length ? r0.points : null)
+      || ["要点全面，覆盖题干要求", "条理清晰，分条作答", "表述准确、语言规范"];
+    $("#gOut").innerHTML = `
+      <div class="card self-grade">
+        <h3>对照自评 · ${esc(r0 ? r0.name : "")}（满分 ${total} 分）</h3>
+        ${curRef
+          ? `<details class="sg-ref" open><summary>📖 参考答案（先自己打分再对照）</summary>
+               <div class="md-body">${md(curRef)}</div></details>`
+          : `<p class="muted">未载入真题参考答案，请按下方评分细则自评</p>`}
+        <div class="cfg-label">评分细则逐项勾选（做到的打勾）</div>
+        <div class="sg-checks">
+          ${points.map((p, i) => `
+            <label class="sg-check"><input type="checkbox" data-i="${i}"/>
+              <span>${esc(p)}</span></label>`).join("")}
+        </div>
+        <div class="sg-score-row">
+          <label>自评得分 <input type="number" id="sgScore" min="0" max="${total}"
+            value="${Math.round(total * 0.6)}" style="width:72px"/> / ${total} 分</label>
+        </div>
+        <textarea id="sgNote" rows="2" placeholder="自评小结（可选）：哪里失分、怎么改"></textarea>
+        <button class="btn btn-primary btn-block" id="sgSubmit">提交自评并存入记录</button>
+        <span id="sgTip" class="muted"></span>
+      </div>`;
+    window.scrollTo({ top: $("#gOut").offsetTop - 10, behavior: "smooth" });
+
+    $("#sgSubmit").onclick = async () => {
+      const btn = $("#sgSubmit");
+      btn.disabled = true;
+      const checks = $$(".sg-check input", $("#gOut")).map(c => ({
+        text: c.nextElementSibling.textContent, ok: c.checked }));
+      try {
+        const r = await api("/api/essay/self-grade", {
+          category: catSel.value, question, answer,
+          total_score: total, score: +$("#sgScore").value || 0,
+          checks, note: $("#sgNote").value.trim(),
+        });
+        if (!r.ok) { toast(r.error || "自评提交失败"); btn.disabled = false; return; }
+        $("#gOut").innerHTML = `
+          <div class="card g-detail">
+            <p class="muted">对照自评 · 已存入批改记录</p>
+            <div class="md-body">${md(r.result)}</div>
+          </div>`;
+        history.unshift({
+          id: r.id, category: catSel.value, question,
+          total_score: r.total, score: r.score,
+          summary: r.result.split("\n")[0].replace(/^#+\s*/, "").slice(0, 60),
+          created_at: Date.now() / 1000,
+        });
+        drawProf(); drawHist();
+        noteResult(r.score >= r.total * 0.6);
+        toast("✅ 自评已存入记录");
+      } catch (e) {
+        toast("自评提交失败：" + e.message);
+        btn.disabled = false;
+      }
+    };
+  }
+
   let busy = false;
   $("#gGo").onclick = async () => {
     if (busy) return;
+    if (!hasKey) { runSelfGrade(); return; }  // 免 Key：对照自评
     const question = $("#gQ").value.trim(), answer = $("#gA").value.trim();
     if (!question || !answer) { toast("题目与作答必填"); return; }
     busy = true; $("#gGo").disabled = true;

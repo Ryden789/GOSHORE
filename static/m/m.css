@@ -89,6 +89,9 @@ img { max-width: 100%; height: auto; }
 .page-in { animation: pageIn .21s ease-out; }
 @media (prefers-reduced-motion: reduce) { .page-in { animation: none; } }
 
+/* 路由跳转中的即时反馈：旧页面半透明+禁用，避免"卡住无响应"感 */
+.route-loading { opacity: .4; pointer-events: none; transition: opacity .12s ease-out; }
+
 /* 首页数据格 */
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .stat {
@@ -843,3 +846,46 @@ body.smallfont .stem, body.smallfont .opt { font-size: 14px; }
 .hint-bar b { cursor: pointer; font-size: 14px; opacity: .8; }
 .hint-bar b:active { opacity: 1; }
 body.hint-on #view { padding-bottom: calc(150px + env(safe-area-inset-bottom)); }
+
+/* ========== AI 双轨制：Key 引导 / 入口提示 / 对照自评 ========== */
+.key-tip {
+  display: inline-block; margin-top: 4px; font-size: 12.5px;
+  color: var(--amber); cursor: pointer;
+  border-bottom: 1px dashed var(--amber);
+}
+.key-tip:active { opacity: .7; }
+.key-guide {
+  margin: 4px 0 14px; padding: 12px;
+  background: var(--paper-2); border-radius: var(--radius);
+  font-size: 13px; color: var(--ink-2);
+}
+.guide-steps { margin: 8px 0; padding-left: 20px; line-height: 1.7; }
+.guide-copy { display: flex; gap: 8px; margin-bottom: 8px; }
+.set-status.err { color: var(--cinnabar); }
+
+.self-grade h3 { margin: 0 0 8px; font-size: 15.5px; }
+.sg-ref {
+  margin-bottom: 10px; border: 1px solid var(--line-soft);
+  border-radius: 8px; padding: 8px 10px; background: var(--panel);
+}
+.sg-ref summary { cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--ink-2); }
+.sg-checks { margin: 6px 0 10px; }
+.sg-check {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 7px 0; border-top: 1px solid var(--line-soft);
+  font-size: 13px; line-height: 1.55; color: var(--ink-2); cursor: pointer;
+}
+.sg-check input { margin-top: 3px; }
+.sg-check input:checked + span { color: var(--green); }
+.sg-score-row { margin: 6px 0 10px; font-size: 14px; color: var(--ink-2); }
+.sg-score-row input {
+  width: 72px; padding: 8px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--paper); margin: 0 4px;
+}
+#sgNote {
+  width: 100%; margin-bottom: 10px; padding: 10px 11px;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--paper); font-size: 14px; font-family: var(--sans);
+  resize: vertical; outline: none;
+}
+#sgNote:focus { border-color: var(--cinnabar); }

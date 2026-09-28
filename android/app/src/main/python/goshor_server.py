@@ -10,6 +10,7 @@ import asyncio
 import json
 import mimetypes
 import posixpath
+import sqlite3
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -72,57 +73,211 @@ def _mobile_save_settings(patch: dict) -> None:
     tmp.replace(p)
 
 
-# ---------------- 备份 / 恢复（按当前账号） ----------------
+# ---------------- DeepSeek 连通性验证 ----------------
+
+async def _settings_test() -> dict:
+    """保存设置后用最小请求（1 token）验证 Key 连通性，返回明确失败原因。"""
+    import httpx
+    s = _mobile_load_settings()
+    key = s.get("deepseek_api_key") or ""
+    if not key:
+        return {"ok": False, "error": "尚未填写 API Key"}
+    payload = {
+        "model": s.get("deepseek_model") or "deepseek-chat",
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+        "stream": False,
+    }
+    url = (s.get("deepseek_base_url") or "https://api.deepseek.com"
+           ).rstrip("/") + "/chat/completions"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+            r = await client.post(
+                url, json=payload,
+                headers={"Authorization": f"Bearer {key}"})
+    except Exception as e:
+        return {"ok": False,
+                "error": f"网络连接失败（{e.__class__.__name__}），请检查接口地址与网络"}
+    if r.status_code == 200:
+        return {"ok": True}
+    if r.status_code in (401, 403):
+        return {"ok": False, "error": "Key 无效或未授权（401），请重新复制完整 Key"}
+    if r.status_code == 404:
+        return {"ok": False, "error": "接口地址有误（404），请核对接口地址"}
+    if r.status_code == 429:
+        return {"ok": False, "error": "账户额度不足或被限流（429），请到平台充值/稍后再试"}
+    return {"ok": False,
+            "error": f"API 返回 {r.status_code}：{r.text[:120]}"}
+
+
+# ---------------- 备份 / 恢复（整包：accounts.db + 全部 data_*.db） ----------------
+
+_BACKUP_FMT = 2  # 备份格式版本：2 = 整包（含账号库，可整包还原）
+
+
+def _users_data_dbs() -> list:
+    """users 目录下全部个人库文件 data_<uid>.db（排除临时文件）。"""
+    return sorted(p for p in _USERS_DIR.glob("data_*.db")
+                  if not p.name.endswith((".restore", ".tmp", ".new")))
+
+
+def _checkpoint_file(p: Path) -> None:
+    """把单个 sqlite 文件的 WAL 全部落回主库，保证单文件可整体复制。"""
+    try:
+        c = sqlite3.connect(str(p))
+        try:
+            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            c.close()
+    except Exception:
+        pass
+
 
 def _mobile_backup_export(include_key: bool) -> dict:
+    """整包备份：accounts.db + 全部 data_*.db + 各账号设置 + manifest.json。
+
+    恢复时整包还原，账号密码原样可用，无需重新注册。
+    """
     import datetime, zipfile
-    uid = accounts.get_session()
-    dbp = _USERS_DIR / f"data_{uid}.db"
-    # WAL 全部落主库，保证单文件完整
-    conn = db.connect()
-    try:
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    finally:
-        conn.close()
-    s = _mobile_load_settings()
-    if not include_key:
-        s.pop("deepseek_api_key", None)
+    acc_db = _USERS_DIR / "accounts.db"
+    if acc_db.exists():
+        _checkpoint_file(acc_db)
+    for p in _users_data_dbs():
+        _checkpoint_file(p)
     meta = {
-        "version": 1,
+        "app": "goshore-mobile",
+        "fmt": _BACKUP_FMT,
         "exported_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "include_key": include_key,
+        "accounts": accounts.profiles(),
     }
     out_dir = _USERS_DIR / "exports"
     out_dir.mkdir(parents=True, exist_ok=True)
     name = f"goshore_backup_{datetime.datetime.now():%Y%m%d_%H%M}.zip"
     out = out_dir / name
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(dbp, "data.db")
-        z.writestr("settings.json",
-                   json.dumps(s, ensure_ascii=False, indent=2))
-        z.writestr("backup.json",
-                   json.dumps(meta, ensure_ascii=False))
+        z.writestr("manifest.json",
+                   json.dumps(meta, ensure_ascii=False, indent=2))
+        if acc_db.exists():
+            z.write(acc_db, "accounts.db")
+        for p in _users_data_dbs():
+            z.write(p, p.name)
+            sp = _USERS_DIR / (p.stem + ".settings.json")
+            if sp.exists():
+                try:
+                    s = json.loads(sp.read_text(encoding="utf-8"))
+                except Exception:
+                    s = {}
+                if not include_key:
+                    s.pop("deepseek_api_key", None)
+                z.writestr(sp.name,
+                           json.dumps(s, ensure_ascii=False, indent=2))
     return {"ok": True, "path": str(out), "name": name,
-            "size": out.stat().st_size}
+            "size": out.stat().st_size, "accounts": len(meta["accounts"])}
 
 
 def _mobile_backup_import(data_b64: str) -> dict:
-    import base64, io, sqlite3, zipfile
-    raw = base64.b64decode(data_b64)
-    uid = accounts.get_session()
-    dbp = _USERS_DIR / f"data_{uid}.db"
-    setp = _USERS_DIR / f"data_{uid}.settings.json"
+    """恢复备份：整包格式（manifest.json/accounts.db）优先；兼容旧版单账号包。"""
+    import base64, io, zipfile
+    try:
+        raw = base64.b64decode(data_b64)
+    except Exception:
+        return {"ok": False, "error": "备份数据解码失败"}
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile:
         return {"ok": False, "error": "不是合法的 zip 备份包"}
     with zf:
-        names = zf.namelist()
-        if "data.db" not in names:
-            return {"ok": False, "error": "备份包中缺少 data.db"}
-        db_bytes = zf.read("data.db")
-        settings_bytes = (zf.read("settings.json")
-                          if "settings.json" in names else None)
+        names = set(zf.namelist())
+        if "accounts.db" in names:
+            return _restore_full(zf, names)
+        if "data.db" in names:
+            return _restore_legacy(zf, names)
+        return {"ok": False, "error": "备份包中缺少 accounts.db / data.db"}
+
+
+def _restore_full(zf, names: set) -> dict:
+    """整包还原：覆盖 users 目录下账号库与全部个人库，恢复后需重新登录。"""
+    import re as _re
+    # 1) 读出全部库文件并逐个校验（全部通过才动现有数据）
+    payload = {}
+    for n in sorted(names):
+        if n == "accounts.db" or _re.fullmatch(r"data_\d+\.db", n):
+            payload[n] = zf.read(n)
+    settings = {}
+    for n in sorted(names):
+        if _re.fullmatch(r"data_\d+\.settings\.json", n):
+            settings[n] = zf.read(n)
+    tmps = []
+    err = None
+    for n, b in payload.items():
+        tmp = _USERS_DIR / ("restore_" + n)
+        tmp.write_bytes(b)
+        tmps.append(tmp)
+        try:
+            chk = sqlite3.connect(f"file:{tmp.as_posix()}?mode=ro", uri=True)
+            try:
+                integ = chk.execute("PRAGMA integrity_check").fetchone()[0]
+            finally:
+                chk.close()
+            if integ != "ok":
+                err = f"{n} 校验失败，备份已损坏"
+        except Exception as e:
+            err = f"备份校验失败：{e}"
+        if err:
+            break
+    if err:
+        for t in tmps:
+            t.unlink(missing_ok=True)
+        return {"ok": False, "error": err}
+
+    # 2) 替换 users 目录下的账号库与个人库（含 WAL/SHM 残留）
+    with _lock:
+        try:
+            victims = [_USERS_DIR / "accounts.db"] + _users_data_dbs()
+            for p in victims:
+                for ext in ("", "-wal", "-shm"):
+                    f = Path(str(p) + ext) if ext else p
+                    f.unlink(missing_ok=True)
+            for n in payload:
+                (_USERS_DIR / ("restore_" + n)).replace(_USERS_DIR / n)
+            for n, b in settings.items():
+                (_USERS_DIR / n).write_bytes(b)
+            # 会话失效：回到游客，恢复后用原账号密码直接登录
+            accounts.set_session(0)
+            db.set_user(0)
+        except Exception as e:
+            return {"ok": False, "error": f"写入恢复文件失败：{e}"}
+        finally:
+            for t in tmps:
+                t.unlink(missing_ok=True)
+
+    total_answers = 0
+    for n in payload:
+        if not n.startswith("data_"):
+            continue
+        try:
+            c = sqlite3.connect(str(_USERS_DIR / n))
+            try:
+                total_answers += c.execute(
+                    "SELECT COUNT(*) FROM answers").fetchone()[0]
+            finally:
+                c.close()
+        except Exception:
+            pass
+    accs = accounts.profiles()
+    return {"ok": True, "accounts": accs, "answers": total_answers,
+            "restored": sorted(payload) + sorted(settings)}
+
+
+def _restore_legacy(zf, names: set) -> dict:
+    """旧版单账号备份（data.db + settings.json）：恢复到当前登录账号。"""
+    uid = accounts.get_session()
+    dbp = _USERS_DIR / f"data_{uid}.db"
+    setp = _USERS_DIR / f"data_{uid}.settings.json"
+    db_bytes = zf.read("data.db")
+    settings_bytes = (zf.read("settings.json")
+                      if "settings.json" in names else None)
 
     # 先落临时文件并校验 SQLite
     tmp = dbp.with_name(dbp.name + ".restore")
@@ -172,6 +327,148 @@ def _mobile_backup_import(data_b64: str) -> dict:
         conn.close()
     return {"ok": True, "restored": restored,
             "answers": ans_n, "counts": counts}
+
+
+# ---------------- 题库热更新 ----------------
+
+# 「检查更新」拉取的 GitHub Releases 地址（最新发行版）
+_UPDATE_RELEASES_API = (
+    "https://api.github.com/repos/2936341939/GOSHORE/releases/latest")
+
+
+def _shared_db_meta() -> dict:
+    """只读打开共享题库，读 bank_meta 版本信息（无该表视为 v1 出厂版）。"""
+    info = {"version": 1, "docs": 0, "date": ""}
+    if not _DB_PATH.exists():
+        return info
+    uri = _DB_PATH.resolve().as_uri() + "?mode=ro"
+    c = sqlite3.connect(uri, uri=True)
+    try:
+        info["docs"] = c.execute(
+            "SELECT COUNT(*) FROM documents").fetchone()[0]
+        has = c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='bank_meta'").fetchone()
+        if has:
+            for k, v in c.execute("SELECT key, value FROM bank_meta"):
+                if k == "version":
+                    info["version"] = int(v)
+                elif k == "date":
+                    info["date"] = v
+    finally:
+        c.close()
+    return info
+
+
+def _mobile_update_apply(data_b64: str) -> dict:
+    """选择题库更新包：校验 → 旧库改名 .bak → 写入新库 + 解压增量图片。
+
+    校验规则：manifest 版本 > 当前版本；新库可打开、完整性通过且题数正常
+    （与 manifest.docs 一致）。任何一步失败都不动现有题库。
+    """
+    import base64, io, zipfile
+    try:
+        raw = base64.b64decode(data_b64)
+    except Exception:
+        return {"ok": False, "error": "更新包数据解码失败"}
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile:
+        return {"ok": False, "error": "不是合法的 zip 更新包"}
+    with zf:
+        names = zf.namelist()
+        if "manifest.json" not in names or "goshor.db" not in names:
+            return {"ok": False, "error": "更新包缺少 manifest.json 或 goshor.db"}
+        try:
+            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+            new_ver = int(manifest["version"])
+        except Exception:
+            return {"ok": False, "error": "manifest.json 解析失败"}
+        cur = _shared_db_meta()
+        if new_ver <= cur["version"]:
+            return {"ok": False,
+                    "error": f"更新包 v{new_ver} 不高于当前题库 "
+                             f"v{cur['version']}，无需更新"}
+        # 新库先落临时文件，校验通过后再替换
+        tmp = _DB_PATH.with_name(_DB_PATH.name + ".new")
+        tmp.write_bytes(zf.read("goshor.db"))
+        try:
+            c = sqlite3.connect(f"file:{tmp.as_posix()}?mode=ro", uri=True)
+            try:
+                integ = c.execute("PRAGMA integrity_check").fetchone()[0]
+                docs = c.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            finally:
+                c.close()
+        except Exception as e:
+            tmp.unlink(missing_ok=True)
+            return {"ok": False, "error": f"新题库无法打开：{e}"}
+        if integ != "ok" or docs <= 0:
+            tmp.unlink(missing_ok=True)
+            return {"ok": False, "error": "新题库校验失败（文件损坏或无题目）"}
+        if manifest.get("docs") is not None and int(manifest["docs"]) != docs:
+            tmp.unlink(missing_ok=True)
+            return {"ok": False,
+                    "error": f"题数与 manifest 不符（{docs} ≠ "
+                             f"{manifest['docs']}），更新包不可信"}
+        # 旧库改名 .bak 留后路，再写入新库
+        bak = _DB_PATH.with_name(_DB_PATH.name + ".bak")
+        try:
+            bak.unlink(missing_ok=True)
+            if _DB_PATH.exists():
+                _DB_PATH.rename(bak)
+            tmp.replace(_DB_PATH)
+        except Exception as e:
+            tmp.unlink(missing_ok=True)
+            return {"ok": False, "error": f"替换题库失败：{e}"}
+        # 解压增量图片（防路径穿越）
+        n_img = 0
+        img_root = _IMG_DIR.resolve()
+        for n in names:
+            if not n.startswith("img/") or n.endswith("/"):
+                continue
+            out = (_IMG_DIR / n[4:]).resolve()
+            try:
+                out.relative_to(img_root)
+            except ValueError:
+                continue
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(zf.read(n))
+            n_img += 1
+    return {"ok": True, "version": new_ver, "docs": docs, "images": n_img,
+            "date": manifest.get("date", ""), "need_restart": True}
+
+
+def _mobile_update_check() -> dict:
+    """拉 GitHub Releases 最新题库更新包版本号，与本地比对。"""
+    import re as _re
+    import urllib.request
+    cur = _shared_db_meta()
+    try:
+        req = urllib.request.Request(
+            _UPDATE_RELEASES_API,
+            headers={"User-Agent": "goshore-mobile",
+                     "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return {"ok": False, "current": cur,
+                "error": "检查失败（网络不可达），可在「导入 → 题库更新」"
+                         "手动选择更新包"}
+    latest, url = 0, ""
+    for a in data.get("assets", []):
+        m = _re.search(r"goshor-update-v(\d+)\.zip", a.get("name", ""))
+        if m and int(m.group(1)) > latest:
+            latest = int(m.group(1))
+            url = a.get("browser_download_url", "")
+    if not latest:  # 没有标准命名资产时退而用 tag 号
+        m = _re.search(r"v(\d+)", data.get("tag_name", ""))
+        if m:
+            latest = int(m.group(1))
+    if not latest:
+        return {"ok": False, "current": cur,
+                "error": "未在 Releases 中找到题库更新包，可手动选择更新包"}
+    return {"ok": True, "current": cur, "latest": latest,
+            "has_update": latest > cur["version"], "url": url}
 
 
 def configure(db_path: str, img_dir: str, web_dir: str) -> None:
@@ -233,6 +530,101 @@ def _load_essay_questions() -> list:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return []
+
+
+# ---------------- 词语填空：免 Key 预置题降级 ----------------
+
+_WORDFILL_SEED: list | None = None
+
+
+def _load_wordfill_seed() -> list:
+    """读取随包预置词填题（m/wordfill_seed.json），带缓存；加载时做结构校验并规范化空格占位。"""
+    global _WORDFILL_SEED
+    if _WORDFILL_SEED is None:
+        items = []
+        try:
+            data = json.loads(
+                (_WEB_DIR / "m" / "wordfill_seed.json").read_text(encoding="utf-8"))
+            for raw in data.get("items", []):
+                it = dict(raw)
+                # _structural_check 返回空串为通过，同时会把占位统一为【　】
+                if not wordfill._structural_check(it):
+                    items.append(it)
+        except Exception:
+            items = []
+        _WORDFILL_SEED = items
+    return _WORDFILL_SEED
+
+
+def _wordfill_qid_by_passage(passage: str) -> int:
+    """按文段查个人库已有词填题 id（预置题去重落库用）。"""
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM wordfill_questions WHERE passage=? LIMIT 1",
+            (passage,)).fetchone()
+        return row["id"] if row else 0
+    finally:
+        conn.close()
+
+
+def _wordfill_recent_qids(limit: int = 100) -> set:
+    """本机最近作答过的词填题 qid 集合（避免短期重复抽题）。"""
+    conn = db.connect()
+    try:
+        return {r["qid"] for r in conn.execute(
+            "SELECT qid FROM wordfill_answers ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()}
+    finally:
+        conn.close()
+
+
+def _wordfill_seed_pick(category: str, difficulty: str, n: int) -> list[dict]:
+    """免 Key 模式抽题：按类型/难度过滤预置题，避开最近做过的，落库取稳定 id 后返回。"""
+    import random
+    pool = _load_wordfill_seed()
+    if not pool:
+        return []
+    recent = _wordfill_recent_qids(100)
+
+    def match(it, cat, diff):
+        return ((not cat or it.get("category") == cat)
+                and (not diff or it.get("difficulty") == diff))
+
+    cands = [it for it in pool if match(it, category, difficulty)]
+    if len(cands) < n:
+        cands = [it for it in pool if match(it, category, "")]  # 放宽难度
+    if len(cands) < n:
+        cands = list(pool)                                      # 再放宽类型
+    random.shuffle(cands)
+
+    fresh, done = [], []
+    for it in cands:
+        qid = _wordfill_qid_by_passage(it["passage"])
+        if not qid:
+            q = dict(it)
+            q["verified"] = False  # 预置题未走 AI 盲选复核
+            qid = db.save_wordfill(q)
+        q = dict(it)
+        q["id"] = qid
+        (done if qid in recent else fresh).append(q)
+        if len(fresh) >= n:
+            break
+    out = fresh[:n]
+    if len(out) < n:  # 新题不够时用最近做过的补齐，保证题量
+        out += done[:n - len(out)]
+    return out
+
+
+def _rubric_points(rubric: str) -> list[str]:
+    """从评分细则文本抽出编号给分规则行，作为对照自评的勾选维度。"""
+    import re
+    pts = []
+    for line in (rubric or "").splitlines():
+        line = line.strip()
+        if re.match(r"^\d+[\.、]", line):
+            pts.append(re.sub(r"^\d+[\.、]\s*", "", line))
+    return pts[:10]
 
 
 # ---------------- HTTP 处理 ----------------
@@ -342,7 +734,8 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/essay/rubrics":
                 self._json({"items": [
                     {"key": k, "name": v["name"], "hint": v["hint"],
-                     "default_score": v["default_score"]}
+                     "default_score": v["default_score"],
+                     "points": _rubric_points(v["rubric"])}
                     for k, v in essay_rubric.RUBRICS.items()]})
             elif path == "/api/essay/history":
                 items = db.list_essay_grades()
@@ -378,6 +771,12 @@ class _Handler(BaseHTTPRequestHandler):
                     self._json(q)
             elif path == "/api/shizheng":
                 self._json(_shizheng_overview())
+            elif path == "/api/update/current":
+                self._json({"ok": True, **_shared_db_meta()})
+            elif path == "/api/update/check":
+                self._json(_mobile_update_check())
+            elif path == "/api/backup/download":
+                self._serve_backup(q("name"))
             elif path == "/img":
                 self._serve_img(q("path"))
             else:
@@ -471,6 +870,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             elif path == "/api/essay/grade":
                 self._essay_grade(b)
+            elif path == "/api/essay/self-grade":
+                self._json(self._essay_self_grade(b))
             elif path == "/api/shizheng/generate":
                 self._json(_run_async(self._shizheng_generate(b)))
             elif path == "/api/shizheng/quiz":
@@ -541,11 +942,16 @@ class _Handler(BaseHTTPRequestHandler):
                         patch[k] = v
                 _mobile_save_settings(patch)
                 self._json({"ok": True})
+            elif path == "/api/settings/test":
+                self._json(_run_async(_settings_test()))
             elif path == "/api/backup/export":
                 self._json(_mobile_backup_export(
                     bool(b.get("include_key"))))
             elif path == "/api/backup/import":
                 self._json(_mobile_backup_import(
+                    str(b.get("data_b64", ""))))
+            elif path == "/api/update/apply":
+                self._json(_mobile_update_apply(
                     str(b.get("data_b64", ""))))
             else:
                 self._err(404, "not found")
@@ -667,6 +1073,11 @@ class _Handler(BaseHTTPRequestHandler):
     # ---- 词语填空：AI 生成（协程，与桌面规则一致） ----
 
     async def _wordfill_generate(self, b):
+        # AI 扩充题量：仅配 Key 后可用
+        if not _mobile_load_settings().get("deepseek_api_key"):
+            return {"items": [], "total": db.wordfill_count(),
+                    "need_key": True,
+                    "error": "配置 DeepSeek Key 后可使用 AI 命题"}
         category = b.get("category", "")
         difficulty = b.get("difficulty", "mid")
         n = max(1, min(5, int(b.get("n", 1))))
@@ -683,6 +1094,10 @@ class _Handler(BaseHTTPRequestHandler):
         category = b.get("category", "")
         difficulty = b.get("difficulty", "")
         n = max(1, min(20, int(b.get("n", 10))))
+        # 免 Key 降级：未配置 Key 时从随包预置题抽题（判分字段与 AI 命题同构）
+        if not _mobile_load_settings().get("deepseek_api_key"):
+            return {"items": _wordfill_seed_pick(category, difficulty, n),
+                    "generated": 0, "mode": "seed"}
         existing = db.random_wordfill(n, category, difficulty)
         if len(existing) >= n:
             return {"items": existing, "generated": 0}
@@ -725,6 +1140,54 @@ class _Handler(BaseHTTPRequestHandler):
             pass
         finally:
             loop.close()
+
+    # ---- 综应免 Key 对照自评（与 AI 批改同一落库路径） ----
+
+    def _essay_self_grade(self, b):
+        category = b.get("category", "")
+        rub = essay_rubric.RUBRICS.get(category)
+        if not rub:
+            return {"ok": False, "error": "未知题型"}
+        question = (b.get("question") or "").strip()
+        answer = (b.get("answer") or "").strip()
+        if not question or not answer:
+            return {"ok": False, "error": "题目与作答均不能为空"}
+        try:
+            total = int(b.get("total_score") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        total = total if 10 <= total <= 100 else rub["default_score"]
+        try:
+            score = float(b.get("score"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "自评分数无效"}
+        score = max(0.0, min(float(total), score))
+        note = (b.get("note") or "").strip()[:500]
+        # 勾选维度：{text, ok}，文本去掉竖线避免破坏 Markdown 表格
+        checks = []
+        for c in (b.get("checks") or [])[:30]:
+            if isinstance(c, dict) and c.get("text"):
+                checks.append((str(c["text"])[:80].replace("|", "｜"),
+                               bool(c.get("ok"))))
+
+        lines = [
+            f"## 总分：{score:g} / {total}分",
+            "（对照自评：未配置 DeepSeek Key，按评分细则自行勾选评分）",
+            "",
+            "## 得分明细",
+            "| 评分点 | 状态 |",
+            "|---|---|",
+        ]
+        lines += [f"| {t} | ✅ 达成 |" for t, ok in checks if ok]
+        lines += [f"| {t} | ❌ 未达成 |" for t, ok in checks if not ok]
+        if note:
+            lines += ["", "## 自评小结", note]
+        lines += ["", "## 评分细则（对照用）", rub["rubric"]]
+        result = "\n".join(lines)
+        with _lock:
+            gid = db.save_essay_grade(category, question, answer, total, result)
+        return {"ok": True, "id": gid, "score": score,
+                "total": total, "result": result}
 
     def _essay_grade(self, b):
         category = b.get("category", "")
@@ -849,6 +1312,24 @@ class _Handler(BaseHTTPRequestHandler):
         db.save_shizheng_quiz(period, _json.dumps(items, ensure_ascii=False))
         return {"ok": True, "cached": False, "items": items}
 
+    # ---- 备份 zip 下载（浏览器环境回退用；文件名白名单校验） ----
+
+    def _serve_backup(self, name: str):
+        import re as _re
+        if not _re.fullmatch(r"goshore_backup_[0-9_]+\.zip", name or ""):
+            return self._err(400, "非法文件名")
+        fp = _USERS_DIR / "exports" / name
+        if not fp.is_file():
+            return self._err(404)
+        data = fp.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="{name}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     # ---- 图片：解压目录内按相对路径读取 ----
 
     def _serve_img(self, url_path: str):
@@ -896,10 +1377,36 @@ class _Handler(BaseHTTPRequestHandler):
 _httpd: ThreadingHTTPServer | None = None
 
 
+def _bank_db_ok(p: Path) -> bool:
+    """题库可用性：能打开且 documents 有题。"""
+    try:
+        c = sqlite3.connect(f"file:{p.resolve().as_posix()}?mode=ro", uri=True)
+        try:
+            n = c.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        finally:
+            c.close()
+        return n > 0
+    except Exception:
+        return False
+
+
+def _rollback_bank_if_corrupt() -> bool:
+    """启动自检：题库损坏且存在 .bak 则自动回滚。返回是否发生回滚。"""
+    if _DB_PATH.exists() and _bank_db_ok(_DB_PATH):
+        return False
+    bak = _DB_PATH.with_name(_DB_PATH.name + ".bak")
+    if bak.exists() and _bank_db_ok(bak):
+        _DB_PATH.unlink(missing_ok=True)
+        bak.replace(_DB_PATH)
+        return True
+    return False
+
+
 def start(db_path: str, img_dir: str, web_dir: str) -> int:
     """在后台线程启动服务，返回端口。"""
     global _httpd
     configure(db_path, img_dir, web_dir)
+    rolled = _rollback_bank_if_corrupt()
     global _USERS_DIR
     _USERS_DIR = _DB_PATH.parent / "users"
     accounts.configure(_USERS_DIR)

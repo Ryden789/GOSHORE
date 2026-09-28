@@ -119,6 +119,7 @@ body {
 .view { flex: 1; overflow-y: auto; padding: 34px 42px 60px; }
 .view::-webkit-scrollbar { width: 10px; }
 .view::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
+.route-loading { opacity: .4; pointer-events: none; transition: opacity .12s ease-out; }
 
 .page-head { margin-bottom: 24px; position: relative; }
 .page-title {

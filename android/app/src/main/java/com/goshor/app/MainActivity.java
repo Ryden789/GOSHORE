@@ -3,6 +3,8 @@ package com.goshor.app;
 import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -22,6 +24,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.core.content.FileProvider;
 
@@ -141,7 +144,30 @@ public class MainActivity extends Activity {
 
     private void bootstrap() {
         try {
-            if (!readyMarker.exists()) {
+            // 已有题库（首启解压过或被热更新替换过）时跳过 payload 解压；
+            // 题库损坏则自动回滚 .bak，回滚不可用才重新解压 payload
+            boolean needExtract = !readyMarker.exists() || !dbFile.exists();
+            if (!needExtract && !checkBankDb(dbFile)) {
+                File bak = new File(getFilesDir(), "goshor.db.bak");
+                boolean rolledBack = false;
+                if (bak.isFile() && checkBankDb(bak)) {
+                    //noinspection ResultOfMethodCallIgnored
+                    dbFile.delete();
+                    rolledBack = bak.renameTo(dbFile);
+                }
+                if (rolledBack) {
+                    runOnUiThread(() -> Toast.makeText(this,
+                            "题库更新包损坏，已回滚到上一版本",
+                            Toast.LENGTH_LONG).show());
+                } else {
+                    //noinspection ResultOfMethodCallIgnored
+                    dbFile.delete();
+                    //noinspection ResultOfMethodCallIgnored
+                    readyMarker.delete();
+                    needExtract = true;
+                }
+            }
+            if (needExtract) {
                 extractPayload();
             } else {
                 runOnUiThread(() -> {
@@ -238,6 +264,22 @@ public class MainActivity extends Activity {
     private ZipInputStream openPayload() throws Exception {
         InputStream in = getAssets().open(PAYLOAD);
         return new ZipInputStream(in);
+    }
+
+    /** 题库可用性校验：能打开且 documents 有题；损坏（热更新包不完整等）返回 false */
+    private boolean checkBankDb(File f) {
+        SQLiteDatabase d = null;
+        try {
+            d = SQLiteDatabase.openDatabase(f.getAbsolutePath(), null,
+                    SQLiteDatabase.OPEN_READONLY);
+            try (Cursor c = d.rawQuery("SELECT COUNT(*) FROM documents", null)) {
+                return c.moveToFirst() && c.getLong(0) > 0;
+            }
+        } catch (Exception e) {
+            return false;
+        } finally {
+            if (d != null) d.close();
+        }
     }
 
     /** 递归复制 asset 目录 */
@@ -462,11 +504,20 @@ public class MainActivity extends Activity {
     }
 
     private void defaultBack() {
-        // hash 路由（同文档导航）不进 WebView 历史栈，用页面自身 history 回退
-        web.evaluateJavascript("(history.length>1?(history.back(),true):false)",
-            value -> {
-                if (!"true".equals(value)) finish();
-            });
+        // hash 路由每次切换都会进 WebView 历史栈（history.length 封顶 50，
+        // 不能拿它判断是否退出）。首页按返回直接退出 App；其余页先回退一条
+        // hash 历史，逐步回到首页后再退出。
+        web.evaluateJavascript("String(location.hash||'')", hash -> {
+            String h = hash == null ? "" : hash.replace("\"", "");
+            if (h.isEmpty() || "#/".equals(h) || "#/home".equals(h)) {
+                finish();
+            } else {
+                web.evaluateJavascript("(history.length>1?(history.back(),true):false)",
+                    value -> {
+                        if (!"true".equals(value)) finish();
+                    });
+            }
+        });
     }
 
     private FrameLayout.LayoutParams match() {

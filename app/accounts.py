@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -59,12 +60,18 @@ def configure(users_dir: Path) -> None:
             created_at REAL)""")
 
 
-def _accounts_conn() -> sqlite3.Connection:
+@contextlib.contextmanager
+def _accounts_conn():
+    """账号库连接：with 退出时提交事务并关闭（避免 Windows 下文件被句柄占用）。"""
     if _users_dir is None:
         raise RuntimeError("accounts 未 configure")
     c = sqlite3.connect(_users_dir / "accounts.db")
     c.row_factory = sqlite3.Row
-    return c
+    try:
+        with c:  # 事务：正常退出提交，异常回滚
+            yield c
+    finally:
+        c.close()
 
 
 # ---------------- 密码哈希 ----------------
