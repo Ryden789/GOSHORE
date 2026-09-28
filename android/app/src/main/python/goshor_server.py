@@ -861,10 +861,10 @@ class _Handler(BaseHTTPRequestHandler):
                         argument.ai_comment(str(b.get("mid", "")), r["detail"]))
                 self._json(r)
             elif path == "/api/argument/quiz/draw":
-                types = b.get("types") or None
-                if types and not isinstance(types, list):
-                    types = None
-                self._json(argument.quiz_draw(max(1, min(20, int(b.get("n", 5)))), types=types))
+                # types 兼容字符串（单类型专练）与列表，归一化在 quiz_draw 内
+                self._json(argument.quiz_draw(
+                    max(1, min(20, int(b.get("n", 5)))),
+                    types=b.get("types") or None))
             elif path == "/api/argument/quiz/check":
                 self._json(argument.quiz_check(b.get("answers", [])))
             elif path == "/api/cards/import":

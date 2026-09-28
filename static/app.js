@@ -1339,7 +1339,7 @@ async function renderArgumentQuiz() {
       <h1 class="page-title" style="margin:0">⚡ 错误辨析快练</h1>
     </div>
     <div class="arg-type-bar panel rise rise-1">
-      <div class="arg-type-lbl">选类型专练，或混合挑战（共 ${stats.reduce((a, b) => a + b.count, 0)} 题）</div>
+      <div class="arg-type-lbl">点类型专练：自动混入易混类型对比，练的正是区分 · 或全部混合（共 ${stats.reduce((a, b) => a + b.count, 0)} 题）</div>
       <div class="arg-type-chips">
         <button class="btn arg-type-chip arg-type-all" data-type="">全部混合</button>
         ${stats.map(t => {
@@ -1364,7 +1364,7 @@ async function renderArgumentQuiz() {
     const q = draw.items[idx];
     body.innerHTML = `
       <div class="panel arg-quiz-q">
-        <div class="arg-quiz-prog">第 ${idx + 1}/${draw.items.length} 题 · 来源：${esc(q.src)}</div>
+        <div class="arg-quiz-prog">第 ${idx + 1}/${draw.items.length} 题 · 来源：${esc(q.src)}${idx === 0 && draw.note ? ` · ${esc(draw.note)}` : ""}</div>
         <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
         <div class="arg-quiz-opts">
           ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
@@ -1397,6 +1397,7 @@ async function renderArgumentQuiz() {
       <div class="arg-score-card">
         <div class="arg-score-num">${right}<small>/${draw.items.length}</small></div>
         <div class="arg-score-verdict">${right >= 4 ? "语感很准，继续保持" : "把 12 类错误的典型例句再过一遍"}</div>
+        ${draw.note ? `<div style="color:var(--ink-3);font-size:12.5px;margin-top:4px">${esc(draw.note)}</div>` : ""}
         <div class="arg-score-actions">
           <a class="btn btn-primary" href="#/argument-quiz" onclick="location.reload()">再来一组</a>
           <a class="btn" href="#/argument">返回</a>

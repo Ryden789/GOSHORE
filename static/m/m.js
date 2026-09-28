@@ -3029,7 +3029,7 @@ async function renderArgumentQuiz() {
   try { stats = (await api("/api/argument/overview")).quiz_type_stats || []; } catch (e) {}
   view.innerHTML = `
     <div class="card">
-      <div class="meta">选类型专练，或混合挑战（共 ${stats.reduce((a, b) => a + b.count, 0)} 题）</div>
+      <div class="meta">点类型专练：自动混入易混类型对比，练的正是区分 · 或全部混合（共 ${stats.reduce((a, b) => a + b.count, 0)} 题）</div>
       <div class="arg-type-chips">
         <button class="btn arg-type-chip arg-type-all" data-type="">全部混合</button>
         ${stats.map(t => {
@@ -3049,7 +3049,7 @@ async function renderArgumentQuiz() {
         qbox.innerHTML = `
           <div class="card" style="text-align:center">
             <div class="arg-score-num">${right}<small>/${draw.items.length}</small></div>
-            <div class="meta">${right >= 4 ? "语感很准，继续保持" : "把 12 类错误的典型例句再过一遍"}</div>
+            <div class="meta">${draw.note ? esc(draw.note) + "<br>" : ""}${right >= 4 ? "语感很准，继续保持" : "把 12 类错误的典型例句再过一遍"}</div>
             <button class="btn btn-primary btn-block" id="argAgain">再来一组</button>
             <button class="btn btn-block" id="argChange">换类型</button>
             <button class="btn btn-block" onclick="location.hash='#/argument'">返回</button>
@@ -3061,7 +3061,7 @@ async function renderArgumentQuiz() {
       const q = draw.items[idx];
       qbox.innerHTML = `
         <div class="card">
-          <div class="meta">第 ${idx + 1}/${draw.items.length} 题 · ${esc(q.src)}</div>
+          <div class="meta">第 ${idx + 1}/${draw.items.length} 题 · ${esc(q.src)}${idx === 0 && draw.note ? ` · ${esc(draw.note)}` : ""}</div>
           <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
           <div class="arg-quiz-opts">
             ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}

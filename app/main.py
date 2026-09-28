@@ -643,10 +643,9 @@ async def api_argument_submit(b: ArgumentSubmitIn):
 
 @app.post("/api/argument/quiz/draw")
 def api_argument_quiz_draw(b: dict):
-    types = b.get("types") or None
-    if types and not isinstance(types, list):
-        types = None
-    return argument.quiz_draw(max(1, min(20, int(b.get("n", 5)))), types=types)
+    # types 兼容字符串（单类型专练）与列表，归一化在 quiz_draw 内
+    return argument.quiz_draw(max(1, min(20, int(b.get("n", 5)))),
+                              types=b.get("types") or None)
 
 
 @app.post("/api/argument/quiz/check")

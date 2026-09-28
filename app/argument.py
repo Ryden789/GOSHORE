@@ -226,16 +226,45 @@ def _quiz_pool() -> list[dict]:
     return pool
 
 
-def quiz_draw(n: int = 5, types: list[str] | None = None) -> dict:
-    """抽 n 道辨析题。types 非空时只抽指定类型（类型专练）。
-
-    干扰项优先取易混类型（_CONFUSE），训练"区分相近错误"的能力。
+def quiz_draw(n: int = 5, types=None) -> dict:
+    """抽 n 道辨析题。types 非空时专练：约 6 成所选类型 + 其余自动混入易混类型
+    （_CONFUSE），防止"选了类型就知道答案"，练的正是区分；干扰项同样优先易混。
+    types 兼容字符串（前端单选 chip 直接传类型名）。
     """
     pool = _quiz_pool()
+    if isinstance(types, str):
+        types = [types]
+    types = [str(t) for t in (types or []) if str(t)]
+    note = ""
     if types:
-        allow = set(types)
-        pool = [q for q in pool if q["type"] in allow]
-    random.shuffle(pool)
+        sel = set(types)
+        conf_types: set[str] = set()
+        for t in types:
+            conf_types.update(_CONFUSE.get(t, []))
+        conf_types -= sel
+        main_pool = [q for q in pool if q["type"] in sel]
+        conf_pool = [q for q in pool if q["type"] in conf_types]
+        random.shuffle(main_pool)
+        random.shuffle(conf_pool)
+        cap = max(1, min(n, len(main_pool) + len(conf_pool)))
+        if conf_pool:
+            main_n = max(1, min(round(cap * 0.6), len(main_pool)))
+            if cap >= 2:
+                main_n = min(main_n, cap - 1)  # 至少混 1 题易混对比
+        else:
+            main_n = min(cap, len(main_pool))
+        picked = main_pool[:main_n] + conf_pool[: cap - main_n]
+        if len(picked) < cap:  # 两池数量不足时互补
+            spare = main_pool[main_n:] + conf_pool[cap - main_n:]
+            picked += spare[: cap - len(picked)]
+        random.shuffle(picked)
+        in_focus = sum(1 for q in picked if q["type"] in sel)
+        focus = "、".join(types)
+        note = (f"{in_focus} 题「{focus}」+ {len(picked) - in_focus} 题易混对比"
+                if in_focus < len(picked) else f"{len(picked)} 题「{focus}」")
+        pool = picked
+    else:
+        random.shuffle(pool)
     items = []
     for q in pool[: max(1, min(n, len(pool)))]:
         confuse = [t for t in _CONFUSE.get(q["type"], []) if t != q["type"]]
@@ -260,7 +289,8 @@ def quiz_draw(n: int = 5, types: list[str] | None = None) -> dict:
             "qid": q["qid"], "text": q["text"], "quote": q["text"],
             "src": q["src"], "options": options,
         })
-    return {"items": items, "total": len(pool), "type_stats": quiz_type_stats()}
+    return {"items": items, "total": len(pool), "type_stats": quiz_type_stats(),
+            "note": note}
 
 
 def quiz_check(answers: list[dict]) -> dict:
