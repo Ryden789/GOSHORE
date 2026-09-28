@@ -227,7 +227,7 @@ const TITLES = {
   report: "周报", history: "做题记录", paper: "组卷", logic: "判断专项",
   formula: "列式专项", wordfill: "词语填空", speed: "速算",
   essay: "申论综应", wenxian: "科技文献", shizheng: "时政", grade: "AI 批改",
-  argument: "论证评价", "argument-quiz": "辨析快练",
+  argument: "论证评价", "argument-quiz": "辨析快练", "ai-ask": "AI 答疑",
   wrong: "错题本", marks: "收藏", cards: "辨析卡",
   search: "搜题", doubts: "疑点", import: "导入", settings: "设置",
 };
@@ -239,6 +239,7 @@ const HUB = [
     ["home", "⌂", "今日", "学习数据总览"],
     ["report", "报", "周报", "本周诊断与建议"],
     ["history", "历", "做题记录", "逐题历史明细"],
+    ["ai-ask", "问", "AI 答疑", "自由提问·不做题也能问"],
   ]},
   { group: "行测精练", items: [
     ["paper", "✎", "组卷", "随机真题组卷"],
@@ -612,6 +613,7 @@ const ROUTES = {
   speed: renderSpeed, wordfill: renderWordfill,
   essay: renderEssay, wenxian: renderWenxian,
   argument: renderArgument, "argument-quiz": renderArgumentQuiz,
+  "ai-ask": renderAiAsk,
   shizheng: renderShizheng, grade: renderGrade,
   cards: renderCards,
   search: renderSearch, doubts: renderDoubts,
@@ -682,6 +684,8 @@ async function renderHome() {
       <span class="et"><b>去刷题</b><small>组卷 · 判断专项 · 列式</small></span><span class="go">›</span></a>
     <a class="entry" href="#/review"><span class="ei">◌</span>
       <span class="et"><b>复习巩固</b><small>错题 ${s.wrong_count} · 待复习 ${s.review_due}</small></span><span class="go">›</span></a>
+    <a class="entry" href="#/ai-ask"><span class="ei">智</span>
+      <span class="et"><b>AI 答疑</b><small>不做题也能问：考点·技巧·规划</small></span><span class="go">›</span></a>
     <a class="entry" href="#/me"><span class="ei">报</span>
       <span class="et"><b>本周诊断</b><small>正确率涨跌与建议</small></span><span class="go">›</span></a>
     <a class="entry" id="exportToday" style="margin-top:12px;cursor:pointer"><span class="ei">📤</span>
@@ -3566,6 +3570,137 @@ async function renderGrade() {
       $("#gTip").textContent = "批改失败，可重试";
     }
     busy = false; $("#gGo").disabled = false;
+  };
+}
+
+/* ---------- AI 答疑（不做题也能问，SSE 流式） ---------- */
+
+const AI_ASK_KEY = "goshor_ai_ask";
+
+function aiAskLoad() {
+  try { return JSON.parse(localStorage.getItem(AI_ASK_KEY)) || []; }
+  catch (e) { return []; }
+}
+function aiAskSave(m) {
+  try { localStorage.setItem(AI_ASK_KEY, JSON.stringify(m.slice(-100))); } catch (e) {}
+}
+
+async function renderAiAsk() {
+  const chips = [
+    "资料分析常考陷阱有哪些", "数量关系做题慢怎么提速", "判断推理论证题怎么破",
+    "言语主旨题有什么方法", "C类综应备考规划建议",
+  ];
+  let msgs = aiAskLoad();
+  let streaming = false;
+
+  view.innerHTML = `
+    <div class="card" style="display:flex;flex-direction:column;min-height:72vh">
+      <div id="aiList" style="flex:1;overflow-y:auto;padding:4px 0"></div>
+      <div id="aiChips" style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0">
+        ${chips.map(c => `<button class="btn" data-q="${esc(c)}" style="font-size:12px;padding:4px 10px">${esc(c)}</button>`).join("")}
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-end">
+        <textarea id="aiInput" rows="2" placeholder="随便问：考点 · 技巧 · 规划…"
+          style="flex:1;resize:none;border:1px solid var(--line,#ddd);border-radius:10px;padding:8px;font-size:15px;font-family:inherit;background:transparent;color:inherit"></textarea>
+        <button class="btn" id="aiGo" style="padding:8px 14px">发送</button>
+      </div>
+      <button class="btn btn-block" id="aiNew" style="margin-top:8px">🧹 新对话</button>
+      <p style="text-align:center;color:var(--ink-2,#999);font-size:12px;margin:8px 0 0">内容由 AI 生成，仅供参考</p>
+    </div>`;
+
+  // DOM 引用一次性捕获：流式回调只写闭包变量，中途切页不会触发 null 报错
+  const list = $("#aiList");
+  const input = $("#aiInput");
+  const goBtn = $("#aiGo");
+  const newBtn = $("#aiNew");
+
+  const bubble = (role, text) => {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;margin:10px 0;justify-content:" +
+      (role === "user" ? "flex-end" : "flex-start");
+    const b = document.createElement("div");
+    b.style.cssText = "max-width:84%;padding:9px 13px;border-radius:12px;font-size:14.5px;line-height:1.75" +
+      (role === "user"
+        ? ";background:var(--cinnabar,#a33);color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap"
+        : ";background:rgba(0,0,0,.05);border-bottom-left-radius:4px");
+    if (role === "user") b.textContent = text;
+    else b.innerHTML = md(text || "");
+    row.appendChild(b);
+    list.appendChild(row);
+    list.scrollTop = list.scrollHeight;
+    return b;
+  };
+
+  const drawAll = () => {
+    list.innerHTML = msgs.length ? "" :
+      `<div style="text-align:center;color:var(--ink-2,#999);padding:32px 16px;font-size:13.5px">
+        有什么想问的？考点讲法、速算技巧、备考节奏……<br>不做题也能随便聊。</div>`;
+    msgs.forEach(m => bubble(m.role, m.content));
+  };
+  drawAll();
+
+  const send = async () => {
+    const ask = input.value.trim();
+    if (!ask || streaming) return;
+    streaming = true;
+    goBtn.disabled = true;
+    input.value = "";
+    bubble("user", ask);
+    const his = msgs.map(m => ({ role: m.role, content: m.content }));
+    his.push({ role: "user", content: ask });
+
+    let full = "";
+    const b = bubble("ai", "");
+    b.innerHTML = `<div style="color:var(--ink-2,#999);font-size:12.5px">🤔 思考中…</div>`;
+
+    try {
+      const r = await fetch("/api/ai/ask", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: his }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const frames = buf.split("\n\n");
+        buf = frames.pop();
+        for (const f of frames) {
+          const line = f.split("\n").find(l => l.startsWith("data:"));
+          if (!line) continue;
+          const ev = JSON.parse(line.slice(5).trim());
+          if (ev.type === "delta") {
+            full += ev.text;
+            b.innerHTML = md(full);
+          } else if (ev.type === "error") {
+            full += `\n\n⚠ ${ev.text}`;
+            b.innerHTML = md(full);
+          }
+        }
+      }
+    } catch (e) {
+      full += `\n\n⚠ 请求失败：${esc(e.message)}`;
+      b.innerHTML = md(full);
+    }
+    list.scrollTop = list.scrollHeight;
+    msgs = [...msgs, { role: "user", content: ask }];
+    if (full.trim()) msgs = [...msgs, { role: "assistant", content: full }];
+    aiAskSave(msgs);
+    streaming = false;
+    goBtn.disabled = false;
+  };
+
+  goBtn.onclick = send;
+  [...view.querySelectorAll("#aiChips button")].forEach(x => {
+    x.onclick = () => { input.value = x.dataset.q; send(); };
+  });
+  newBtn.onclick = () => {
+    if (streaming) { toast("正在回答中，稍候再开新对话"); return; }
+    msgs = [];
+    aiAskSave(msgs);
+    drawAll();
   };
 }
 

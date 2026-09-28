@@ -916,6 +916,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._essay_grade(b)
             elif path == "/api/essay/self-grade":
                 self._json(self._essay_self_grade(b))
+            elif path == "/api/ai/ask":
+                self._ai_ask(b)
             elif path == "/api/shizheng/generate":
                 self._json(_run_async(self._shizheng_generate(b)))
             elif path == "/api/shizheng/quiz":
@@ -1184,6 +1186,28 @@ class _Handler(BaseHTTPRequestHandler):
             pass
         finally:
             loop.close()
+
+    # ---- 自由提问 AI 答疑（不做题也能问，SSE 流式） ----
+
+    def _ai_ask(self, b):
+        raw = b.get("messages") or []
+        msgs = []
+        for m in raw[-12:]:
+            role = m.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = str(m.get("content") or "")[:4000]
+            if content:
+                msgs.append({"role": role, "content": content})
+        if not msgs or msgs[-1]["role"] != "user":
+            return self._err(400, "最后一条必须是用户提问")
+        messages = [{"role": "system", "content": ai.ASK_SYSTEM}] + msgs
+
+        async def gen():
+            async for kind, payload in ai.stream_chat(messages):
+                yield kind, payload
+
+        self._stream_sse(gen())
 
     # ---- 综应免 Key 对照自评（与 AI 批改同一落库路径） ----
 

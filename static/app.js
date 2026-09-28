@@ -225,6 +225,7 @@ function route() {
   else if (name === "wenxian") dispatch(renderWenxian);
   else if (name === "report") dispatch(renderReport);
   else if (name === "history") dispatch(renderHistory);
+  else if (name === "ai-ask") dispatch(renderAiAsk);
   else dispatch(renderHome);
 }
 window.addEventListener("hashchange", route);
@@ -3564,6 +3565,155 @@ async function renderReport() {
     </div>`;
 
   $("#rpRefresh").onclick = renderReport;
+}
+
+// ---------------- AI 答疑（不做题也能问） ----------------
+
+const AI_ASK_KEY = "goshor_ai_ask";
+
+function aiAskLoad() {
+  try { return JSON.parse(localStorage.getItem(AI_ASK_KEY)) || []; }
+  catch { return []; }
+}
+function aiAskSave(msgs) {
+  try { localStorage.setItem(AI_ASK_KEY, JSON.stringify(msgs.slice(-100))); } catch {}
+}
+
+async function renderAiAsk() {
+  const chips = [
+    "资料分析常考陷阱有哪些", "数量关系做题慢怎么提速", "判断推理·论证题型怎么破",
+    "言语主旨题有什么方法", "C类综应备考规划建议",
+  ];
+  let msgs = aiAskLoad();
+  let streaming = false;
+
+  view.innerHTML = `
+    <div class="panel" style="max-width:860px;margin:24px auto 0;display:flex;flex-direction:column;height:calc(100vh - 150px)">
+      <div style="display:flex;align-items:center;gap:12px">
+        <h3 style="margin:0;flex:1">AI 答疑
+          <span style="color:var(--ink-2);font-size:13px;font-weight:normal">不做题也能问：知识点 · 技巧 · 考情 · 规划</span>
+        </h3>
+        <button class="btn" id="aiAskNew">🗑 新对话</button>
+      </div>
+      <div id="aiAskList" style="flex:1;overflow-y:auto;margin-top:14px;padding-right:6px"></div>
+      <div id="aiAskChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+        ${chips.map(c => `<button class="btn" data-q="${esc(c)}" style="font-size:12.5px;padding:5px 12px">${esc(c)}</button>`).join("")}
+      </div>
+      <div style="display:flex;gap:10px;margin-top:12px;align-items:flex-end">
+        <textarea id="aiAskInput" rows="2" placeholder="随便问点什么…（Enter 发送，Shift+Enter 换行）"
+          style="flex:1;resize:none;padding:10px;border:1px solid var(--line-soft);border-radius:8px;font-family:inherit;font-size:14px;background:transparent;color:inherit"></textarea>
+        <button class="btn btn-primary" id="aiAskGo">发送</button>
+      </div>
+      <p style="text-align:center;color:var(--ink-2);font-size:12px;margin:8px 0 0">内容由 AI 生成，仅供参考</p>
+    </div>`;
+
+  // 全部 DOM 引用在渲染期一次性捕获：流式回调里只写闭包变量，
+  // 用户中途切页时旧节点已脱离文档，写入无害且不会触发 null 报错
+  const list = $("#aiAskList");
+  const input = $("#aiAskInput");
+  const goBtn = $("#aiAskGo");
+  const newBtn = $("#aiAskNew");
+
+  const bubble = (role, text) => {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;margin:10px 0;justify-content:" +
+      (role === "user" ? "flex-end" : "flex-start");
+    const b = document.createElement("div");
+    b.style.cssText = "max-width:82%;padding:10px 14px;border-radius:12px;font-size:14px;line-height:1.8" +
+      (role === "user"
+        ? ";background:var(--cinnabar);color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap"
+        : ";background:rgba(0,0,0,.05);border-bottom-left-radius:4px");
+    if (role === "user") b.textContent = text;
+    else b.innerHTML = md(text || "");
+    row.appendChild(b);
+    list.appendChild(row);
+    list.scrollTop = list.scrollHeight;
+    return b;
+  };
+
+  const drawAll = () => {
+    list.innerHTML = msgs.length ? "" :
+      `<div style="text-align:center;color:var(--ink-2);padding:40px 20px;font-size:13.5px">
+        有什么想问的？考点讲法、速算技巧、备考节奏……<br>不做题也能随便聊。</div>`;
+    msgs.forEach(m => bubble(m.role, m.content));
+  };
+  drawAll();
+
+  const send = async () => {
+    const ask = input.value.trim();
+    if (!ask || streaming) return;
+    streaming = true;
+    goBtn.disabled = true;
+    input.value = "";
+    bubble("user", ask);
+    const his = msgs.map(m => ({ role: m.role, content: m.content }));
+    his.push({ role: "user", content: ask });
+
+    let thinkBox = null, think = "", full = "";
+    const b = bubble("ai", "");
+    b.classList.add("cursor-blink");
+
+    try {
+      const r = await fetch("/api/ai/ask", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: his }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const frames = buf.split("\n\n");
+        buf = frames.pop();
+        for (const f of frames) {
+          const line = f.split("\n").find(l => l.startsWith("data:"));
+          if (!line) continue;
+          const ev = JSON.parse(line.slice(5).trim());
+          if (ev.type === "think" && !full) {
+            if (!thinkBox) {
+              thinkBox = document.createElement("div");
+              thinkBox.className = "think-box";
+              b.prepend(thinkBox);
+            }
+            think += ev.text;
+            thinkBox.textContent = "思考中：" + think;
+          } else if (ev.type === "delta") {
+            full += ev.text;
+            b.innerHTML = md(full);
+            b.classList.add("cursor-blink");
+          } else if (ev.type === "error") {
+            full += `\n\n**⚠ ${ev.text}**`;
+            b.innerHTML = md(full);
+          }
+        }
+      }
+    } catch (e) {
+      full += `\n\n**⚠ 请求失败：${esc(e.message)}**`;
+      b.innerHTML = md(full);
+    }
+    b.classList.remove("cursor-blink");
+    list.scrollTop = list.scrollHeight;
+    msgs = [...msgs, { role: "user", content: ask }];
+    if (full.trim()) msgs = [...msgs, { role: "assistant", content: full }];
+    aiAskSave(msgs);
+    streaming = false;
+    goBtn.disabled = false;
+  };
+
+  goBtn.onclick = send;
+  input.onkeydown = e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  };
+  $$("#aiAskChips button").forEach(x => x.onclick = () => { input.value = x.dataset.q; send(); });
+  newBtn.onclick = () => {
+    if (streaming) { toast("正在回答中，稍候再开新对话"); return; }
+    msgs = [];
+    aiAskSave(msgs);
+    drawAll();
+  };
 }
 
 route();

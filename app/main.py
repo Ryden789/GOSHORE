@@ -228,6 +228,32 @@ async def api_explain(b: ExplainIn):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+class AskIn(BaseModel):
+    messages: list[dict] = []
+
+
+@app.post("/api/ai/ask")
+async def api_ai_ask(b: AskIn):
+    """自由提问 AI 答疑：与做题无关，历史存前端 localStorage，服务端不落库。"""
+    msgs = []
+    for m in b.messages[-12:]:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = str(m.get("content") or "")[:4000]
+        if content:
+            msgs.append({"role": role, "content": content})
+    if not msgs or msgs[-1]["role"] != "user":
+        raise HTTPException(400, "最后一条必须是用户提问")
+    messages = [{"role": "system", "content": ai.ASK_SYSTEM}] + msgs
+
+    async def gen():
+        async for kind, payload in ai.stream_chat(messages):
+            yield f"data: {json.dumps({'type': kind, 'text': payload}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 # ---------------- 速算 ----------------
 
 class SpeedIn(BaseModel):
