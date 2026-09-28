@@ -203,6 +203,9 @@ function route() {
     });
   };
   if (name === "doc") dispatch(() => renderDoc(+parts[1], parts[2] || "answer"));
+  else if (name === "argument" && parts[1]) dispatch(() => renderArgumentDo(parts[1]));
+  else if (name === "argument") dispatch(renderArgument);
+  else if (name === "argument-quiz") dispatch(renderArgumentQuiz);
   else if (parts[0] === "wordfill") dispatch(renderWordfill);
   else if (parts[0] === "speed") dispatch(renderSpeed);
   else if (parts[0] === "settings") dispatch(renderSettings);
@@ -1120,6 +1123,273 @@ function annihilateFlow(docId) {
   }).catch(e => {
     if (!closed) failView(String((e && e.message) || e));
   });
+}
+
+/* =====================================================
+   综应C · 论证评价训练器 + 错误辨析快练
+===================================================== */
+const ARG_TAXONOMY_NOTE = "判定三步：找结论 → 看论据 → 问一句「论据真能推出结论吗」";
+
+async function renderArgument() {
+  const ov = await api("/api/argument/overview");
+  const chips = ov.taxonomy.map(t => `<span class="arg-tax">${t}</span>`).join("");
+  const cards = ov.items.map(m => `
+    <div class="panel arg-card">
+      <div class="arg-card-head">
+        <div>
+          <div class="arg-title">${esc(m.title)}</div>
+          <div class="arg-src">${esc(m.source)}</div>
+        </div>
+        <span class="arg-score-tag">${m.max_marks * 10}分</span>
+      </div>
+      <div class="arg-card-meta">
+        <span>材料 ${m.sent_count} 句</span><span>需找 ${m.max_marks} 处错误</span>
+        <span>${m.attempts ? `练过 ${m.attempts} 次 · 最佳 ${m.best}/${m.max_marks * 10}` : "未练过"}</span>
+      </div>
+      <a class="btn btn-sm btn-primary" href="#/argument/${m.id}">开始训练 →</a>
+    </div>`).join("");
+  const qs = ov.quiz_stats;
+  view.innerHTML = `
+    <h1 class="page-title">综应C · 论证评价</h1>
+    <div class="arg-top">
+      <div class="panel arg-quiz-entry">
+        <div>
+          <div class="arg-title">⚡ 错误辨析快练</div>
+          <div class="arg-src">给一句论证，判断错在哪类 —— 每组 5 题，即时判分</div>
+          <div class="arg-card-meta">${qs.total ? `累计 ${qs.total} 题 · 答对 ${qs.right}` : "还没练过，来一组"}</div>
+        </div>
+        <a class="btn btn-primary" href="#/argument-quiz">开练</a>
+      </div>
+      <div class="panel arg-tax-panel">
+        <div class="arg-title">论证错误 12 类</div>
+        <div class="arg-tax-wrap">${chips}</div>
+        <div class="arg-src">${ARG_TAXONOMY_NOTE}</div>
+      </div>
+    </div>
+    <div class="arg-grid">${cards}</div>`;
+}
+
+async function renderArgumentDo(mid) {
+  const m = await api("/api/argument/material/" + mid);
+  const state = { marks: {} };  // sentIdx -> {type, why}
+  const MAX = m.max_marks;
+
+  const typeChips = (sel) => ovTaxonomy.map(t =>
+    `<span class="arg-tax pick ${sel === t ? "on" : ""}" data-t="${t}">${t}</span>`).join("");
+  let ovTaxonomy = [];
+  try { ovTaxonomy = (await api("/api/argument/overview")).taxonomy; }
+  catch { ovTaxonomy = ["以偏概全", "偷换概念", "强加因果", "因果倒置", "类比不当", "数据误用", "样本偏差", "预设结论", "忽略他因", "绝对化表述", "诉诸权威", "诉诸无知"]; }
+
+  view.innerHTML = `
+    <div class="arg-do-head">
+      <a class="btn btn-sm" href="#/argument">← 返回</a>
+      <div>
+        <h1 class="page-title" style="margin:0">${esc(m.title)}</h1>
+        <div class="arg-src">${esc(m.source)} · 指出 ${MAX} 处论证错误（点击句子标注）</div>
+      </div>
+    </div>
+    <div class="panel arg-prompt">${esc(m.prompt)}</div>
+    <div class="panel arg-material" id="argSents">
+      ${m.sentences.map(s => `
+        <div class="arg-sent" data-i="${s.i}">
+          <span class="arg-sn">${s.i + 1}</span>
+          <span class="arg-stext">${esc(s.text)}</span>
+          <span class="arg-badge" style="display:none"></span>
+        </div>`).join("")}
+    </div>
+    <div class="arg-submit-bar" id="argBar">
+      <span id="argCount">已标 0/${MAX} 处</span>
+      <label class="arg-ai-cb"><input type="checkbox" id="argAiCk" checked> AI 点评我写的理由</label>
+      <button class="btn btn-primary" id="argSubmit" disabled>交卷判分</button>
+    </div>
+    <div id="argResult"></div>`;
+
+  const sentsEl = $("#argSents");
+  const refreshBar = () => {
+    const n = Object.keys(state.marks).length;
+    $("#argCount").textContent = `已标 ${n}/${MAX} 处`;
+    $("#argSubmit").disabled = n < 2;
+    $("#argAiCk").parentElement.style.display = n ? "" : "none";
+  };
+
+  const showEditor = (el) => {
+    sentsEl.querySelectorAll(".arg-editor").forEach(x => x.remove());
+    if (!el) return;
+    const i = +el.dataset.i;
+    const mk = state.marks[i] || { type: "", why: "" };
+    const ed = document.createElement("div");
+    ed.className = "arg-editor";
+    ed.innerHTML = `
+      <div class="arg-ed-line">这属于哪类论证错误？</div>
+      <div class="arg-ed-types">${typeChips(mk.type)}</div>
+      <textarea class="arg-ed-why" rows="2" maxlength="120" placeholder="（选填）用一句话说明理由，交卷后 AI 会点评">${esc(mk.why)}</textarea>
+      <div class="arg-ed-actions">
+        <button class="btn btn-sm" data-act="del">取消标注</button>
+        <button class="btn btn-sm btn-primary" data-act="ok">确定</button>
+      </div>`;
+    el.after(ed);
+    ed.querySelector(".arg-ed-why").focus();
+    ed.addEventListener("click", e => {
+      const chip = e.target.closest(".arg-tax.pick");
+      if (chip) {
+        ed.querySelectorAll(".arg-tax.pick").forEach(x => x.classList.toggle("on", x === chip));
+        return;
+      }
+      const act = e.target.closest("[data-act]");
+      if (!act) return;
+      if (act.dataset.act === "del") {
+        delete state.marks[i];
+        el.classList.remove("marked");
+        el.querySelector(".arg-badge").style.display = "none";
+        ed.remove(); refreshBar();
+      } else {
+        const on = ed.querySelector(".arg-tax.pick.on");
+        if (!on) return toast("先选一个错误类型");
+        state.marks[i] = { type: on.dataset.t, why: ed.querySelector(".arg-ed-why").value.trim() };
+        el.classList.add("marked");
+        const badge = el.querySelector(".arg-badge");
+        badge.style.display = ""; badge.textContent = state.marks[i].type;
+        ed.remove(); refreshBar();
+      }
+    });
+  };
+
+  sentsEl.addEventListener("click", e => {
+    const el = e.target.closest(".arg-sent");
+    if (!el) return;
+    const i = +el.dataset.i;
+    if (el.nextElementSibling && el.nextElementSibling.classList.contains("arg-editor")) {
+      showEditor(null); return;
+    }
+    if (i in state.marks) showEditor(el);
+    else {
+      if (Object.keys(state.marks).length >= MAX) return toast(`最多标注 ${MAX} 处，先交卷或取消一处`);
+      showEditor(el);
+    }
+  });
+
+  $("#argSubmit").onclick = async () => {
+    const btn = $("#argSubmit");
+    btn.disabled = true; btn.textContent = "判分中…";
+    const withAi = $("#argAiCk").checked;
+    const marks = Object.entries(state.marks).map(([s, v]) => ({ s: +s, type: v.type, why: v.why }));
+    try {
+      const r = await api("/api/argument/submit", { mid, marks, with_ai: withAi });
+      renderResult(r);
+    } catch (e) {
+      toast("判分失败：" + ((e && e.message) || e));
+      btn.disabled = false; btn.textContent = "交卷判分";
+    }
+  };
+
+  const renderResult = (r) => {
+    const pct = r.score / r.max_score;
+    const verdict = pct >= 0.9 ? "论证评价已入门" : pct >= 0.6 ? "还需练标句子" : "先背熟 12 类错误";
+    // 材料句着色
+    sentsEl.querySelectorAll(".arg-sent").forEach(el => {
+      const i = +el.dataset.i;
+      const d = r.detail.find(x => x.s === i);
+      const w = (r.wrong_sents || []).find(x => x.s === i);
+      el.classList.remove("marked"); el.classList.add("graded");
+      const badge = el.querySelector(".arg-badge");
+      badge.style.display = "";
+      if (d && d.hit) { el.classList.add(d.type_hit ? "hit" : "half"); badge.textContent = d.got + "分"; }
+      else if (d) { el.classList.add("missed"); badge.textContent = "漏标错误"; }
+      else if (w) { el.classList.add("wrong"); badge.textContent = "误标"; }
+      else badge.style.display = "none";
+    });
+    $("#argBar").style.display = "none";
+    const rows = r.detail.map((d, k) => `
+      <div class="panel arg-flaw ${d.hit ? (d.type_hit ? "flaw-hit" : "flaw-half") : "flaw-miss"}">
+        <div class="arg-flaw-head">
+          <b>第 ${k + 1} 处 · ${d.got ? `得 ${d.got} 分` : "0 分"}</b>
+          <span class="arg-flaw-quote">「${esc(d.quote.slice(0, 46))}${d.quote.length > 46 ? "…" : ""}」</span>
+        </div>
+        <div class="arg-flaw-line">
+          <span>标准类型：<b>${esc(d.std_type)}</b></span>
+          <span>你的判断：${d.user_type ? `<b class="${d.type_hit ? "ok" : "no"}">${esc(d.user_type)}</b>` : "<i>未标注</i>"}</span>
+        </div>
+        <div class="arg-flaw-line">A：${esc(d.a)}</div>
+        <div class="arg-flaw-line">B：${esc(d.b)}</div>
+        ${r.ai_comments && r.ai_comments[k] ? `<div class="arg-flaw-ai">🤖 ${esc(r.ai_comments[k])}</div>` : ""}
+      </div>`).join("");
+    $("#argResult").innerHTML = `
+      <div class="arg-score-card">
+        <div class="arg-score-num">${r.score}<small>/${r.max_score}</small></div>
+        <div class="arg-score-verdict">${verdict}</div>
+        <div class="arg-score-actions">
+          <a class="btn btn-primary" href="#/argument/${mid}" onclick="location.reload()">再练一次</a>
+          <a class="btn" href="#/argument">返回列表</a>
+          <a class="btn" href="#/argument-quiz">去快练巩固 →</a>
+        </div>
+      </div>
+      <h2 class="arg-sub">逐处解析（句子 ${m.sentences.length} 句中含 ${r.detail.length} 处错误）</h2>
+      ${rows}`;
+    $("#argResult").scrollIntoView({ behavior: "smooth" });
+  };
+  refreshBar();
+}
+
+async function renderArgumentQuiz() {
+  view.innerHTML = `
+    <div class="arg-do-head">
+      <a class="btn btn-sm" href="#/argument">← 返回</a>
+      <h1 class="page-title" style="margin:0">⚡ 错误辨析快练</h1>
+    </div>
+    <div id="argQuizBody" class="arg-quiz-wrap">
+      <div class="empty">抽题中…</div>
+    </div>`;
+
+  const body = $("#argQuizBody");
+  const draw = await api("/api/argument/quiz/draw", { n: 5 });
+  let idx = 0, right = 0;
+  const picks = [];
+
+  const showQ = () => {
+    if (idx >= draw.items.length) return showEnd();
+    const q = draw.items[idx];
+    body.innerHTML = `
+      <div class="panel arg-quiz-q">
+        <div class="arg-quiz-prog">第 ${idx + 1}/${draw.items.length} 题 · 来源：${esc(q.src)}</div>
+        <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
+        <div class="arg-quiz-opts">
+          ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
+        </div>
+        <div class="arg-quiz-exp" style="display:none"></div>
+      </div>`;
+    body.querySelectorAll(".arg-opt").forEach(b => b.onclick = () => {
+      body.querySelectorAll(".arg-opt").forEach(x => x.disabled = true);
+      picks.push({ qid: q.qid, pick: b.dataset.o });
+      api("/api/argument/quiz/check", { answers: [picks[picks.length - 1]] }).then(r => {
+        const res = r.results[0];
+        if (res.correct) right++;
+        b.classList.add(res.correct ? "opt-ok" : "opt-no");
+        body.querySelectorAll(".arg-opt").forEach(x => {
+          if (x.dataset.o === res.answer) x.classList.add("opt-answer");
+        });
+        const exp = body.querySelector(".arg-quiz-exp");
+        exp.style.display = "";
+        exp.innerHTML = `
+          <div class="${res.correct ? "arg-ok" : "arg-no"}">${res.correct ? "✓ 判断正确" : "✗ 正确答案：" + esc(res.answer)}</div>
+          <div class="arg-why">${esc(res.why)}</div>
+          <button class="btn btn-primary" id="argQNext">${idx + 1 < draw.items.length ? "下一题 →" : "看结果"}</button>`;
+        $("#argQNext", body).onclick = () => { idx++; showQ(); };
+      });
+    });
+  };
+
+  const showEnd = () => {
+    body.innerHTML = `
+      <div class="arg-score-card">
+        <div class="arg-score-num">${right}<small>/${draw.items.length}</small></div>
+        <div class="arg-score-verdict">${right >= 4 ? "语感很准，继续保持" : "把 12 类错误的典型例句再过一遍"}</div>
+        <div class="arg-score-actions">
+          <a class="btn btn-primary" href="#/argument-quiz" onclick="location.reload()">再来一组</a>
+          <a class="btn" href="#/argument">返回</a>
+        </div>
+      </div>`;
+  };
+  showQ();
 }
 
 /* =====================================================

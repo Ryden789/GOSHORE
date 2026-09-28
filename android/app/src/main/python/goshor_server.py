@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill
+from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -841,6 +841,28 @@ class _Handler(BaseHTTPRequestHandler):
                 with _lock:
                     variant.finish_annihilation(int(b["doc_id"]))
                 self._json({"ok": True})
+            elif path == "/api/argument/overview":
+                ov = argument.list_materials()
+                ov["taxonomy"] = argument._TAXONOMY
+                ov["quiz_stats"] = argument.quiz_stats()
+                self._json(ov)
+            elif path.startswith("/api/argument/material/"):
+                m = argument.get_material(path.rsplit("/", 1)[-1])
+                if m:
+                    self._json(m)
+                else:
+                    self._json({"error": "not found"}, 404)
+            elif path == "/api/argument/submit":
+                marks = b.get("marks", [])
+                r = argument.submit(str(b.get("mid", "")), marks)
+                if r.get("ok") and b.get("with_ai"):
+                    r["ai_comments"] = _run_async(
+                        argument.ai_comment(str(b.get("mid", "")), r["detail"]))
+                self._json(r)
+            elif path == "/api/argument/quiz/draw":
+                self._json(argument.quiz_draw(int(b.get("n", 5))))
+            elif path == "/api/argument/quiz/check":
+                self._json(argument.quiz_check(b.get("answers", [])))
             elif path == "/api/cards/import":
                 with _lock:
                     r = db.import_cards()

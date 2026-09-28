@@ -921,6 +921,74 @@ body.smallfont .stem, body.smallfont .opt { font-size: 14px; }
 @media (prefers-reduced-motion: reduce) {
   .anni-panel { animation: none; }
 }
+
+/* ===== 综应C·论证评价 ===== */
+.arg-tax-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.arg-tax {
+  font-size: 12px; padding: 3px 10px; border: 1px solid var(--line);
+  border-radius: 999px; color: var(--ink-2); background: var(--paper-2);
+}
+.arg-tax.pick { cursor: pointer; }
+.arg-tax.pick.on { background: var(--cinnabar); border-color: var(--cinnabar); color: #fff; }
+.arg-prompt { border-left: 3px solid var(--cinnabar); font-size: 13.5px; line-height: 1.75; }
+.arg-sent {
+  position: relative; padding: 9px 84px 9px 34px; border-radius: 8px;
+  border: 1px dashed transparent; line-height: 1.8; font-size: 14px;
+}
+.arg-sent:active { background: var(--paper-2); }
+.arg-sent .arg-sn {
+  position: absolute; left: 6px; top: 11px; width: 20px; height: 20px;
+  border-radius: 50%; background: var(--paper-2); border: 1px solid var(--line);
+  font-size: 10.5px; display: flex; align-items: center; justify-content: center;
+  color: var(--ink-3);
+}
+.arg-sent.marked { background: rgba(179, 64, 47, .06); border-color: var(--cinnabar); }
+.arg-sent .arg-badge {
+  position: absolute; right: 6px; top: 10px; font-size: 10.5px;
+  background: var(--cinnabar); color: #fff; border-radius: 4px; padding: 1px 6px;
+  max-width: 78px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.arg-editor { margin: 4px 0 10px 34px; padding: 10px; background: var(--paper-2); border: 1px solid var(--line); border-radius: 10px; }
+.arg-ed-why { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px; background: var(--paper); margin: 8px 0; font-family: inherit; }
+.arg-editor .row { display: flex; gap: 8px; }
+.arg-editor .row .btn { flex: 1; }
+.arg-submit-bar {
+  position: sticky; bottom: calc(58px + env(safe-area-inset-bottom)); z-index: 15;
+  display: flex; gap: 12px; align-items: center;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 14px; margin: 10px 0; box-shadow: 0 -4px 16px rgba(20,16,10,.1);
+}
+.arg-submit-bar span { flex: 1; color: var(--ink-2); font-size: 13px; }
+.arg-score-num { font-size: 46px; font-weight: 800; color: var(--cinnabar); line-height: 1.2; }
+.arg-score-num small { font-size: 20px; color: var(--ink-3); }
+.arg-flaw { border-left: 3px solid var(--line); }
+.arg-flaw.flaw-hit { border-left-color: var(--bamboo); }
+.arg-flaw.flaw-half { border-left-color: var(--amber); }
+.arg-flaw.flaw-miss { border-left-color: var(--cinnabar); }
+.arg-flaw-quote { color: var(--ink-2); font-size: 12.5px; margin: 4px 0; }
+.arg-flaw-line { font-size: 13px; line-height: 1.7; margin: 2px 0; }
+.arg-ai-line { margin-top: 6px; padding: 7px 10px; background: var(--paper-2); border-radius: 8px; font-size: 12.5px; color: var(--ink-2); }
+.arg-sent.graded.hit { background: rgba(94, 122, 90, .1); border-color: var(--bamboo); }
+.arg-sent.graded.hit .arg-badge { background: var(--bamboo); }
+.arg-sent.graded.half { background: rgba(201, 138, 46, .1); border-color: var(--amber); }
+.arg-sent.graded.half .arg-badge { background: var(--amber); }
+.arg-sent.graded.missed { background: rgba(179, 64, 47, .08); border-color: var(--cinnabar); }
+.arg-sent.graded.wrong { background: rgba(67, 84, 107, .08); border-color: var(--ink-3); }
+.arg-sent.graded.wrong .arg-badge { background: var(--ink-3); }
+.arg-quote {
+  margin: 8px 0 14px; padding: 10px 14px; border-left: 3px solid var(--cinnabar);
+  background: var(--paper-2); border-radius: 0 10px 10px 0;
+  font-size: 14px; line-height: 1.85;
+}
+.arg-quiz-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.arg-opt { justify-content: center; padding: 10px 6px; }
+.arg-opt.opt-ok { border-color: var(--bamboo); color: var(--bamboo); }
+.arg-opt.opt-no { border-color: var(--cinnabar); color: var(--cinnabar); }
+.arg-opt.opt-answer { border-color: var(--bamboo); background: rgba(94,122,90,.08); }
+.arg-quiz-exp { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.arg-ok { color: var(--bamboo); font-weight: 700; }
+.arg-no { color: var(--cinnabar); font-weight: 700; }
+.arg-why { color: var(--ink-2); font-size: 13px; line-height: 1.7; margin: 6px 0 10px; }
 .rp-actions {
   display: flex; gap: 8px; padding: 12px 18px 16px;
   border-top: 1px solid var(--line, #eee);

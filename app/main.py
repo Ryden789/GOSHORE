@@ -14,7 +14,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill
+from . import ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill, argument
 from .config import STATIC_DIR, DB_PATH, SETTINGS_PATH, load_settings, save_settings
 
 import html as _html
@@ -600,6 +600,54 @@ def api_annihilate_finish(b: AnnihilateIn):
         raise HTTPException(404)
     variant.finish_annihilation(b.doc_id)
     return {"ok": True}
+
+
+# ---------------- 综应C·论证评价训练器 ----------------
+
+class ArgumentSubmitIn(BaseModel):
+    mid: str
+    marks: list[dict]
+    with_ai: bool = False
+
+
+class ArgumentQuizCheckIn(BaseModel):
+    answers: list[dict]
+
+
+@app.get("/api/argument/overview")
+def api_argument_overview():
+    ov = argument.list_materials()
+    ov["taxonomy"] = argument._TAXONOMY
+    ov["quiz_stats"] = argument.quiz_stats()
+    return ov
+
+
+@app.get("/api/argument/material/{mid}")
+def api_argument_material(mid: str):
+    m = argument.get_material(mid)
+    if not m:
+        raise HTTPException(404)
+    return m
+
+
+@app.post("/api/argument/submit")
+async def api_argument_submit(b: ArgumentSubmitIn):
+    r = argument.submit(b.mid, b.marks)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "判分失败"))
+    if b.with_ai:
+        r["ai_comments"] = await argument.ai_comment(b.mid, r["detail"])
+    return r
+
+
+@app.post("/api/argument/quiz/draw")
+def api_argument_quiz_draw(b: dict):
+    return argument.quiz_draw(int(b.get("n", 5)))
+
+
+@app.post("/api/argument/quiz/check")
+def api_argument_quiz_check(b: ArgumentQuizCheckIn):
+    return argument.quiz_check(b.answers)
 
 
 # ---------------- 设置 ----------------

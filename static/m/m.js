@@ -227,6 +227,7 @@ const TITLES = {
   report: "周报", history: "做题记录", paper: "组卷", logic: "判断专项",
   formula: "列式专项", wordfill: "词语填空", speed: "速算",
   essay: "申论综应", wenxian: "科技文献", shizheng: "时政", grade: "AI 批改",
+  argument: "论证评价", "argument-quiz": "辨析快练",
   wrong: "错题本", marks: "收藏", cards: "辨析卡",
   search: "搜题", doubts: "疑点", import: "导入", settings: "设置",
 };
@@ -248,6 +249,7 @@ const HUB = [
   ]},
   { group: "综应专区", items: [
     ["essay", "文", "申论综应", "题目作答与评分"],
+    ["argument", "评", "论证评价", "标注训练+辨析快练"],
     ["wenxian", "科", "科技文献", "长文小题群"],
     ["shizheng", "政", "时政", "时政热点自测"],
     ["grade", "批", "AI 批改", "AI 智能批改"],
@@ -609,6 +611,7 @@ const ROUTES = {
   all: renderAll, report: renderReport,
   speed: renderSpeed, wordfill: renderWordfill,
   essay: renderEssay, wenxian: renderWenxian,
+  argument: renderArgument, "argument-quiz": renderArgumentQuiz,
   shizheng: renderShizheng, grade: renderGrade,
   cards: renderCards,
   search: renderSearch, doubts: renderDoubts,
@@ -2869,6 +2872,201 @@ async function renderMe() {
       }
     };
     if (switchBtn) switchBtn.onclick = () => { location.hash = "#/login"; };
+}
+
+/* ---------- 综应C·论证评价训练器 ---------- */
+const ARG_TAX = ["以偏概全", "偷换概念", "强加因果", "因果倒置", "类比不当", "数据误用",
+  "样本偏差", "预设结论", "忽略他因", "绝对化表述", "诉诸权威", "诉诸无知"];
+
+async function renderArgument() {
+  const seg = location.hash.replace(/^#\//, "").split("/");
+  if (seg[1]) return renderArgumentDo(seg[1]);
+  const ov = await api("/api/argument/overview");
+  const qs = ov.quiz_stats;
+  box.innerHTML = `
+    <div class="card arg-quiz-entry">
+      <b>⚡ 错误辨析快练</b>
+      <div class="meta">${qs.total ? `累计 ${qs.total} 题 · 答对 ${qs.right}` : "给一句论证判断错在哪类，每组 5 题"}</div>
+      <button class="btn btn-primary btn-block" id="argGoQuiz">开练</button>
+    </div>
+    <div class="card"><b>论证错误 12 类</b>
+      <div class="arg-tax-wrap">${ov.taxonomy.map(t => `<span class="arg-tax">${t}</span>`).join("")}</div>
+      <div class="meta">判定三步：找结论 → 看论据 → 问「论据真能推出结论吗」</div>
+    </div>
+    ${ov.items.map(m => `
+      <div class="card">
+        <b>${esc(m.title)}</b>
+        <div class="meta">${esc(m.source)} · 找 ${m.max_marks} 处 · ${m.max_marks * 10}分
+          ${m.attempts ? ` · 最佳 ${m.best}` : " · 未练过"}</div>
+        <button class="btn btn-primary btn-block arg-open" data-id="${m.id}">开始训练</button>
+      </div>`).join("")}`;
+  $("#argGoQuiz").onclick = () => (location.hash = "#/argument-quiz");
+  $$(".arg-open").forEach(b => b.onclick = () => (location.hash = "#/argument/" + b.dataset.id));
+}
+
+async function renderArgumentDo(mid) {
+  const m = await api("/api/argument/material/" + mid);
+  const MAX = m.max_marks;
+  let tax = ARG_TAX;
+  try { tax = (await api("/api/argument/overview")).taxonomy; } catch {}
+  const state = { marks: {} };
+
+  box.innerHTML = `
+    <div class="card arg-prompt">${esc(m.prompt)}</div>
+    <div class="card arg-material" id="argSents">
+      ${m.sentences.map(s => `
+        <div class="arg-sent" data-i="${s.i}">
+          <span class="arg-sn">${s.i + 1}</span>
+          <span class="arg-stext">${esc(s.text)}</span>
+          <span class="arg-badge" style="display:none"></span>
+        </div>`).join("")}
+    </div>
+    <div class="arg-submit-bar">
+      <span id="argCount">已标 0/${MAX} 处</span>
+      <button class="btn btn-primary" id="argSubmit" disabled>交卷判分</button>
+    </div>
+    <div id="argResult"></div>`;
+
+  const sentsEl = $("#argSents");
+  const refreshBar = () => {
+    $("#argCount").textContent = `已标 ${Object.keys(state.marks).length}/${MAX} 处`;
+    $("#argSubmit").disabled = Object.keys(state.marks).length < 2;
+  };
+  const showEditor = el => {
+    sentsEl.querySelectorAll(".arg-editor").forEach(x => x.remove());
+    if (!el) return;
+    const i = +el.dataset.i;
+    const mk = state.marks[i] || { type: "", why: "" };
+    const ed = document.createElement("div");
+    ed.className = "arg-editor";
+    ed.innerHTML = `
+      <div class="arg-tax-wrap">${tax.map(t =>
+        `<span class="arg-tax pick ${mk.type === t ? "on" : ""}" data-t="${t}">${t}</span>`).join("")}</div>
+      <textarea class="arg-ed-why" rows="2" maxlength="120" placeholder="（选填）一句话理由">${esc(mk.why)}</textarea>
+      <div class="row">
+        <button class="btn" data-act="del">取消标注</button>
+        <button class="btn btn-primary" data-act="ok">确定</button>
+      </div>`;
+    el.after(ed);
+    ed.onclick = e => {
+      const chip = e.target.closest(".arg-tax.pick");
+      if (chip) { ed.querySelectorAll(".arg-tax.pick").forEach(x => x.classList.toggle("on", x === chip)); return; }
+      const act = e.target.closest("[data-act]");
+      if (!act) return;
+      if (act.dataset.act === "del") {
+        delete state.marks[i];
+        el.classList.remove("marked");
+        el.querySelector(".arg-badge").style.display = "none";
+        ed.remove(); refreshBar();
+      } else {
+        const on = ed.querySelector(".arg-tax.pick.on");
+        if (!on) return toast("先选一个错误类型");
+        state.marks[i] = { type: on.dataset.t, why: ed.querySelector(".arg-ed-why").value.trim() };
+        el.classList.add("marked");
+        const bg = el.querySelector(".arg-badge");
+        bg.style.display = ""; bg.textContent = state.marks[i].type;
+        ed.remove(); refreshBar();
+      }
+    };
+  };
+  sentsEl.onclick = e => {
+    const el = e.target.closest(".arg-sent");
+    if (!el) return;
+    const i = +el.dataset.i;
+    if (el.nextElementSibling && el.nextElementSibling.classList.contains("arg-editor")) return showEditor(null);
+    if (i in state.marks) return showEditor(el);
+    if (Object.keys(state.marks).length >= MAX) return toast(`最多标 ${MAX} 处`);
+    showEditor(el);
+  };
+  $("#argSubmit").onclick = async () => {
+    const btn = $("#argSubmit");
+    btn.disabled = true; btn.textContent = "判分中…";
+    const marks = Object.entries(state.marks).map(([s, v]) => ({ s: +s, type: v.type, why: v.why }));
+    const withAi = marks.some(x => x.why);
+    try {
+      const r = await api("/api/argument/submit", { mid, marks, with_ai: !!withAi });
+      const pct = r.score / r.max_score;
+      sentsEl.querySelectorAll(".arg-sent").forEach(el => {
+        const i = +el.dataset.i;
+        const d = r.detail.find(x => x.s === i);
+        const w = (r.wrong_sents || []).find(x => x.s === i);
+        el.classList.remove("marked"); el.classList.add("graded");
+        const bg = el.querySelector(".arg-badge"); bg.style.display = "";
+        if (d && d.hit) { el.classList.add(d.type_hit ? "hit" : "half"); bg.textContent = d.got + "分"; }
+        else if (d) { el.classList.add("missed"); bg.textContent = "漏标"; }
+        else if (w) { el.classList.add("wrong"); bg.textContent = "误标"; }
+        else bg.style.display = "none";
+      });
+      box.querySelector(".arg-submit-bar").style.display = "none";
+      const rows = r.detail.map((d, k) => `
+        <div class="card arg-flaw ${d.hit ? (d.type_hit ? "flaw-hit" : "flaw-half") : "flaw-miss"}">
+          <b>第 ${k + 1} 处 · ${d.got ? `得 ${d.got} 分` : "0 分"}</b>
+          <div class="arg-flaw-quote">「${esc(d.quote.slice(0, 40))}${d.quote.length > 40 ? "…" : ""}」</div>
+          <div class="meta">标准：${esc(d.std_type)} ｜ 你：${d.user_type ? esc(d.user_type) : "未标注"}</div>
+          <div class="arg-flaw-line">A：${esc(d.a)}</div>
+          <div class="arg-flaw-line">B：${esc(d.b)}</div>
+          ${r.ai_comments && r.ai_comments[k] ? `<div class="arg-ai-line">🤖 ${esc(r.ai_comments[k])}</div>` : ""}
+        </div>`).join("");
+      $("#argResult").innerHTML = `
+        <div class="card" style="text-align:center">
+          <div class="arg-score-num">${r.score}<small>/${r.max_score}</small></div>
+          <div class="meta">${pct >= 0.9 ? "论证评价已入门" : pct >= 0.6 ? "还需练标句子" : "先背熟 12 类错误"}</div>
+          <button class="btn btn-primary btn-block" onclick="location.reload()">再练一次</button>
+          <button class="btn btn-block" onclick="location.hash='#/argument'">返回列表</button>
+        </div>
+        <h3 class="sec-title">逐处解析</h3>${rows}`;
+      Snd.pop();
+    } catch (e) {
+      toast("判分失败：" + ((e && e.message) || e));
+      btn.disabled = false; btn.textContent = "交卷判分";
+    }
+  };
+  refreshBar();
+}
+
+async function renderArgumentQuiz() {
+  box.innerHTML = `<div class="card"><div class="meta">抽题中…</div></div>`;
+  const draw = await api("/api/argument/quiz/draw", { n: 5 });
+  let idx = 0, right = 0;
+  const showQ = () => {
+    if (idx >= draw.items.length) {
+      box.innerHTML = `
+        <div class="card" style="text-align:center">
+          <div class="arg-score-num">${right}<small>/${draw.items.length}</small></div>
+          <div class="meta">${right >= 4 ? "语感很准，继续保持" : "把 12 类错误的典型例句再过一遍"}</div>
+          <button class="btn btn-primary btn-block" onclick="location.reload()">再来一组</button>
+          <button class="btn btn-block" onclick="location.hash='#/argument'">返回</button>
+        </div>`;
+      return;
+    }
+    const q = draw.items[idx];
+    box.innerHTML = `
+      <div class="card">
+        <div class="meta">第 ${idx + 1}/${draw.items.length} 题 · ${esc(q.src)}</div>
+        <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
+        <div class="arg-quiz-opts">
+          ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
+        </div>
+        <div class="arg-quiz-exp" style="display:none"></div>
+      </div>`;
+    $$(".arg-opt").forEach(b => b.onclick = () => {
+      $$(".arg-opt").forEach(x => (x.disabled = true));
+      api("/api/argument/quiz/check", { answers: [{ qid: q.qid, pick: b.dataset.o }] }).then(r => {
+        const res = r.results[0];
+        if (res.correct) { right++; Snd.pop(); }
+        b.classList.add(res.correct ? "opt-ok" : "opt-no");
+        $$(".arg-opt").forEach(x => { if (x.dataset.o === res.answer) x.classList.add("opt-answer"); });
+        const exp = box.querySelector(".arg-quiz-exp");
+        exp.style.display = "";
+        exp.innerHTML = `
+          <div class="${res.correct ? "arg-ok" : "arg-no"}">${res.correct ? "✓ 判断正确" : "✗ 正确答案：" + esc(res.answer)}</div>
+          <div class="arg-why">${esc(res.why)}</div>
+          <button class="btn btn-primary btn-block" id="argQNext">${idx + 1 < draw.items.length ? "下一题" : "看结果"}</button>`;
+        $("#argQNext").onclick = () => { idx++; showQ(); };
+      });
+    });
+  };
+  showQ();
 }
 
 /* ---------- 申论综应方法论 ---------- */
