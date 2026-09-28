@@ -36,10 +36,16 @@ async function api(path, body) {
     r = await fetch(path, opt);
   } catch (e) {
     if (e.name === "AbortError") throw e;  // 切页导致的取消，不提示
-    toast("网络异常：请确认本机服务正在运行（http://127.0.0.1:8765）");
+    toast("连接失败：本机服务未启动或已停止（http://127.0.0.1:8765）");
     throw e;
   }
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  if (!r.ok) {
+    let msg = `${r.status}`;
+    try { msg = (await r.json()).detail || msg; } catch (e) {}
+    if (r.status >= 500) toast(`服务器内部错误（${r.status}）：${msg}，请查看终端日志`);
+    else if (r.status >= 400) toast(`请求异常（${r.status}）：${msg}`);
+    throw new Error(`${r.status} ${msg}`);
+  }
   return r.json();
 }
 
@@ -1078,7 +1084,7 @@ async function renderPaper() {
       return;
     }
     sel.innerHTML = r.items.map(e =>
-      `<option value="${esc(e.exam)}">${esc(e.exam)}（${e.c} 题）</option>`).join("");
+      `<option value="${esc(e.exam)}">${e.is_ai ? "【AI模拟】" : ""}${esc(e.exam)}（${e.c} 题）</option>`).join("");
     $("#examStart").disabled = false;
     $("#examMsg").textContent = `共 ${r.items.length} 套可选 · 每题约 53 秒的实战节奏自动计时`;
   });

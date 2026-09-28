@@ -839,6 +839,10 @@ class _Handler(BaseHTTPRequestHandler):
                 with _lock:
                     r = db.import_cards()
                 self._json(r)
+            elif path == "/api/difficulty/tag":
+                with _lock:
+                    r = db.tag_difficulty_batch()
+                self._json(r)
             elif path == "/api/card-review":
                 with _lock:
                     db.card_review(str(b["card_id"]), int(b.get("level", 2)))
@@ -1424,7 +1428,27 @@ def start(db_path: str, img_dir: str, web_dir: str) -> int:
     _httpd.daemon_threads = True
     t = threading.Thread(target=_httpd.serve_forever, daemon=True)
     t.start()
+    _startup_selfcheck()
     return _httpd.server_address[1]
+
+
+def _startup_selfcheck() -> None:
+    """启动时自检核心数据接口。"""
+    checks = [
+        ("题库 facets", lambda: db.facets()),
+        ("试卷列表 list_exams", lambda: db.list_exams()),
+    ]
+    ok, fail = 0, 0
+    for name, fn in checks:
+        try:
+            r = fn()
+            if r is None:
+                raise RuntimeError("返回 None")
+            ok += 1
+        except Exception as e:
+            fail += 1
+            print(f"[FAIL] {name}: {e}")
+    print(f"启动自检: {ok}/{ok + fail} 通过" + ("" if fail == 0 else f"（{fail} 项失败）"))
 
 
 def stop() -> None:

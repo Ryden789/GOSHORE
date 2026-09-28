@@ -33,7 +33,29 @@ async def lifespan(app: FastAPI):
     conn.close()
     if n == 0:
         db.reindex()
+    _startup_selfcheck()
     yield
+
+
+def _startup_selfcheck() -> None:
+    """启动时自检核心数据接口，失败项用红色标注但不阻断启动。"""
+    checks = [
+        ("题库 facets", lambda: db.facets()),
+        ("试卷列表 list_exams", lambda: db.list_exams()),
+        ("设置 load_settings", lambda: load_settings()),
+    ]
+    ok, fail = 0, 0
+    for name, fn in checks:
+        try:
+            r = fn()
+            if r is None:
+                raise RuntimeError("返回 None")
+            ok += 1
+        except Exception as e:
+            fail += 1
+            print(f"\033[91m  [FAIL] {name}: {e}\033[0m")
+    status = "\033[92m全部通过\033[0m" if fail == 0 else f"\033[91m{fail} 项失败\033[0m"
+    print(f"  启动自检: {ok}/{ok + fail} 通过 · {status}")
 
 
 app = FastAPI(title="GOSHORE 上岸", lifespan=lifespan)
@@ -119,6 +141,12 @@ def api_mark(b: MarkIn):
 @app.post("/api/reindex")
 def api_reindex():
     return db.reindex()
+
+
+@app.post("/api/difficulty/tag")
+def api_difficulty_tag():
+    """手动触发难度批量打标（关键词启发式）。"""
+    return db.tag_difficulty_batch()
 
 
 # ---------------- 图片代理（限定 vault 内） ----------------

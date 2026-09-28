@@ -236,6 +236,7 @@ input, select, textarea { font-family: var(--sans); }
 .search-card {
   background: var(--panel); border: 1px solid var(--line-soft); border-radius: 6px;
   box-shadow: var(--shadow); padding: 18px; margin-bottom: 18px;
+  position: sticky; top: 0; z-index: 20;
 }
 .search-row { display: flex; gap: 10px; }
 .search-input {

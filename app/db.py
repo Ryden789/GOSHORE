@@ -1,4 +1,4 @@
-"""SQLite 存储层 + 增量索引 + 检索。"""
+﻿"""SQLite 存储层 + 增量索引 + 检索。"""
 from __future__ import annotations
 
 import contextvars
@@ -231,10 +231,19 @@ CREATE TABLE IF NOT EXISTS shizheng_quiz (
     period TEXT PRIMARY KEY,
     quiz TEXT
 );
+
+-- Schema 版本号（版本化迁移用）
+CREATE TABLE IF NOT EXISTS _meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 # 桌面端：单库全量 schema（保持原行为）
 SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
+
+# 当前 schema 版本号（每次新增迁移步骤时 +1）
+SCHEMA_VERSION = 1
 
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
 EBBINGHAUS_DAYS = [1, 2, 4, 7, 15, 30]
@@ -285,6 +294,7 @@ def connect() -> sqlite3.Connection:
     shared_uri = DB_PATH.resolve().as_uri() + "?mode=ro"
     conn.execute("ATTACH DATABASE ? AS shared", (shared_uri,))
     conn.executescript(PERSONAL_SCHEMA)
+    _migrate(conn)  # 版本化迁移（个人库）
     # 旧版个人库补列（CREATE IF NOT EXISTS 不会加列）
     _acols = [r["name"] for r in conn.execute("PRAGMA table_info(answers)")]
     if "guessed" not in _acols:
@@ -314,8 +324,41 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """版本化迁移：按 schema_version 依次执行，幂等。
+
+    v1（当前）：标记位——已有的散装 ALTER（difficulty/material_fp/guessed/
+    verified/quiz）在 init_db 和 connect 中继续保留以确保旧库兼容，
+    此版本仅写入 _meta.schema_version=1，后续新增列统一走此函数。
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)"
+    )
+    row = conn.execute(
+        "SELECT value FROM _meta WHERE key='schema_version'"
+    ).fetchone()
+    v = int(row["value"]) if row else 0
+
+    if v < 1:
+        # v1: 标记位，具体列迁移已由 init_db/connect 中的散装 ALTER 覆盖
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','1')"
+        )
+        conn.commit()
+
+    # ---- 后续迁移示例（新增列时取消注释并递增 SCHEMA_VERSION） ----
+    # if v < 2:
+    #     cols = [r["name"] for r in conn.execute("PRAGMA table_info(xxx)")]
+    #     if "new_col" not in cols:
+    #         conn.execute("ALTER TABLE xxx ADD COLUMN new_col TEXT DEFAULT ''")
+    #     conn.execute(
+    #         "UPDATE _meta SET value='2' WHERE key='schema_version'")
+    #     conn.commit()
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
     # 补充列：material_fp（材料指纹，用于资料分析同材料归组）
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(documents)")]
     if "difficulty" not in cols:
@@ -457,6 +500,11 @@ def reindex(progress=None) -> dict:
 
     conn.commit()
     conn.close()
+    # 对新增/变更且未标难度的题目做启发式打标
+    try:
+        tag_difficulty_batch(progress)
+    except Exception as e:
+        print(f"[difficulty-tag] {e}")
     return {
         "ok": True,
         "total": total,
@@ -1995,6 +2043,79 @@ def _recompute_difficulty(doc_id: int) -> None:
     conn.close()
 
 
+# ---------------- 难度批量初始化（关键词启发式） ----------------
+
+# 关键词 → 难度映射表（按命中优先级）
+_DIFF_KW_EASY = ("送分", "基础题", "基本概念", "入门", "常识题", "简单题")
+_DIFF_KW_HARD = ("陷阱", "易混", "易错", "难题", "较难", "高阶", "深度", "综合分析题", "复杂")
+
+
+def _guess_difficulty(title: str, search_text: str, kaodian: str, tags: str,
+                      qid: str, path: str) -> str:
+    """关键词启发式 + 确定性哈希兜底，给未标难度的题打初始档。
+
+    1. 命中 hard 关键词 → hard
+    2. 命中 easy 关键词 → easy
+    3. 无关键词命中时，按 (qid|path) 的稳定哈希做三档分布（≈25% easy / 55% mid / 20% hard）
+    """
+    blob = f"{title}{search_text}{kaodian}{tags}"
+    for kw in _DIFF_KW_HARD:
+        if kw in blob:
+            return "hard"
+    for kw in _DIFF_KW_EASY:
+        if kw in blob:
+            return "easy"
+    # 兜底：确定性哈希分布，保证三档有合理占比且可复现
+    import hashlib
+    seed = qid or path or title
+    h = int(hashlib.md5(seed.encode("utf-8")).hexdigest(), 16) % 100
+    if h < 25:
+        return "easy"
+    if h < 80:
+        return "mid"
+    return "hard"
+
+
+def tag_difficulty_batch(progress=None) -> dict:
+    """扫描 difficulty 为空的所有题目，用关键词启发式批量打标。
+
+    桌面端直接 UPDATE documents；移动端写入 doc_overrides（共享题库只读）。
+    幂等：已有难度的题目不受影响。
+    """
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id,title,search_text,kaodian,tags,qid,path FROM documents "
+        "WHERE difficulty IS NULL OR difficulty=''"
+    ).fetchall()
+    total = len(rows)
+    easy = mid = hard = 0
+    for i, r in enumerate(rows):
+        diff = _guess_difficulty(
+            r["title"] or "", r["search_text"] or "", r["kaodian"] or "",
+            r["tags"] or "", r["qid"] or "", r["path"] or ""
+        )
+        if IS_MOBILE:
+            conn.execute(
+                "INSERT OR REPLACE INTO doc_overrides(doc_id,difficulty) VALUES(?,?)",
+                (r["id"], diff))
+        else:
+            conn.execute(
+                "UPDATE documents SET difficulty=? WHERE id=?", (diff, r["id"]))
+        if diff == "easy":
+            easy += 1
+        elif diff == "hard":
+            hard += 1
+        else:
+            mid += 1
+        if (i + 1) % 500 == 0:
+            conn.commit()
+            if progress:
+                progress(i + 1, total, "tag")
+    conn.commit()
+    conn.close()
+    return {"ok": True, "total": total, "easy": easy, "mid": mid, "hard": hard}
+
+
 def difficulty_map(doc_ids: list[int]) -> dict[int, str]:
     if not doc_ids:
         return {}
@@ -2152,7 +2273,8 @@ def list_exams() -> list[dict]:
            WHERE kind='真题' AND exam!='' AND module NOT IN ('申论','综合分析')
            GROUP BY exam HAVING c>=15 ORDER BY exam DESC LIMIT 60""").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [{"exam": r["exam"], "c": r["c"], "is_ai": r["exam"].startswith("AI模拟")}
+            for r in rows]
 
 
 MODULE_ORDER = ["常识判断", "言语理解", "数量关系", "判断推理", "资料分析", "综合分析"]

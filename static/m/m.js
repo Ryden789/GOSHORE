@@ -942,7 +942,7 @@ async function renderPractice() {
     if (!sel) return;
     if (!r.items.length) { sel.innerHTML = `<option value="">题库中暂无成套试卷</option>`; return; }
     sel.innerHTML = r.items.map(e =>
-      `<option value="${esc(e.exam)}">${esc(e.exam)}（${e.c} 题）</option>`).join("");
+      `<option value="${esc(e.exam)}">${e.is_ai ? "【AI模拟】" : ""}${esc(e.exam)}（${e.c} 题）</option>`).join("");
     const go = $("#examGo"); if (go) go.disabled = false;
   }).catch(() => {});
   $("#examGo").onclick = async () => {
