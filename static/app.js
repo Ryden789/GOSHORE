@@ -3651,6 +3651,7 @@ async function renderAiAsk() {
 
     let thinkBox = null, think = "", full = "";
     const b = bubble("ai", "");
+    b.innerHTML = `<div style="color:var(--ink-2);font-size:12.5px">🤔 思考中…</div>`;
     b.classList.add("cursor-blink");
 
     try {
@@ -3705,7 +3706,8 @@ async function renderAiAsk() {
 
   goBtn.onclick = send;
   input.onkeydown = e => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    // 中文输入法组词时的回车只确认候选词，不发送
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   };
   $$("#aiAskChips button").forEach(x => x.onclick = () => { input.value = x.dataset.q; send(); });
   newBtn.onclick = () => {
