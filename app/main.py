@@ -14,7 +14,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill, argument
+from . import ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill, argument, zy_notes
 from .config import STATIC_DIR, DB_PATH, SETTINGS_PATH, load_settings, save_settings
 
 import html as _html
@@ -366,6 +366,12 @@ def api_kaodian_list():
 def api_kaodian_tree(module: str = "判断推理"):
     """判断专项：某模块真题考点两级树（大类/细分，带题数）。"""
     return {"items": db.kaodian_tree(module)}
+
+
+@app.get("/api/zy/notes")
+def api_zy_notes():
+    """综应考点知识库：C类综应知识体系静态数据。"""
+    return {"ok": True, "data": zy_notes.NOTES}
 
 
 class PaperIn(BaseModel):

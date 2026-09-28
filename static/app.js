@@ -57,8 +57,8 @@ function stripWl(s) {
 
 /* 白名单 HTML：先抽出来占位，escape 后再还原。
    占位符必须用文本中不可能出现的格式，否则题干里的数字会被误替换。 */
-const HTML_WHITELIST = /<(p|br|img|table|thead|tbody|tr|td|th|div|span|sub|sup)(\s[^<>]*?)?\s*\/?>/gi;
-const HTML_WHITELIST_CLOSE = /<\/(p|table|thead|tbody|tr|td|th|div|span|sub|sup)>/gi;
+const HTML_WHITELIST = /<(p|br|img|table|thead|tbody|tr|td|th|div|span|sub|sup|b|u|i|em|strong|s)(\s[^<>]*?)?\s*\/?>/gi;
+const HTML_WHITELIST_CLOSE = /<\/(p|table|thead|tbody|tr|td|th|div|span|sub|sup|b|u|i|em|strong|s)>/gi;
 
 function md(src) {
   if (!src) return "";
@@ -76,6 +76,8 @@ function md(src) {
     const map = { nbsp:" ", hellip:"…", mdash:"—", ndash:"–", times:"×", divide:"÷", plusmn:"±", deg:"°", frac12:"½", frac14:"¼", frac34:"¾", middot:"·" };
     return map[name] || m;
   });
+  // 题库原文自带的 &gt; &lt; &amp; 等实体：esc 后变 &amp;gt;，这里还原为实体本身（浏览器按原文渲染）
+  src = src.replace(/&amp;([a-zA-Z]{2,10}|#\d+|#x[0-9a-fA-F]+);/gi, "&$1;");
   src = src.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, a, u) => `<img alt="${a}" src="${u}">`);
   src = src.replace(/`([^`]+)`/g, "<code>$1</code>");
   src = src.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -223,6 +225,7 @@ function route() {
   else if (name === "formula") dispatch(renderFormula);
   else if (name === "logic") dispatch(renderLogic);
   else if (name === "wenxian") dispatch(renderWenxian);
+  else if (name === "zy-notes") dispatch(renderZyNotes);
   else if (name === "report") dispatch(renderReport);
   else if (name === "history") dispatch(renderHistory);
   else if (name === "ai-ask") dispatch(renderAiAsk);
@@ -3716,6 +3719,84 @@ async function renderAiAsk() {
     aiAskSave(msgs);
     drawAll();
   };
+}
+
+/* =====================================================
+   综应考点知识库
+===================================================== */
+
+async function renderZyNotes() {
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">综应考点</h1>
+      <p class="page-desc">事业单位C类《综合应用能力》知识体系：文献阅读 · 实验设计 · 论证评价 · 校阅改错 · 写作 · 常识</p>
+    </div>
+    <div class="panel" style="padding:10px 14px">
+      <input id="zyQ" type="search" placeholder="搜索知识点标题或正文…" style="width:100%">
+    </div>
+    <div id="zyBody"></div>`;
+  const body = $("#zyBody");
+
+  let notes;
+  try {
+    const r = await api("/api/zy/notes");
+    notes = r.data;
+  } catch (e) {
+    body.innerHTML = `<div class="panel" style="margin-top:16px">
+      <h3>知识库加载失败</h3>
+      <p style="color:var(--ink-2);font-size:14px">${esc(String((e && e.message) || e))}</p>
+      <button class="btn btn-primary" id="zyRetry">重试</button>
+    </div>`;
+    $("#zyRetry").onclick = () => renderZyNotes();
+    return;
+  }
+  const groups = (notes && notes.groups) || [];
+
+  const draw = kw => {
+    const k = (kw || "").trim().toLowerCase();
+    const shown = groups.map(g => ({
+      ...g,
+      points: g.points.filter(p =>
+        !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)),
+    })).filter(g => g.points.length);
+    if (!shown.length) {
+      body.innerHTML = `<div class="panel" style="margin-top:16px"><div class="empty" style="padding:20px">没有匹配「${esc(kw)}」的知识点</div></div>`;
+      return;
+    }
+    body.innerHTML = shown.map((g, gi) => `
+      <div class="panel rise rise-${Math.min(gi + 1, 3)}">
+        <h3 style="margin:0 0 2px"><span style="color:var(--cinnabar);margin-right:6px">${esc(g.icon)}</span>${esc(g.name)}
+          <span style="font-size:12px;color:var(--ink-3);font-weight:400;margin-left:8px">${g.points.length} 个知识点</span></h3>
+        <p style="color:var(--ink-2);font-size:13px;margin:0 0 6px">${esc(g.desc)}</p>
+        ${g.points.map(p => `
+          <div class="zy-item">
+            <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--line-soft);cursor:pointer">
+              <b style="font-size:14px">${esc(p.title)}</b><span style="color:var(--ink-3)">▾</span>
+            </div>
+            <div class="zy-body" hidden style="padding:0 2px 12px">
+              <div style="font-size:13.5px;line-height:1.75">${md(p.body)}</div>
+              ${p.tips && p.tips.length ? `
+                <div style="margin-top:8px;padding:8px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar)">
+                  <b style="font-size:13px">⚠ 易错提醒</b>
+                  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2);line-height:1.7">
+                    ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
+                  </ul>
+                </div>` : ""}
+            </div>
+          </div>`).join("")}
+      </div>`).join("");
+    body.querySelectorAll(".zy-head").forEach(h => {
+      h.onclick = () => {
+        const item = h.closest(".zy-item");
+        const b = item.querySelector(".zy-body");
+        b.hidden = !b.hidden;
+        item.querySelector(".zy-head span").textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+  };
+
+  $("#zyQ").oninput = e => draw(e.target.value);
+  draw("");
 }
 
 route();

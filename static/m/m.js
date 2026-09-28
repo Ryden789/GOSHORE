@@ -227,6 +227,7 @@ const TITLES = {
   report: "周报", history: "做题记录", paper: "组卷", logic: "判断专项",
   formula: "列式专项", wordfill: "词语填空", speed: "速算",
   essay: "申论综应", wenxian: "科技文献", shizheng: "时政", grade: "AI 批改",
+  "zy-notes": "综应考点",
   argument: "论证评价", "argument-quiz": "辨析快练", "ai-ask": "AI 答疑",
   wrong: "错题本", marks: "收藏", cards: "辨析卡",
   search: "搜题", doubts: "疑点", import: "导入", settings: "设置",
@@ -252,6 +253,7 @@ const HUB = [
     ["essay", "文", "申论综应", "题目作答与评分"],
     ["argument", "评", "论证评价", "标注训练+辨析快练"],
     ["wenxian", "科", "科技文献", "长文小题群"],
+    ["zy-notes", "识", "综应考点", "C类综应知识体系"],
     ["shizheng", "政", "时政", "时政热点自测"],
     ["grade", "批", "AI 批改", "AI 智能批改"],
   ]},
@@ -612,6 +614,7 @@ const ROUTES = {
   all: renderAll, report: renderReport,
   speed: renderSpeed, wordfill: renderWordfill,
   essay: renderEssay, wenxian: renderWenxian,
+  "zy-notes": renderZyNotes,
   argument: renderArgument, "argument-quiz": renderArgumentQuiz,
   "ai-ask": renderAiAsk,
   shizheng: renderShizheng, grade: renderGrade,
@@ -3702,6 +3705,76 @@ async function renderAiAsk() {
     aiAskSave(msgs);
     drawAll();
   };
+}
+
+/* ---------- 综应考点 ---------- */
+
+async function renderZyNotes() {
+  view.innerHTML = `
+    <div class="page-head">
+      <h2>综应考点</h2>
+      <p class="muted">事业单位C类《综合应用能力》知识体系 · 点标题展开，可搜索</p>
+    </div>
+    <div class="card"><input id="zyQ" type="search" placeholder="搜索知识点标题或正文…" style="width:100%"></div>
+    <div id="zyBody"></div>`;
+
+  let notes;
+  try {
+    const r = await api("/api/zy/notes");
+    notes = r.data;
+  } catch (e) {
+    $("#zyBody").innerHTML = `
+      <div class="card">
+        <h3>知识库加载失败</h3>
+        <p class="muted">${esc(String((e && e.message) || e))}</p>
+        <button class="btn btn-primary" id="zyRetry">重试</button>
+      </div>`;
+    $("#zyRetry").onclick = () => renderZyNotes();
+    return;
+  }
+  const groups = (notes && notes.groups) || [];
+
+  const draw = kw => {
+    const k = (kw || "").trim().toLowerCase();
+    const shown = groups.map(g => ({
+      ...g,
+      points: g.points.filter(p =>
+        !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)),
+    })).filter(g => g.points.length);
+    const el = $("#zyBody");
+    el.innerHTML = shown.length ? shown.map(g => `
+      <div class="card">
+        <h3 class="sec"><span style="color:var(--cinnabar)">${esc(g.icon)}</span> ${esc(g.name)} · ${g.points.length} 点</h3>
+        <p class="muted" style="margin:0 0 4px;font-size:12.5px">${esc(g.desc)}</p>
+        ${g.points.map(p => `
+          <div class="zy-item">
+            <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--line-soft);cursor:pointer">
+              <b style="font-size:14.5px;line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
+            </div>
+            <div class="zy-body" hidden style="padding-bottom:12px">
+              ${md(p.body)}
+              ${p.tips && p.tips.length ? `
+                <div style="margin-top:8px;padding:8px 10px;background:#fbf6ec;border-left:3px solid var(--cinnabar)">
+                  <b style="font-size:13px">⚠ 易错提醒</b>
+                  <ul class="md-list" style="margin:4px 0 0;font-size:12.5px;color:var(--ink-2)">
+                    ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
+                  </ul>
+                </div>` : ""}
+            </div>
+          </div>`).join("")}
+      </div>`).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的知识点</div>`;
+    [...el.querySelectorAll(".zy-head")].forEach(h => {
+      h.onclick = () => {
+        const item = h.closest(".zy-item");
+        const b = item.querySelector(".zy-body");
+        b.hidden = !b.hidden;
+        h.querySelector("span").textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+  };
+
+  $("#zyQ").oninput = e => draw(e.target.value);
+  draw("");
 }
 
 boot();

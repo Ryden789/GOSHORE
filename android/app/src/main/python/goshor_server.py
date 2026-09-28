@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill
+from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -680,6 +680,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"items": db.list_exams()})
             elif path == "/api/kaodian-tree":
                 self._json({"items": db.kaodian_tree(q("module", "判断推理"))})
+            elif path == "/api/zy/notes":
+                self._json({"ok": True, "data": zy_notes.NOTES})
             elif path == "/api/wrong-book":
                 self._json({"items": db.list_wrong_book()})
             elif path == "/api/marks":
