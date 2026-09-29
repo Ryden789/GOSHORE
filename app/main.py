@@ -1160,18 +1160,20 @@ def api_exam_paper(b: ExamPaperIn):
 # 事业单位联考C类《职测》规格：100题/90分钟/满分150
 # 模块顺序与分值：常识20×1、言语25×1.6、数量分析15×2（数量5+资料10）、判断30×1.5、综合分析10×1.5
 _CE_SPEC = [
-    ("常识判断", 20, 1.0, None),
-    ("言语理解", 25, 1.6, None),
-    ("数量关系", 5, 2.0, None),
-    ("资料分析", 10, 2.0, None),
-    ("判断推理", 30, 1.5, None),
-    ("综合分析", 10, 1.5, ["策略制定", "实验设计"]),
+    ("常识判断", 20, 1.0, None, None),
+    ("言语理解", 25, 1.6, None, None),
+    ("数量关系", 5, 2.0, None, None),
+    ("资料分析", 10, 2.0, None, "material"),   # 按整篇材料抽
+    ("判断推理", 30, 1.5, None, [
+        ("图形推理", 5), ("定义判断", 10), ("类比推理", 5), ("逻辑判断", 10),
+    ]),
+    ("综合分析", 10, 1.5, ["策略制定", "实验设计"], None),
 ]
 
 
 @app.post("/api/ce-paper")
 def api_ce_paper():
-    """按C类职测规格智能组卷。综合分析只抽策略制定/实验设计考点。"""
+    """按C类职测规格智能组卷。模块内按真实卷面顺序排列。"""
     import random
     conn = db.connect()
     try:
@@ -1179,23 +1181,54 @@ def api_ce_paper():
         ids: list[int] = []
         weights: dict[int, float] = {}
         short: list[str] = []
-        for module, n, score, kd_filter in _CE_SPEC:
-            if kd_filter:
-                placeholders = ",".join("?" * len(kd_filter))
-                rows = cur.execute(
-                    f"SELECT id FROM documents WHERE module=? AND kaodian IN ({placeholders})",
-                    (module, *kd_filter)).fetchall()
-            else:
-                rows = cur.execute(
-                    "SELECT id FROM documents WHERE module=?", (module,)).fetchall()
+
+        def _take_from(where_sql: str, args: tuple, n: int) -> list[int]:
+            rows = cur.execute(
+                f"SELECT id FROM documents WHERE {where_sql}", args).fetchall()
             pool = [r[0] for r in rows]
             random.shuffle(pool)
-            take = pool[:n]
-            if len(take) < n:
-                short.append(f"{module}（{len(take)}/{n}）")
-            ids.extend(take)
-            for i in take:
+            return pool[:n]
+
+        for module, n, score, kd_filter, sub_spec in _CE_SPEC:
+            taken: list[int] = []
+            if sub_spec == "material":
+                # 资料分析：按整篇材料抽（同材料小题连续），凑满 n 题
+                fp_rows = cur.execute(
+                    "SELECT material_fp FROM documents "
+                    "WHERE module='资料分析' AND material_fp!='' "
+                    "GROUP BY material_fp HAVING COUNT(*)>=5 "
+                    "ORDER BY RANDOM()").fetchall()
+                for (fp,) in fp_rows:
+                    if len(taken) >= n:
+                        break
+                    sub = cur.execute(
+                        "SELECT id FROM documents WHERE material_fp=? ORDER BY id LIMIT 5",
+                        (fp,)).fetchall()
+                    taken.extend(r[0] for r in sub)
+                taken = taken[:n]
+            elif sub_spec:
+                # 判断推理：按真实卷面顺序（图推→定义→类比→逻辑）分大类抽
+                for top_kd, sub_n in sub_spec:
+                    sub = _take_from(
+                        "module=? AND kaodian LIKE ?", (module, top_kd + "%"), sub_n)
+                    taken.extend(sub)
+                    if len(sub) < sub_n:
+                        short.append(f"{top_kd}（{len(sub)}/{sub_n}）")
+            elif kd_filter:
+                # 综合分析：只抽策略制定/实验设计
+                placeholders = ",".join("?" * len(kd_filter))
+                taken = _take_from(
+                    f"module=? AND kaodian IN ({placeholders})",
+                    (module, *kd_filter), n)
+            else:
+                taken = _take_from("module=?", (module,), n)
+
+            if len(taken) < n:
+                short.append(f"{module}（{len(taken)}/{n}）")
+            ids.extend(taken)
+            for i in taken:
                 weights[i] = score
+
         return {
             "ids": ids,
             "weights": weights,

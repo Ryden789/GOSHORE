@@ -188,6 +188,7 @@ function route() {
   const h = location.hash || "#/home";
   const parts = h.replace(/^#\//, "").split("/");
   const name = parts[0] || "home";
+  if (name !== "exam") document.body.classList.remove("exam-mode");
   setActive(name);
   window.scrollTo(0, 0);
   const dispatch = fn => {
@@ -229,6 +230,7 @@ function route() {
   else if (name === "report") dispatch(renderReport);
   else if (name === "history") dispatch(renderHistory);
   else if (name === "ai-ask") dispatch(renderAiAsk);
+  else if (name === "exam") dispatch(renderExam);
   else dispatch(renderHome);
 }
 window.addEventListener("hashchange", route);
@@ -1545,41 +1547,17 @@ async function renderPaper() {
     $("#examStart").disabled = false;
     $("#examMsg").textContent = `共 ${r.items.length} 套可选 · 每题约 53 秒的实战节奏自动计时`;
   });
-  $("#examStart").onclick = async () => {
+  $("#examStart").onclick = () => {
     const exam = $("#examSel").value;
     if (!exam) return;
-    const btn = $("#examStart");
-    btn.disabled = true; btn.textContent = "组卷中…";
-    try {
-      const r = await api("/api/exam-paper", { exam });
-      if (!r.ids.length) return alert("该套卷没有可用题目");
-      runPaper(r.ids, { title: r.name, minutes: r.minutes });
-    } finally {
-      const b = $("#examStart");
-      if (b) { b.disabled = false; b.textContent = "开始整卷"; }
-    }
+    try { sessionStorage.setItem("goshore_exam", JSON.stringify({ kind: "exam", exam })); } catch (e) {}
+    location.hash = "#/exam";
   };
 
-  // C类职测整卷（智能组卷）
-  $("#ceStart").onclick = async () => {
-    const btn = $("#ceStart");
-    btn.disabled = true; btn.textContent = "组卷中…";
-    try {
-      const r = await api("/api/ce-paper", {});
-      if (!r.ids.length) { $("#ceMsg").textContent = "题库题量不足，无法组卷"; return; }
-      if (r.short && r.short.length) {
-        $("#ceMsg").innerHTML = `<span style="color:var(--amber)">⚠ 题库不足，已按实际量出题：${esc(r.short.join("、"))}</span>`;
-      }
-      runPaper(r.ids, {
-        title: r.name,
-        minutes: r.minutes,
-        weights: r.weights || {},
-        fullScore: r.full_score || 150,
-      });
-    } finally {
-      const b = $("#ceStart");
-      if (b) { b.disabled = false; b.textContent = "开始C类职测整卷"; }
-    }
+  // C类职测整卷（智能组卷）：进入独立考试页
+  $("#ceStart").onclick = () => {
+    try { sessionStorage.setItem("goshore_exam", JSON.stringify({ kind: "ce" })); } catch (e) {}
+    location.hash = "#/exam";
   };
 
   // 疑点陷阱题集
@@ -1849,14 +1827,15 @@ async function runPaper(ids, opt = {}) {
     throw e;
   }
   const docs = res.items || [];
-  if (!docs.length) { $("#paperBody").innerHTML = `<div class="panel">题目加载失败</div>`; return; }
+  const container = opt.container || $("#paperBody");
+  if (!docs.length) { if (container) container.innerHTML = `<div class="panel">题目加载失败</div>`; return; }
   const answers = new Array(docs.length).fill(null);   // {sel, correct, ms}
   let cur = 0, startedAt = Date.now(), finished = false;
   const t0 = Date.now();
   const deadline = opt.minutes ? t0 + opt.minutes * 60000 : null;
   let timerH = null;
 
-  const body = $("#paperBody");
+  const body = container;
 
   function tick() {
     const el = $("#pTimer");
@@ -2027,15 +2006,85 @@ async function runPaper(ids, opt = {}) {
             </div>
           </div>`).join("")}
       </div>`;
-    $("#rePaper").onclick = () => renderPaper();
-    $("#backHome").onclick = () => (location.hash = "#/home");
+    $("#rePaper").onclick = () => {
+      if (opt.onRestart) opt.onRestart();
+      else renderPaper();
+    };
+    $("#backHome").onclick = () => {
+      document.body.classList.remove("exam-mode");
+      location.hash = opt.exitHash || "#/home";
+    };
     $$(".doc-item", body).forEach(el => el.onclick = () => {
       const doc = docs[+el.dataset.i];
+      document.body.classList.remove("exam-mode");
       location.hash = `#/doc/${doc.id}/ai`;
     });
   }
 
   show(0);
+}
+
+/* =====================================================
+   独立考试页（#/exam）：全屏做题，无侧边栏干扰
+   参数经 sessionStorage「goshore_exam」传入：
+   { kind: "ce" | "exam", exam: 套卷名（kind=exam 时用） }
+===================================================== */
+
+async function renderExam() {
+  document.body.classList.add("exam-mode");
+  let spec = null;
+  try { spec = JSON.parse(sessionStorage.getItem("goshore_exam") || "null"); } catch (e) {}
+  if (!spec || !spec.kind) {
+    document.body.classList.remove("exam-mode");
+    location.hash = "#/paper";
+    return;
+  }
+  view.innerHTML = `<div class="exam-wrap">
+    <div class="exam-topbar">
+      <span class="exam-title" id="examTitle">组卷中…</span>
+      <button class="btn btn-sm" id="examQuit">退出</button>
+    </div>
+    <div id="examBody"><div class="panel" style="text-align:center;padding:40px">正在抽题，请稍候…</div></div>
+  </div>`;
+
+  const quit = () => {
+    if (!confirm("退出将丢失本卷作答进度，确定退出？")) return;
+    document.body.classList.remove("exam-mode");
+    sessionStorage.removeItem("goshore_exam");
+    location.hash = "#/paper";
+  };
+  $("#examQuit").onclick = quit;
+
+  async function startPaper() {
+    let r;
+    if (spec.kind === "ce") {
+      r = await api("/api/ce-paper", {});
+    } else {
+      r = await api("/api/exam-paper", { exam: spec.exam });
+    }
+    if (!r.ids || !r.ids.length) {
+      $("#examBody").innerHTML = `<div class="panel" style="text-align:center;padding:40px">题库题量不足，无法组卷</div>`;
+      return;
+    }
+    const t = $("#examTitle");
+    if (t) t.textContent = `${r.name} · ${r.ids.length} 题 / ${r.minutes} 分钟`;
+    runPaper(r.ids, {
+      title: r.name,
+      minutes: r.minutes,
+      weights: r.weights || null,
+      fullScore: r.full_score || 0,
+      container: $("#examBody"),
+      exitHash: "#/paper",
+      onRestart: startPaper,   // 再组一卷：留在考试页重抽
+    });
+    if (r.short && r.short.length) {
+      const warn = document.createElement("div");
+      warn.style.cssText = "color:var(--amber);font-size:12.5px;margin:6px 0";
+      warn.textContent = `⚠ 题库不足，已按实际量出题：${r.short.join("、")}`;
+      $("#examBody").prepend(warn);
+    }
+  }
+  await startPaper();
 }
 
 /* =====================================================
