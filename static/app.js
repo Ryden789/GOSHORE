@@ -1468,7 +1468,12 @@ async function renderPaper() {
           <div class="cfg-label">自由组卷</div>
           <div class="cfg-inline">
             <span>模块 <select id="pModule"><option value="">全部</option>${facets.modules.map(m => `<option>${esc(m)}</option>`).join("")}</select></span>
-            <span>考点 <select id="pKaodian"><option value="">全部</option>${kaodians.map(k => `<option data-mod="${esc(k.module)}">${esc(k.kaodian)}（${k.c}）</option>`).join("")}</select></span>
+            <span>考点
+              <span class="kd-combo" id="kdCombo">
+                <input class="kd-input" id="pKaodianInput" placeholder="搜考点或模块，如：增长量、图推、工程…" autocomplete="off"/>
+                <span class="kd-caret">▾</span>
+              </span>
+            </span>
             <span>题量 <input type="number" id="pN" value="10" min="3" max="30" style="width:70px"/></span>
           </div>
         </div>
@@ -1572,19 +1577,199 @@ async function renderPaper() {
     runPaper(res.ids, { title: res.name, minutes: res.minutes });
   });
 
-  // 模块联动考点
-  const kdSel = $("#pKaodian");
-  const allOpts = $$("option", kdSel).slice(1);
-  $("#pModule").onchange = e => {
-    const m = e.target.value;
-    kdSel.value = "";
-    allOpts.forEach(o => o.style.display = !m || o.dataset.mod === m ? "" : "none");
+  // 模块联动 + 考点组合搜索（输入即过滤，支持按考点名或所属模块搜）
+  // 数据特点：后端按细分考点拆行（10588 条），如"定义判断 / 单定义-要素对应（选非题）"。
+  // 展示策略：
+  //   - 不输入时，按「大类」（" / " 前第一段）聚合显示，便于浏览
+  //   - 输入时，按细分考点精准匹配，并按命中层级排序（细分命中 > 大类命中）
+  // 选中后传原始考点名（大类或细分）给后端，后端按前缀匹配命中所有相关题。
+  const kdMerged = (() => {
+    const map = new Map();
+    for (const k of kaodians) {
+      const key = (k.kaodian || "").trim();
+      if (!key) continue;
+      if (map.has(key)) {
+        const cur = map.get(key);
+        cur.c += k.c || 0;
+      } else {
+        map.set(key, { kaodian: k.kaodian, module: k.module, c: k.c || 0 });
+      }
+    }
+    return [...map.values()];
+  })();
+
+  // 大类聚合（用于默认展示）
+  const kdGroups = (() => {
+    const map = new Map();
+    for (const k of kdMerged) {
+      const top = k.kaodian.split(" / ")[0].trim();
+      if (!top) continue;
+      if (map.has(top)) {
+        const cur = map.get(top);
+        cur.c += k.c;
+      } else {
+        map.set(top, { kaodian: top, module: k.module, c: k.c, isGroup: true });
+      }
+    }
+    return [...map.values()].sort((a, b) => b.c - a.c);
+  })();
+
+  const kdInput = $("#pKaodianInput");
+  const kdCombo = $("#kdCombo");
+  let kdPicked = "";         // 已选中的考点名（精确值，组卷用）
+  let kdOpen = false;
+  let kdActIdx = -1;         // 键盘高亮下标
+  let kdList = [];           // 当前下拉可见条目
+
+  const kdDrop = document.createElement("div");
+  kdDrop.className = "kd-drop";
+  kdDrop.style.display = "none";
+  kdCombo.appendChild(kdDrop);
+
+  // 常见别名/缩写映射：让"图推""数推""资分"等口语化叫法也能搜到
+  const KD_ALIASES = {
+    "图推": "图形推理", "数推": "数字推理", "资分": "资料分析",
+    "逻判": "逻辑判断", "定判": "定义判断", "类推": "类比推理",
+    "言理": "言语理解", "常判": "常识判断", "数关": "数量关系",
+    "科推": "科学推理", "实设": "实验设计", "策定": "策略制定",
+    "文阅": "科技文献阅读", "论评": "论证评价", "校改": "校阅改错",
+    "作文": "材料作文", "写作": "材料作文",
+  };
+
+  function kdFiltered() {
+    let q = kdInput.value.trim().toLowerCase();
+    const mod = $("#pModule").value;
+    if (!q) {
+      // 无查询词：返回大类列表（按模块过滤）
+      return kdGroups.filter(k => !mod || k.module === mod);
+    }
+    // 别名展开：如"图推"→"图形推理"
+    const qExpanded = KD_ALIASES[q] ? KD_ALIASES[q].toLowerCase() : q;
+    // 有查询词：在细分考点中精准匹配
+    let list = kdMerged.filter(k => !mod || k.module === mod);
+    const withScore = [];
+    for (const k of list) {
+      const name = (k.kaodian || "").toLowerCase();
+      const m = (k.module || "").toLowerCase();
+      const segs = name.split(/\s*\/\s*/);
+      let hit = false, subHit = false;
+      for (let i = 0; i < segs.length; i++) {
+        if (segs[i].includes(q) || segs[i].includes(qExpanded)) {
+          hit = true;
+          if (i > 0) subHit = true;  // 细分段命中
+        }
+      }
+      if (!hit && (m.includes(q) || m.includes(qExpanded))) hit = true;
+      if (!hit) continue;
+      // 排序分：细分命中 > 大类命中 > 模块命中；同级按题量倒序
+      let score = 0;
+      if (subHit) score = 3;
+      else if (segs[0].includes(q) || segs[0].includes(qExpanded)) score = 2;
+      else if (m.includes(q) || m.includes(qExpanded)) score = 1;
+      withScore.push([score, k.c || 0, k]);
+    }
+    withScore.sort((a, b) => b[0] - a[0] || b[1] - a[1]);
+    return withScore.map(x => x[2]);
+  }
+
+  function kdHighlight(name, q) {
+    if (!q) return esc(name);
+    const i = name.toLowerCase().indexOf(q.toLowerCase());
+    if (i < 0) return esc(name);
+    return esc(name.slice(0, i)) + "<mark>" + esc(name.slice(i, i + q.length)) + "</mark>" + esc(name.slice(i + q.length));
+  }
+
+  function kdRender() {
+    kdList = kdFiltered();
+    const q = kdInput.value.trim();
+    if (!kdList.length) {
+      kdDrop.innerHTML = `<div class="kd-empty">没有匹配「${esc(q)}」的考点</div>`;
+      kdActIdx = -1;
+      return;
+    }
+    const show = kdList.slice(0, 80);
+    kdDrop.innerHTML = show.map((k, i) =>
+      `<div class="kd-item${i === kdActIdx ? " kd-act" : ""}" data-i="${i}">
+         <span class="kd-name">${kdHighlight(k.kaodian + "（" + k.c + "）", q)}</span>
+         <span class="kd-mod">${esc(k.module)}</span>
+       </div>`).join("")
+      + (kdList.length > 80 ? `<div class="kd-empty">还有 ${kdList.length - 80} 条，继续输入缩小范围</div>` : "");
+    $$(".kd-item", kdDrop).forEach(el => {
+      el.onmousedown = e => {  // 用 mousedown 抢在 blur 之前
+        e.preventDefault();
+        kdChoose(+el.dataset.i);
+      };
+    });
+  }
+
+  function kdChoose(i) {
+    const k = kdList[i];
+    if (!k) return;
+    kdPicked = k.kaodian;
+    kdInput.value = k.kaodian;
+    kdHide();
+  }
+
+  function kdShow() {
+    kdOpen = true;
+    kdActIdx = -1;
+    kdRender();
+    kdDrop.style.display = "";
+  }
+  function kdHide() {
+    kdOpen = false;
+    kdDrop.style.display = "none";
+  }
+
+  kdInput.addEventListener("focus", kdShow);
+  kdInput.addEventListener("input", () => {
+    kdPicked = "";  // 一旦又输入，清掉已选值，避免“看着选了实际没选”
+    kdShow();
+  });
+  kdInput.addEventListener("blur", () => {
+    // 失焦时若文本与已选不一致，回显已选；否则视为“全部”
+    setTimeout(() => {
+      if (kdInput.value !== kdPicked) kdInput.value = kdPicked;
+    }, 120);
+    kdHide();
+  });
+  kdInput.addEventListener("keydown", e => {
+    if (!kdOpen) return;
+    const max = Math.min(kdList.length, 80);
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      kdActIdx = (kdActIdx + 1) % max;
+      kdRender();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      kdActIdx = (kdActIdx - 1 + max) % max;
+      kdRender();
+    } else if (e.key === "Enter") {
+      if (kdActIdx >= 0 && kdList[kdActIdx]) {
+        e.preventDefault();
+        kdChoose(kdActIdx);
+      } else if (kdList.length === 1) {
+        e.preventDefault();
+        kdChoose(0);
+      } else {
+        kdHide();
+      }
+    } else if (e.key === "Escape") {
+      kdHide();
+    }
+  });
+
+  // 模块切换：清空考点已选并刷新过滤
+  $("#pModule").onchange = () => {
+    kdPicked = "";
+    kdInput.value = "";
+    if (kdOpen) kdRender();
   };
 
   $("#gen").onclick = async () => {
-    const kaodian = kdSel.value.replace(/（\d+）$/, "");
+    // 只用 kdPicked（选中态），不再信任输入框裸文本，防止用户敲了一半就去点组卷
     const res = await api("/api/paper", {
-      module: $("#pModule").value, kaodian, n: +$("#pN").value || 10,
+      module: $("#pModule").value, kaodian: kdPicked, n: +$("#pN").value || 10,
     });
     if (!res.ids.length) return alert("该范围内没有真题");
     runPaper(res.ids);
