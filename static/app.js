@@ -26,6 +26,30 @@ function toast(msg, ms = 3200) {
   t._h = setTimeout(() => { t.style.opacity = "0"; }, ms);
 }
 
+/** 自定义确认弹窗（替代浏览器原生 confirm，不显示地址栏来源） */
+function confirmBox(msg) {
+  return new Promise(resolve => {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "position:fixed;inset:0;background:rgba(43,38,32,.35);z-index:10000;display:flex;align-items:center;justify-content:center";
+    wrap.innerHTML = `
+      <div style="background:var(--paper,#faf7ef);border:1px solid var(--line,#d8d2c4);border-radius:12px;padding:24px 28px;max-width:400px;box-shadow:0 8px 32px rgba(43,38,32,.18)">
+        <div style="font-size:15px;color:var(--ink,#2b2620);line-height:1.6;margin-bottom:20px">${esc(msg)}</div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button class="btn btn-sm" id="cfNo" style="min-width:72px">取消</button>
+          <button class="btn btn-sm btn-primary" id="cfYes" style="min-width:72px">确定</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    wrap.querySelector("#cfYes").onclick = () => { wrap.remove(); resolve(true); };
+    wrap.querySelector("#cfNo").onclick = () => { wrap.remove(); resolve(false); };
+    wrap.addEventListener("keydown", e => {
+      if (e.key === "Enter") { wrap.remove(); resolve(true); }
+      if (e.key === "Escape") { wrap.remove(); resolve(false); }
+    });
+    wrap.tabIndex = -1; wrap.focus();
+  });
+}
+
 async function api(path, body) {
   const opt = body
     ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
@@ -794,7 +818,7 @@ async function renderDoc(id, tabName) {
       if (aiState.streaming || c.dataset.mode === aiState.mode) return;
       const mode = c.dataset.mode;
       if (aiState.messages.length) {
-        if (!confirm(`将按【${MODE_NAMES[mode]}】重新讲一次，当前对话会被清空。`)) return;
+        if (!(await confirmBox(`将按【${MODE_NAMES[mode]}】重新讲一次，当前对话会被清空。`))) return;
         aiState.messages = [];
         chat.innerHTML = "";
       }
@@ -1910,8 +1934,8 @@ async function runPaper(ids, opt = {}) {
     $("#prev").onclick = () => show(i - 1);
     $("#next").onclick = () => i === docs.length - 1 ? summary() : show(i + 1);
     $("#finish").onclick = summary;
-    $("#quitPaper").onclick = () => {
-      if (!confirm("退出将丢失本卷作答进度，确定退出？")) return;
+    $("#quitPaper").onclick = async () => {
+      if (!(await confirmBox("退出将丢失本卷作答进度，确定退出？"))) return;
       clearInterval(timerH);
       document.onkeydown = null;
       document.body.classList.remove("exam-mode");
@@ -2056,8 +2080,8 @@ async function renderExam() {
     <div id="examBody"><div class="panel" style="text-align:center;padding:40px">正在抽题，请稍候…</div></div>
   </div>`;
 
-  const quit = () => {
-    if (!confirm("退出将丢失本卷作答进度，确定退出？")) return;
+  const quit = async () => {
+    if (!(await confirmBox("退出将丢失本卷作答进度，确定退出？"))) return;
     document.body.classList.remove("exam-mode");
     sessionStorage.removeItem("goshore_exam");
     location.hash = "#/paper";
@@ -2306,8 +2330,8 @@ function renderSpeed() {
       $("#numOk").onclick = submit;
       inp.addEventListener("keydown", e => e.key === "Enter" && submit());
     }
-    $("#speedQuit").onclick = () => {
-      if (!confirm("退出将丢失本轮进度，确定退出？")) return;
+    $("#speedQuit").onclick = async () => {
+      if (!(await confirmBox("退出将丢失本轮进度，确定退出？"))) return;
       clearInterval(run.timerH);
       showConfig();
     };
@@ -2790,8 +2814,8 @@ async function renderWordfill() {
         else showQ();
       };
     });
-    $("#wfQuit").onclick = () => {
-      if (!confirm("退出将丢失本轮进度，确定退出？")) return;
+    $("#wfQuit").onclick = async () => {
+      if (!(await confirmBox("退出将丢失本轮进度，确定退出？"))) return;
       showConfig();
     };
   }
