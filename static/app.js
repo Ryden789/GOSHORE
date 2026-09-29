@@ -1893,6 +1893,7 @@ async function runPaper(ids, opt = {}) {
           <button class="btn btn-sm" id="prev" ${i === 0 ? "disabled" : ""}>← 上一题</button>
           <button class="btn btn-sm" id="next">${i === docs.length - 1 ? "到交卷页" : "下一题 →"}</button>
           <button class="btn btn-sm btn-primary" id="finish" style="margin-left:auto">交卷</button>
+          <button class="btn btn-sm" id="quitPaper" style="margin-left:8px;color:var(--ink-3)">退出</button>
         </div>
       </div>`;
 
@@ -1909,6 +1910,14 @@ async function runPaper(ids, opt = {}) {
     $("#prev").onclick = () => show(i - 1);
     $("#next").onclick = () => i === docs.length - 1 ? summary() : show(i + 1);
     $("#finish").onclick = summary;
+    $("#quitPaper").onclick = () => {
+      if (!confirm("退出将丢失本卷作答进度，确定退出？")) return;
+      clearInterval(timerH);
+      document.onkeydown = null;
+      document.body.classList.remove("exam-mode");
+      if (opt.onQuit) opt.onQuit();
+      else location.hash = opt.exitHash || "#/home";
+    };
     // 键盘作答：1-4 / A-D 选择，←→ 翻题，Enter 下一题
     document.onkeydown = e => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
@@ -2216,6 +2225,7 @@ function renderSpeed() {
         <div class="speed-top">
           <span class="speed-progress">${cfg.challenge ? `已答对 ${run.correct} 题` : `第 ${run.idx + 1} / ${total} 题 · 已对 ${run.correct}`}</span>
           ${cfg.challenge ? `<span class="timer-big" id="timer">60.0</span>` : ""}
+          <button class="btn btn-sm" id="speedQuit" style="margin-left:auto;color:var(--ink-3)">退出</button>
         </div>
         <div class="speed-q">${esc(p.q)}</div>
         ${p.input === "choice" ? `
@@ -2296,6 +2306,11 @@ function renderSpeed() {
       $("#numOk").onclick = submit;
       inp.addEventListener("keydown", e => e.key === "Enter" && submit());
     }
+    $("#speedQuit").onclick = () => {
+      if (!confirm("退出将丢失本轮进度，确定退出？")) return;
+      clearInterval(run.timerH);
+      showConfig();
+    };
   }
 
   async function next() {
@@ -2734,6 +2749,7 @@ async function renderWordfill() {
         <div class="speed-top">
           <span class="speed-progress">第 ${run.idx + 1} / ${run.items.length} 题 · 已对 ${run.correct}</span>
           <span class="tag">${esc(q.category)} · ${esc(q.difficulty === "easy" ? "入门" : q.difficulty === "hard" ? "困难" : "中等")}</span>
+          <button class="btn btn-sm" id="wfQuit" style="margin-left:auto;color:var(--ink-3)">退出</button>
         </div>
         <div class="stem" style="font-size:16px;line-height:2">${esc(q.passage)}</div>
         <div class="options">
@@ -2774,6 +2790,10 @@ async function renderWordfill() {
         else showQ();
       };
     });
+    $("#wfQuit").onclick = () => {
+      if (!confirm("退出将丢失本轮进度，确定退出？")) return;
+      showConfig();
+    };
   }
 
   function finish() {
