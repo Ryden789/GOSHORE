@@ -1624,7 +1624,9 @@ async function renderPaper() {
   const kdDrop = document.createElement("div");
   kdDrop.className = "kd-drop";
   kdDrop.style.display = "none";
-  kdCombo.appendChild(kdDrop);
+  kdDrop.style.position = "fixed";
+  kdDrop.style.zIndex = "1000";
+  document.body.appendChild(kdDrop);
 
   // 常见别名/缩写映射：让"图推""数推""资分"等口语化叫法也能搜到
   const KD_ALIASES = {
@@ -1714,6 +1716,11 @@ async function renderPaper() {
     kdOpen = true;
     kdActIdx = -1;
     kdRender();
+    // 动态定位：跟随输入框，避免被 sticky 面板遮挡
+    const rect = kdInput.getBoundingClientRect();
+    kdDrop.style.left = rect.left + "px";
+    kdDrop.style.top = (rect.bottom + 4) + "px";
+    kdDrop.style.width = rect.width + "px";
     kdDrop.style.display = "";
   }
   function kdHide() {
