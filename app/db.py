@@ -1667,7 +1667,12 @@ def weekly_report() -> dict:
 # ---------------- F9 辨析卡（词语卡 + 错题考点卡） ----------------
 
 def import_cards() -> dict:
-    """从卡片目录幂等导入辨析卡（按 id 去重）。"""
+    """从卡片目录增量同步辨析卡（按 id 幂等）。
+
+    新卡 INSERT；已存在的卡 UPDATE 引用内容（释义/辨析可能随版本优化）；
+    JSON 已移除的旧卡仅当用户从未评定时才清理。**绝不删除
+    card_reviews / card_plan**，保留用户评分与不会词本记录。
+    """
     if IS_MOBILE:
         cards_dir = Path(MOBILE_CARDS_DIR) if MOBILE_CARDS_DIR else None
     else:
@@ -1677,31 +1682,48 @@ def import_cards() -> dict:
     conn = connect()
     if not IS_MOBILE:
         init_db(conn)
-    before = conn.execute("SELECT COUNT(*) c FROM cards").fetchone()["c"]
-    # 全量重建：清空卡库再导入（卡片是引用数据，安全重建）
-    conn.execute("DELETE FROM cards")
-    conn.execute("DELETE FROM card_plan")
-    conn.execute("DELETE FROM card_reviews")
-    conn.commit()
+    payload = []
     for fp in cards_dir.glob("*.json"):
         try:
             obj = json.loads(fp.read_text(encoding="utf-8"))
         except Exception:
             continue
-        for q in obj.get("questions", []) + obj.get("cards", []):
-            # 只导入言语理解模块的 word_card（其他模块的 error_card 无评判标准，不导入）
-            if q.get("type") != "word_card":
-                continue
-            module = q.get("module", "")
-            if module not in ("言语理解", "言语理解与表达"):
-                continue
-            try:
+        payload.extend(obj.get("questions", []) + obj.get("cards", []))
+    inserted = updated = 0
+    new_ids = set()
+    for q in payload:
+        # 只同步言语理解模块的 word_card（其他模块的 error_card 无评判标准，不导入）
+        if q.get("type") != "word_card":
+            continue
+        module = q.get("module", "")
+        if module not in ("言语理解", "言语理解与表达"):
+            continue
+        cid = q["id"]
+        new_ids.add(cid)
+        fields = (
+            module, q.get("subtype", ""), q.get("category", ""),
+            q.get("stem", ""), q.get("answer", ""), q.get("analysis", ""),
+            q.get("source", fp.name),
+            json.dumps(q.get("tags", []), ensure_ascii=False),
+        )
+        exists = conn.execute(
+            "SELECT 1 FROM cards WHERE id=?", (cid,)).fetchone()
+        try:
+            if exists:
                 conn.execute(
-                    """INSERT OR IGNORE INTO cards
-                       (id,card_type,module,subtype,category,stem,answer,analysis,user_answer,source,tags)
+                    """UPDATE cards SET module=?,subtype=?,category=?,stem=?,
+                       answer=?,analysis=?,source=?,tags=? WHERE id=?""",
+                    fields + (cid,),
+                )
+                updated += 1
+            else:
+                conn.execute(
+                    """INSERT INTO cards
+                       (id,card_type,module,subtype,category,stem,answer,
+                        analysis,user_answer,source,tags)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        q["id"], q.get("type", ""), module,
+                        cid, q.get("type", ""), module,
                         q.get("subtype", ""), q.get("category", ""),
                         q.get("stem", ""), q.get("answer", ""),
                         q.get("analysis", ""), q.get("userAnswer", ""),
@@ -1709,12 +1731,24 @@ def import_cards() -> dict:
                         json.dumps(q.get("tags", []), ensure_ascii=False),
                     ),
                 )
-            except Exception:
-                continue
+                inserted += 1
+        except Exception:
+            continue
+    # 清理 JSON 已移除、且用户从未评定（无复习痕迹）的旧卡
+    old_ids = {r[0] for r in conn.execute("SELECT id FROM cards").fetchall()}
+    removed = 0
+    for oid in old_ids - new_ids:
+        has_review = conn.execute(
+            "SELECT 1 FROM card_reviews WHERE card_id=?", (oid,)).fetchone()
+        if not has_review:
+            conn.execute("DELETE FROM cards WHERE id=?", (oid,))
+            conn.execute("DELETE FROM card_plan WHERE card_id=?", (oid,))
+            removed += 1
     conn.commit()
-    after = conn.execute("SELECT COUNT(*) c FROM cards").fetchone()["c"]
+    total = conn.execute("SELECT COUNT(*) c FROM cards").fetchone()["c"]
     conn.close()
-    return {"ok": True, "added": after - before, "total": after}
+    return {"ok": True, "added": inserted, "updated": updated,
+            "removed": removed, "total": total}
 
 
 def list_cards(card_type: str = "", category: str = "", module: str = "") -> list[dict]:
@@ -1786,6 +1820,33 @@ def due_cards() -> list[dict]:
            WHERE p.due_at <= ? ORDER BY p.due_at""",
         (time.time(),),
     ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["tags"] = json.loads(d.get("tags") or "[]")
+        out.append(d)
+    conn.close()
+    return out
+
+
+def weak_cards() -> list[dict]:
+    """不会词本：每卡最近一次自评为“不会(0)/模糊(1)”的卡片。
+
+    附带 reviewed_at（最近评定时间）与 miss_count（累计“不会”次数），
+    不会在前、同档按最近评定时间倒序。
+    """
+    conn = connect()
+    rows = conn.execute(
+        """SELECT c.*, last.level AS weak_level, last.created_at AS reviewed_at,
+                  (SELECT COUNT(*) FROM card_reviews cr
+                   WHERE cr.card_id = c.id AND cr.level = 0) AS miss_count
+           FROM (
+               SELECT card_id, level, created_at FROM card_reviews
+               WHERE id IN (SELECT MAX(id) FROM card_reviews GROUP BY card_id)
+           ) last
+           JOIN cards c ON c.id = last.card_id
+           WHERE last.level <= 1
+           ORDER BY last.level ASC, last.created_at DESC""").fetchall()
     out = []
     for r in rows:
         d = dict(r)

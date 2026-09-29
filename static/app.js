@@ -2969,6 +2969,7 @@ async function renderCards() {
           <span>数量 <select id="cN"><option>10</option><option>20</option><option>30</option></select></span>
           <button class="btn btn-primary" id="cStart">开始记忆</button>
           ${dueCards.length ? `<button class="btn" id="cDue" style="border-color:var(--cinnabar);color:var(--cinnabar)">复习今日到期（${dueCards.length}）</button>` : ""}
+          <button class="btn" id="cWeak" style="border-color:var(--amber);color:var(--amber)">不会词本</button>
         </div>
       </div>
     </div>
@@ -3235,6 +3236,64 @@ async function renderCards() {
   };
   const dueBtn = $("#cDue");
   if (dueBtn) dueBtn.onclick = () => startList(dueCards);
+
+  /* ---- 不会词本：最近自评“不会/模糊”的词，记录 + 专项练习 ---- */
+  $("#cWeak").onclick = renderWeak;
+
+  async function renderWeak() {
+    const res = await api("/api/cards/weak");
+    const items = res.items || [];
+    const unknown = items.filter(c => c.weak_level === 0);
+    const vague = items.filter(c => c.weak_level === 1);
+    if (!items.length) {
+      body.innerHTML = `
+        <div class="panel empty">
+          <h3>不会词本还是空的</h3>
+          <p>刷卡时把拿不准的词标「不会」或「模糊」，就会自动记在这里，并按艾宾浩斯安排复习。</p>
+          <button class="btn btn-primary" id="wBack">返回配置</button>
+        </div>`;
+      $("#wBack").onclick = renderCards;
+      return;
+    }
+    const when = ts => {
+      const d = new Date(ts * 1000);
+      return `${d.getMonth() + 1}月${d.getDate()}日`;
+    };
+    body.innerHTML = `
+      <div class="panel">
+        <div class="paper-runner-top">
+          <span>不会词本 · 自评“不会/模糊”记录</span>
+          <button class="btn btn-sm" id="wBack">返回配置</button>
+        </div>
+        <div class="card-progress" style="margin-top:12px">
+          <div class="cp-item"><span class="cp-num" style="color:var(--cinnabar)">${unknown.length}</span><span class="cp-lbl">不会</span></div>
+          <div class="cp-item"><span class="cp-num" style="color:var(--amber)">${vague.length}</span><span class="cp-lbl">模糊</span></div>
+        </div>
+        <div class="cfg-inline" style="margin-top:12px">
+          <span style="color:var(--ink-3);font-size:13px">用这些词专项练习：</span>
+          <button class="btn btn-sm" id="wFlip">翻转记忆</button>
+          <button class="btn btn-sm" id="wRecall">看词写意</button>
+          <button class="btn btn-sm" id="wQuiz">看义选词</button>
+        </div>
+        <div style="margin-top:14px">
+          ${items.map(c => `
+            <details class="c-browse-item">
+              <summary>${esc(c.stem)}
+                <span class="c-browse-cat">${c.weak_level === 0 ? "不会" : "模糊"} · ${esc(c.category || "")} · ${when(c.reviewed_at)}${c.miss_count > 1 ? ` · 不会×${c.miss_count}` : ""}</span>
+              </summary>
+              <div class="c-browse-body">${md(c.analysis || c.answer || "")}</div>
+            </details>`).join("")}
+        </div>
+      </div>`;
+    $("#wBack").onclick = renderCards;
+    const weakCards = shuffleCopy(items);
+    $("#wFlip").onclick = () => startList(weakCards);
+    $("#wRecall").onclick = () => startRecall(weakCards);
+    $("#wQuiz").onclick = async () => {
+      const allRes = await api(`/api/cards?card_type=word_card`);
+      startQuiz(weakCards, allRes.items);
+    };
+  }
 }
 
 /* =====================================================

@@ -1508,44 +1508,19 @@ async function drawMarks(box, tok) {
 let cardTab = "today";
 let cardToken = 0;
 
-async function renderCards() {
-  const tok = ++cardToken;
-  // 首次进入：自动同步内置卡库（全量重建，清理已删除的旧卡）
-  try {
-    await api("/api/cards/import", {});
-    if (tok !== cardToken) return;
-  } catch (e) {}
-  if (tok !== cardToken) return;
-  view.innerHTML = `
-    <div class="tab-strip">
-      <div class="tab-chip ${cardTab === "today" ? "on" : ""}" data-t="today">今日到期</div>
-      <div class="tab-chip ${cardTab === "library" ? "on" : ""}" data-t="library">卡片库</div>
-      <div class="tab-chip ${cardTab === "recall" ? "on" : ""}" data-t="recall">看词写意</div>
-      <div class="tab-chip ${cardTab === "quiz" ? "on" : ""}" data-t="quiz">看义选词</div>
-      <div class="tab-chip ${cardTab === "progress" ? "on" : ""}" data-t="progress">学习进度</div>
-    </div>
-    <div id="cardBody"></div>`;
-  $$(".tab-chip").forEach(c => c.onclick = () => {
-    cardTab = c.dataset.t;
-    renderCards();
-  });
-  const box = $("#cardBody");
-  if (cardTab === "today") drawDueCards(box, tok);
-  else if (cardTab === "library") drawCardLibrary(box, tok);
-  else if (cardTab === "recall") drawRecall(box, tok);
-  else if (cardTab === "quiz") drawQuiz(box, tok);
-  else drawCardProgress(box, tok);
+function shuffleCopy(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
-/* 今日到期卡片：翻面 → 评分 */
-async function drawDueCards(box, tok) {
-  box.innerHTML = `<div class="empty">加载中…</div>`;
-  const r = await api("/api/due-cards");
-  if (tok !== cardToken) return;
-  let items = r.items || [];
+/* 翻转记忆运行器（今日到期 / 不会词本复用） */
+function mRunFlip(box, tok, items) {
   if (!items.length) {
-    box.innerHTML = `<div class="empty">没有到期的卡片<br>去「卡片库」浏览全部卡片</div>`;
-    return;
+    box.innerHTML = `<div class="empty">该范围没有卡片</div>`; return;
   }
   let idx = 0, flipped = false;
 
@@ -1594,6 +1569,180 @@ async function drawDueCards(box, tok) {
   }
 
   show();
+}
+
+/* 看词写意运行器 */
+function mRunRecall(box, tok, cards) {
+  if (!cards.length) { box.innerHTML = `<div class="empty">该范围没有词语卡片</div>`; return; }
+  let idx = 0, known = 0, vague = 0, unknown = 0;
+  showCard();
+
+  function showCard() {
+    if (idx >= cards.length) {
+      box.innerHTML = `
+        <div class="card" style="text-align:center">
+          <div style="font-size:16px;font-weight:700;margin-bottom:12px">本组完成</div>
+          <div class="cd-stat-grid">
+            <div><b style="color:var(--green)">${known}</b><span>认识</span></div>
+            <div><b style="color:var(--amber)">${vague}</b><span>模糊</span></div>
+            <div><b style="color:var(--cinnabar)">${unknown}</b><span>不会</span></div>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block" id="rcAgain">再来一组</button>
+        <button class="btn btn-block" id="rcBack">返回</button>`;
+      $("#rcAgain").onclick = () => mRunRecall(box, tok, shuffleCopy(cards));
+      $("#rcBack").onclick = () => renderCards();
+      return;
+    }
+    const c = cards[idx];
+    box.innerHTML = `
+      <div class="qz-prog">第 ${idx + 1} / ${cards.length} 张 · ${esc(c.category || "")}</div>
+      <div class="cd-card">
+        <div class="cd-meta">${esc([c.module, c.category].filter(Boolean).join(" · "))}</div>
+        <div style="font-family:var(--serif);font-size:26px;font-weight:700;letter-spacing:2px;text-align:center;margin:6px 0">${esc(c.stem)}</div>
+        <div class="cd-hint">默写释义 / 侧重点 / 搭配对象</div>
+        <textarea class="rc-area" id="rcArea" placeholder="先自己写，不许翻…"></textarea>
+        <div class="cd-rate">
+          <button class="btn cd-rate-btn" id="rcShow">显示辨析</button>
+        </div>
+        <div class="rc-answer" id="rcAns" hidden>${esc(c.analysis || c.answer || "")}
+          <div class="cd-rate">
+            <button class="btn cd-rate-btn" data-l="0">不会</button>
+            <button class="btn cd-rate-btn" data-l="1">模糊</button>
+            <button class="btn btn-primary cd-rate-btn" data-l="2">认识</button>
+          </div>
+        </div>
+      </div>`;
+    $("#rcShow").onclick = () => {
+      $("#rcAns").hidden = false;
+      $("#rcArea").focus();
+    };
+    $$("[data-l]", box).forEach(b => b.onclick = async () => {
+      const lv = +b.dataset.l;
+      if (lv === 2) known++; else if (lv === 1) vague++; else unknown++;
+      await api("/api/card-review", { card_id: c.id, level: lv });
+      if (tok !== cardToken) return;
+      idx++; showCard();
+    });
+  }
+}
+
+/* 看义选词运行器 */
+function mRunQuiz(box, tok, cards, pool) {
+  if (!cards.length) { box.innerHTML = `<div class="empty">该范围没有词语卡片</div>`; return; }
+  let idx = 0, okN = 0, noN = 0, timer = null;
+  const poolWords = pool.filter(x => x.stem && x.stem.length >= 2);
+  showQ();
+
+  function maskWord(text, word) {
+    if (!word) return text;
+    return text.split(word).join("＿".repeat(Math.min(word.length, 4)));
+    }
+
+  function showQ() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (idx >= cards.length) {
+      const rate = Math.round(okN / (okN + noN) * 100);
+      box.innerHTML = `
+        <div class="card" style="text-align:center">
+          <div style="font-size:16px;font-weight:700;margin-bottom:12px">本组完成</div>
+          <div class="cd-stat-grid">
+            <div><b style="color:var(--green)">${okN}</b><span>答对</span></div>
+            <div><b style="color:var(--cinnabar)">${noN}</b><span>答错</span></div>
+            <div><b style="color:var(--amber)">${rate}%</b><span>正确率</span></div>
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block" id="qzAgain">再来一组</button>
+        <button class="btn btn-block" id="qzBack">返回</button>`;
+      $("#qzAgain").onclick = () => mRunQuiz(box, tok, shuffleCopy(cards), pool);
+      $("#qzBack").onclick = () => renderCards();
+      return;
+    }
+    const c = cards[idx];
+    const sameLen = shuffleCopy(
+      poolWords.filter(x => x.id !== c.id && x.stem.length === c.stem.length));
+    let distract = sameLen.slice(0, 3);
+    if (distract.length < 3) {
+      const rest = shuffleCopy(
+        poolWords.filter(x => x.id !== c.id && !distract.includes(x)));
+      distract = distract.concat(rest.slice(0, 3 - distract.length));
+    }
+    const opts = shuffleCopy([c, ...distract]);
+    let stem = (c.analysis || "").split("【例】")[0].trim() || c.analysis || "";
+    stem = maskWord(stem, c.stem);
+    box.innerHTML = `
+      <div class="qz-prog">第 ${idx + 1} / ${cards.length} 题 · ${esc(c.category || "")}</div>
+      <div class="qz-stem">${esc(stem)}</div>
+      <div id="qzOpts">
+        ${opts.map(o => `<button class="qz-opt" data-id="${o.id}">${esc(o.stem)}</button>`).join("")}
+      </div>
+      <div id="qzExpWrap" hidden>
+        <div id="qzExp" class="qz-exp"></div>
+        <button class="btn btn-primary btn-block" id="qzNext">下一题</button>
+      </div>`;
+    $$(".qz-opt", box).forEach(btn => {
+      btn.onclick = async () => {
+        $$(".qz-opt", box).forEach(b => {
+          b.disabled = true;
+          if (b.dataset.id === c.id) b.classList.add("right");
+        });
+        const correct = btn.dataset.id === c.id;
+        if (correct) okN++; else { btn.classList.add("wrong"); noN++; }
+        await api("/api/card-review", { card_id: c.id, level: correct ? 2 : 0 });
+        if (tok !== cardToken) return;
+        $("#qzExp").innerHTML =
+          `${correct ? "✔ 回答正确" : "✘ 回答错误"} · 正解 ${esc(c.stem)}\n${c.analysis || ""}`;
+        $("#qzExpWrap").hidden = false;
+        $("#qzNext").textContent = idx === cards.length - 1 ? "完成" : "下一题";
+        $("#qzNext").onclick = () => { idx++; showQ(); };
+        if (correct) timer = setTimeout(() => { idx++; showQ(); }, 1100);
+      };
+    });
+  }
+}
+
+async function renderCards() {
+  const tok = ++cardToken;
+  // 首次进入：自动同步内置卡库（全量重建，清理已删除的旧卡）
+  try {
+    await api("/api/cards/import", {});
+    if (tok !== cardToken) return;
+  } catch (e) {}
+  if (tok !== cardToken) return;
+  view.innerHTML = `
+    <div class="tab-strip">
+      <div class="tab-chip ${cardTab === "today" ? "on" : ""}" data-t="today">今日到期</div>
+      <div class="tab-chip ${cardTab === "library" ? "on" : ""}" data-t="library">卡片库</div>
+      <div class="tab-chip ${cardTab === "recall" ? "on" : ""}" data-t="recall">看词写意</div>
+      <div class="tab-chip ${cardTab === "quiz" ? "on" : ""}" data-t="quiz">看义选词</div>
+      <div class="tab-chip ${cardTab === "weak" ? "on" : ""}" data-t="weak">不会词本</div>
+      <div class="tab-chip ${cardTab === "progress" ? "on" : ""}" data-t="progress">学习进度</div>
+    </div>
+    <div id="cardBody"></div>`;
+  $$(".tab-chip").forEach(c => c.onclick = () => {
+    cardTab = c.dataset.t;
+    renderCards();
+  });
+  const box = $("#cardBody");
+  if (cardTab === "today") drawDueCards(box, tok);
+  else if (cardTab === "library") drawCardLibrary(box, tok);
+  else if (cardTab === "recall") drawRecall(box, tok);
+  else if (cardTab === "quiz") drawQuiz(box, tok);
+  else if (cardTab === "weak") drawWeak(box, tok);
+  else drawCardProgress(box, tok);
+}
+
+/* 今日到期卡片：翻面 → 评分 */
+async function drawDueCards(box, tok) {
+  box.innerHTML = `<div class="empty">加载中…</div>`;
+  const r = await api("/api/due-cards");
+  if (tok !== cardToken) return;
+  const items = r.items || [];
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">没有到期的卡片<br>去「卡片库」浏览全部卡片</div>`;
+    return;
+  }
+  mRunFlip(box, tok, items);
 }
 
 /* 卡片库：筛选 + 搜索 + 逐卡翻看 */
@@ -1723,72 +1872,8 @@ async function drawRecall(box, tok) {
     const all = await api(
       `/api/cards?card_type=word_card${cat ? "&category=" + encodeURIComponent(cat) : ""}`);
     if (tok !== cardToken) return;
-    runRecall(shuffleCopy(all.items || []).slice(0, n));
+    mRunRecall(box, tok, shuffleCopy(all.items || []).slice(0, n));
   };
-
-  function shuffleCopy(arr) {
-    const a = arr.slice();
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-  }
-
-  function runRecall(cards) {
-    if (!cards.length) { box.innerHTML = `<div class="empty">该范围没有词语卡片</div>`; return; }
-    let idx = 0, known = 0, vague = 0, unknown = 0;
-    showCard();
-
-    function showCard() {
-      if (idx >= cards.length) {
-        box.innerHTML = `
-          <div class="card" style="text-align:center">
-            <div style="font-size:16px;font-weight:700;margin-bottom:12px">本组完成</div>
-            <div class="cd-stat-grid">
-              <div><b style="color:var(--green)">${known}</b><span>认识</span></div>
-              <div><b style="color:var(--amber)">${vague}</b><span>模糊</span></div>
-              <div><b style="color:var(--cinnabar)">${unknown}</b><span>不会</span></div>
-            </div>
-          </div>
-          <button class="btn btn-primary btn-block" id="rcAgain">再来一组</button>
-          <button class="btn btn-block" id="rcBack">返回</button>`;
-        $("#rcAgain").onclick = () => runRecall(shuffleCopy(cards));
-        $("#rcBack").onclick = () => renderCards();
-        return;
-      }
-      const c = cards[idx];
-      box.innerHTML = `
-        <div class="qz-prog">第 ${idx + 1} / ${cards.length} 张 · ${esc(c.category || "")}</div>
-        <div class="cd-card">
-          <div class="cd-meta">${esc([c.module, c.category].filter(Boolean).join(" · "))}</div>
-          <div style="font-family:var(--serif);font-size:26px;font-weight:700;letter-spacing:2px;text-align:center;margin:6px 0">${esc(c.stem)}</div>
-          <div class="cd-hint">默写释义 / 侧重点 / 搭配对象</div>
-          <textarea class="rc-area" id="rcArea" placeholder="先自己写，不许翻…"></textarea>
-          <div class="cd-rate">
-            <button class="btn cd-rate-btn" id="rcShow">显示辨析</button>
-          </div>
-          <div class="rc-answer" id="rcAns" hidden>${esc(c.analysis || c.answer || "")}
-            <div class="cd-rate">
-              <button class="btn cd-rate-btn" data-l="0">不会</button>
-              <button class="btn cd-rate-btn" data-l="1">模糊</button>
-              <button class="btn btn-primary cd-rate-btn" data-l="2">认识</button>
-            </div>
-          </div>
-        </div>`;
-      $("#rcShow").onclick = () => {
-        $("#rcAns").hidden = false;
-        $("#rcArea").focus();
-      };
-      $$("[data-l]", box).forEach(b => b.onclick = async () => {
-        const lv = +b.dataset.l;
-        if (lv === 2) known++; else if (lv === 1) vague++; else unknown++;
-        await api("/api/card-review", { card_id: c.id, level: lv });
-        if (tok !== cardToken) return;
-        idx++; showCard();
-      });
-    }
-  }
 }
 
 /* 看义选词测验：配置 → 逐题作答（借鉴词语辨析自测） */
@@ -1818,90 +1903,58 @@ async function drawQuiz(box, tok) {
     ]);
     if (tok !== cardToken) return;
     const cards = shuffleCopy(all.items || []).slice(0, n);
-    runQuiz(cards, poolRes.items || []);
+    mRunQuiz(box, tok, cards, poolRes.items || []);
   };
+}
 
-  function shuffleCopy(arr) {
-    const a = arr.slice();
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
+/* 不会词本：不会/模糊记录 + 专项练习 */
+async function drawWeak(box, tok) {
+  box.innerHTML = `<div class="empty">加载中…</div>`;
+  const res = await api("/api/cards/weak");
+  if (tok !== cardToken) return;
+  const items = res.items || [];
+  const unknown = items.filter(c => c.weak_level === 0);
+  const vague = items.filter(c => c.weak_level === 1);
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">不会词本还是空的<br>刷卡时把拿不准的词标「不会」或「模糊」，就会自动记在这里，并按艾宾浩斯安排复习</div>
+      <button class="btn btn-primary btn-block" id="wkBack">返回</button>`;
+    $("#wkBack").onclick = () => renderCards();
+    return;
   }
-
-  function runQuiz(cards, pool) {
-    if (!cards.length) { box.innerHTML = `<div class="empty">该范围没有词语卡片</div>`; return; }
-    let idx = 0, okN = 0, noN = 0, timer = null;
-    const poolWords = pool.filter(x => x.stem && x.stem.length >= 2);
-    showQ();
-
-    function maskWord(text, word) {
-      if (!word) return text;
-      return text.split(word).join("＿".repeat(Math.min(word.length, 4)));
-    }
-
-    function showQ() {
-      if (timer) { clearTimeout(timer); timer = null; }
-      if (idx >= cards.length) {
-        const rate = Math.round(okN / (okN + noN) * 100);
-        box.innerHTML = `
-          <div class="card" style="text-align:center">
-            <div style="font-size:16px;font-weight:700;margin-bottom:12px">本组完成</div>
-            <div class="cd-stat-grid">
-              <div><b style="color:var(--green)">${okN}</b><span>答对</span></div>
-              <div><b style="color:var(--cinnabar)">${noN}</b><span>答错</span></div>
-              <div><b style="color:var(--amber)">${rate}%</b><span>正确率</span></div>
-            </div>
-          </div>
-          <button class="btn btn-primary btn-block" id="qzAgain">再来一组</button>
-          <button class="btn btn-block" id="qzBack">返回</button>`;
-        $("#qzAgain").onclick = () => runQuiz(shuffleCopy(cards), pool);
-        $("#qzBack").onclick = () => renderCards();
-        return;
-      }
-      const c = cards[idx];
-      const sameLen = shuffleCopy(
-        poolWords.filter(x => x.id !== c.id && x.stem.length === c.stem.length));
-      let distract = sameLen.slice(0, 3);
-      if (distract.length < 3) {
-        const rest = shuffleCopy(
-          poolWords.filter(x => x.id !== c.id && !distract.includes(x)));
-        distract = distract.concat(rest.slice(0, 3 - distract.length));
-      }
-      const opts = shuffleCopy([c, ...distract]);
-      let stem = (c.analysis || "").split("【例】")[0].trim() || c.analysis || "";
-      stem = maskWord(stem, c.stem);
-      box.innerHTML = `
-        <div class="qz-prog">第 ${idx + 1} / ${cards.length} 题 · ${esc(c.category || "")}</div>
-        <div class="qz-stem">${esc(stem)}</div>
-        <div id="qzOpts">
-          ${opts.map(o => `<button class="qz-opt" data-id="${o.id}">${esc(o.stem)}</button>`).join("")}
-        </div>
-        <div id="qzExpWrap" hidden>
-          <div id="qzExp" class="qz-exp"></div>
-          <button class="btn btn-primary btn-block" id="qzNext">下一题</button>
-        </div>`;
-      $$(".qz-opt", box).forEach(btn => {
-        btn.onclick = async () => {
-          $$(".qz-opt", box).forEach(b => {
-            b.disabled = true;
-            if (b.dataset.id === c.id) b.classList.add("right");
-          });
-          const correct = btn.dataset.id === c.id;
-          if (correct) okN++; else { btn.classList.add("wrong"); noN++; }
-          await api("/api/card-review", { card_id: c.id, level: correct ? 2 : 0 });
-          if (tok !== cardToken) return;
-          $("#qzExp").innerHTML =
-            `${correct ? "✔ 回答正确" : "✘ 回答错误"} · 正解 ${esc(c.stem)}\n${c.analysis || ""}`;
-          $("#qzExpWrap").hidden = false;
-          $("#qzNext").textContent = idx === cards.length - 1 ? "完成" : "下一题";
-          $("#qzNext").onclick = () => { idx++; showQ(); };
-          if (correct) timer = setTimeout(() => { idx++; showQ(); }, 1100);
-        };
-      });
-    }
-  }
+  const when = ts => {
+    const d = new Date(ts * 1000);
+    return `${d.getMonth() + 1}月${d.getDate()}日`;
+  };
+  box.innerHTML = `
+    <div class="card">
+      <div class="cd-stat-grid">
+        <div><b style="color:var(--cinnabar)">${unknown.length}</b><span>不会</span></div>
+        <div><b style="color:var(--amber)">${vague.length}</b><span>模糊</span></div>
+      </div>
+      <div class="cd-rate" style="margin-top:12px">
+        <button class="btn cd-rate-btn" id="wkFlip">翻转记忆</button>
+        <button class="btn cd-rate-btn" id="wkRecall">看词写意</button>
+        <button class="btn cd-rate-btn" id="wkQuiz">看义选词</button>
+      </div>
+    </div>
+    <div class="cd-count">自评「不会 / 模糊」记录 · 不会在前</div>
+    ${items.map(c => `
+      <details class="card wk-item">
+        <summary style="display:flex;align-items:center;gap:8px;list-style:none">
+          <span style="font-family:var(--serif);font-size:18px;font-weight:700;flex:1">${esc(c.stem)}</span>
+          <span style="font-size:12px;padding:2px 8px;border-radius:10px;color:#fff;background:${c.weak_level === 0 ? "var(--cinnabar)" : "var(--amber)"}">${c.weak_level === 0 ? "不会" : "模糊"}</span>
+        </summary>
+        <div style="font-size:12px;color:var(--ink-3,#888);margin:6px 0">${esc(c.category || "")} · ${when(c.reviewed_at)}${c.miss_count > 1 ? ` · 不会×${c.miss_count}` : ""}</div>
+        <div class="cd-analysis">${esc(c.analysis || c.answer || "")}</div>
+      </details>`).join("")}`;
+  const weakItems = shuffleCopy(items);
+  $("#wkFlip").onclick = () => mRunFlip(box, tok, weakItems);
+  $("#wkRecall").onclick = () => mRunRecall(box, tok, weakItems);
+  $("#wkQuiz").onclick = async () => {
+    const allRes = await api(`/api/cards?card_type=word_card`);
+    if (tok !== cardToken) return;
+    mRunQuiz(box, tok, weakItems, allRes.items || []);
+  };
 }
 
 /* 学习进度 */

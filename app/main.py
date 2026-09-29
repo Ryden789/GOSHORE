@@ -852,6 +852,11 @@ def api_due_cards():
     return {"items": db.due_cards()}
 
 
+@app.get("/api/cards/weak")
+def api_cards_weak():
+    return {"items": db.weak_cards()}
+
+
 # ---------------- F5 真实配比模考 ----------------
 
 class ExamTemplateIn(BaseModel):

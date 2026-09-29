@@ -697,6 +697,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(db.card_facets())
             elif path == "/api/cards/progress":
                 self._json(db.cards_progress())
+            elif path == "/api/cards/weak":
+                self._json({"items": db.weak_cards()})
             elif path == "/api/due-cards":
                 self._json({"items": db.due_cards()})
             elif path == "/api/settings":
