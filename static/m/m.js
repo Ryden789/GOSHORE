@@ -1520,6 +1520,7 @@ async function renderCards() {
     <div class="tab-strip">
       <div class="tab-chip ${cardTab === "today" ? "on" : ""}" data-t="today">今日到期</div>
       <div class="tab-chip ${cardTab === "library" ? "on" : ""}" data-t="library">卡片库</div>
+      <div class="tab-chip ${cardTab === "recall" ? "on" : ""}" data-t="recall">看词写意</div>
       <div class="tab-chip ${cardTab === "quiz" ? "on" : ""}" data-t="quiz">看义选词</div>
       <div class="tab-chip ${cardTab === "progress" ? "on" : ""}" data-t="progress">学习进度</div>
     </div>
@@ -1531,6 +1532,7 @@ async function renderCards() {
   const box = $("#cardBody");
   if (cardTab === "today") drawDueCards(box, tok);
   else if (cardTab === "library") drawCardLibrary(box, tok);
+  else if (cardTab === "recall") drawRecall(box, tok);
   else if (cardTab === "quiz") drawQuiz(box, tok);
   else drawCardProgress(box, tok);
 }
@@ -1695,6 +1697,98 @@ async function drawCardLibrary(box, tok) {
   }
 
   applyFilters();
+}
+
+/* 看词写意：配置 → 看词默写 → 对照辨析自评 */
+async function drawRecall(box, tok) {
+  box.innerHTML = `<div class="empty">加载中…</div>`;
+  const facets = await api("/api/cards/facets");
+  if (tok !== cardToken) return;
+  const cats = facets.categorys || [];
+  box.innerHTML = `
+    <div class="card qz-cfg">
+      <div class="qz-prog">看词默写释义，再对照原书辨析自评；模糊/不会自动安排复习</div>
+      <select id="rcCat">
+        <option value="">全部分类</option>
+        ${cats.map(c => `<option value="${esc(c.k)}">${esc(c.k)}（${c.c}）</option>`).join("")}
+      </select>
+      <select id="rcN">
+        <option>10</option><option selected>20</option><option>30</option>
+      </select>
+      <button class="btn btn-primary btn-block" id="rcStart">开始默写</button>
+    </div>`;
+  $("#rcStart").onclick = async () => {
+    const cat = $("#rcCat").value;
+    const n = +$("#rcN").value;
+    const all = await api(
+      `/api/cards?card_type=word_card${cat ? "&category=" + encodeURIComponent(cat) : ""}`);
+    if (tok !== cardToken) return;
+    runRecall(shuffleCopy(all.items || []).slice(0, n));
+  };
+
+  function shuffleCopy(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  function runRecall(cards) {
+    if (!cards.length) { box.innerHTML = `<div class="empty">该范围没有词语卡片</div>`; return; }
+    let idx = 0, known = 0, vague = 0, unknown = 0;
+    showCard();
+
+    function showCard() {
+      if (idx >= cards.length) {
+        box.innerHTML = `
+          <div class="card" style="text-align:center">
+            <div style="font-size:16px;font-weight:700;margin-bottom:12px">本组完成</div>
+            <div class="cd-stat-grid">
+              <div><b style="color:var(--green)">${known}</b><span>认识</span></div>
+              <div><b style="color:var(--amber)">${vague}</b><span>模糊</span></div>
+              <div><b style="color:var(--cinnabar)">${unknown}</b><span>不会</span></div>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" id="rcAgain">再来一组</button>
+          <button class="btn btn-block" id="rcBack">返回</button>`;
+        $("#rcAgain").onclick = () => runRecall(shuffleCopy(cards));
+        $("#rcBack").onclick = () => renderCards();
+        return;
+      }
+      const c = cards[idx];
+      box.innerHTML = `
+        <div class="qz-prog">第 ${idx + 1} / ${cards.length} 张 · ${esc(c.category || "")}</div>
+        <div class="cd-card">
+          <div class="cd-meta">${esc([c.module, c.category].filter(Boolean).join(" · "))}</div>
+          <div style="font-family:var(--serif);font-size:26px;font-weight:700;letter-spacing:2px;text-align:center;margin:6px 0">${esc(c.stem)}</div>
+          <div class="cd-hint">默写释义 / 侧重点 / 搭配对象</div>
+          <textarea class="rc-area" id="rcArea" placeholder="先自己写，不许翻…"></textarea>
+          <div class="cd-rate">
+            <button class="btn cd-rate-btn" id="rcShow">显示辨析</button>
+          </div>
+          <div class="rc-answer" id="rcAns" hidden>${esc(c.analysis || c.answer || "")}
+            <div class="cd-rate">
+              <button class="btn cd-rate-btn" data-l="0">不会</button>
+              <button class="btn cd-rate-btn" data-l="1">模糊</button>
+              <button class="btn btn-primary cd-rate-btn" data-l="2">认识</button>
+            </div>
+          </div>
+        </div>`;
+      $("#rcShow").onclick = () => {
+        $("#rcAns").hidden = false;
+        $("#rcArea").focus();
+      };
+      $$("[data-l]", box).forEach(b => b.onclick = async () => {
+        const lv = +b.dataset.l;
+        if (lv === 2) known++; else if (lv === 1) vague++; else unknown++;
+        await api("/api/card-review", { card_id: c.id, level: lv });
+        if (tok !== cardToken) return;
+        idx++; showCard();
+      });
+    }
+  }
 }
 
 /* 看义选词测验：配置 → 逐题作答（借鉴词语辨析自测） */

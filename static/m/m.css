@@ -537,6 +537,16 @@ h2.sec { font-family: var(--serif); font-size: 15px; color: var(--ink-3); letter
 .cd-rate { display: flex; gap: 8px; margin-top: 14px; }
 .cd-rate-btn { flex: 1; padding: 9px 0; }
 
+/* 看词写意默写 */
+.rc-area { width: 100%; min-height: 88px; border: 1px solid var(--line);
+  border-radius: 8px; padding: 11px 13px; font-size: 15px; line-height: 1.8;
+  resize: vertical; background: var(--panel); color: var(--ink); }
+.rc-area:focus { outline: none; border-color: var(--cinnabar); }
+.rc-answer { margin-top: 12px; font-size: 13px; color: var(--ink-2);
+  line-height: 1.75; background: rgba(140,43,33,.06);
+  border-left: 3px solid var(--cinnabar); border-radius: 0 8px 8px 0;
+  padding: 11px 13px; white-space: pre-wrap; max-height: 300px; overflow: auto; }
+
 /* 看义选词测验 */
 .qz-cfg { padding: 14px; }
 .qz-cfg select, .qz-cfg .qz-row { width: 100%; margin-bottom: 10px; }

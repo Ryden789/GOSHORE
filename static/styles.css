@@ -530,6 +530,16 @@ input, select, textarea { font-family: var(--sans); }
 .fc-detail { font-size: 15px; line-height: 1.8; text-align: center; white-space: pre-wrap;
   max-height: 300px; overflow: auto; }
 
+/* ---- F9 看词写意 默写 ---- */
+.rc-area { width: 100%; min-height: 92px; border: 1.5px solid var(--line);
+  border-radius: var(--radius); padding: 11px 13px; font-size: 15px;
+  line-height: 1.8; resize: vertical; background: #fff; }
+.rc-area:focus { outline: none; border-color: var(--cinnabar); }
+.rc-answer { margin-top: 14px; background: rgba(176,58,46,.05);
+  border-left: 3px solid var(--cinnabar); border-radius: 0 8px 8px 0;
+  padding: 12px 15px; font-size: 15px; line-height: 1.9; }
+.rc-answer .md-p, .rc-answer p { margin: 0 0 6px; }
+
 /* ---- F9 看义选词 测验 ---- */
 .qz-stem { font-size: 15px; line-height: 1.9; background: rgba(176,58,46,.05);
   border-left: 3px solid var(--cinnabar); border-radius: 0 8px 8px 0;

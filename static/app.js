@@ -2958,6 +2958,7 @@ async function renderCards() {
         <div class="cfg-inline">
           <span>模式 <select id="cMode">
             <option value="flip">翻转记忆</option>
+            <option value="recall">看词写意（默写）</option>
             <option value="quiz">看义选词（测验）</option>
           </select></span>
           <span>类型 <select id="cType">
@@ -3151,6 +3152,72 @@ async function renderCards() {
     }
   }
 
+  /* ---- 看词写意（借鉴词语辨析自测：看词默写 → 对照原辨析 → 自评）---- */
+  function startRecall(cards) {
+    if (!cards.length) { body.innerHTML = `<div class="panel empty">该范围没有卡片</div>`; return; }
+    let idx = 0, known = 0, vague = 0, unknown = 0;
+    showCard();
+
+    function showCard() {
+      if (idx >= cards.length) {
+        body.innerHTML = `
+          <div class="panel" style="text-align:center">
+            <h3>本组完成</h3>
+            <div class="summary-grid">
+              <div class="stat-card" style="--accent:var(--bamboo)"><div class="v">${known}</div><div class="k">认识</div></div>
+              <div class="stat-card" style="--accent:var(--amber)"><div class="v">${vague}</div><div class="k">模糊（已排复习）</div></div>
+              <div class="stat-card" style="--accent:var(--cinnabar)"><div class="v">${unknown}</div><div class="k">不会（已排复习）</div></div>
+            </div>
+            <button class="btn btn-primary" id="cAgain">再来一组</button>
+            <button class="btn" id="cBack">返回配置</button>
+          </div>`;
+        $("#cAgain").onclick = () => startRecall(shuffleCopy(cards));
+        $("#cBack").onclick = renderCards;
+        return;
+      }
+      const c = cards[idx];
+      body.innerHTML = `
+        <div class="panel">
+          <div class="paper-runner-top">
+            <span>${esc(c.module)}${c.category ? " · " + esc(c.category) : ""} · 看词写意</span>
+            <span>${idx + 1} / ${cards.length}</span>
+          </div>
+          <div class="fc-word" style="text-align:center;margin:18px 0 4px">${esc(c.stem)}</div>
+          <div class="fc-hint" style="text-align:center;margin-bottom:14px">默写它的释义 / 侧重点 / 搭配对象，再对照原书辨析</div>
+          <textarea class="rc-area" id="rcArea" placeholder="先自己写，不许翻…"></textarea>
+          <div class="answer-bar" style="margin-top:12px">
+            <button class="btn" id="rcShow">显示辨析</button>
+            <span style="flex:1"></span>
+            <button class="btn btn-sm" id="rcSkip" style="color:var(--ink-3)">跳过 →</button>
+          </div>
+          <div class="rc-answer" id="rcAns" style="display:none">
+            ${md(c.analysis || c.answer || "")}
+            <div class="answer-bar" style="justify-content:center;margin-top:12px">
+              <span style="color:var(--ink-3);font-size:13px">自评：</span>
+              <button class="btn btn-sm" style="color:var(--bamboo)" data-lv="2">认识</button>
+              <button class="btn btn-sm" style="color:var(--amber)" data-lv="1">模糊</button>
+              <button class="btn btn-sm" style="color:var(--cinnabar)" data-lv="0">不会</button>
+            </div>
+          </div>
+        </div>`;
+      $("#rcShow").onclick = () => {
+        $("#rcAns").style.display = "block";
+        $("#rcArea").focus();
+      };
+      const area = $("#rcArea");
+      area.addEventListener("keydown", e => {
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") $("#rcShow").click();
+      });
+      $$("[data-lv]", body).forEach(b => b.onclick = async () => {
+        const lv = +b.dataset.lv;
+        if (lv === 2) known++; else if (lv === 1) vague++; else unknown++;
+        await api("/api/card-review", { card_id: c.id, level: lv });
+        idx++; showCard();
+      });
+      $("#rcSkip").onclick = () => { idx++; showCard(); };
+    }
+  }
+
   $("#cStart").onclick = async () => {
     const mode = $("#cMode").value;
     const t = mode === "quiz" ? "word_card" : $("#cType").value;   // 看义选词仅适用词语卡
@@ -3160,6 +3227,8 @@ async function renderCards() {
     if (mode === "quiz") {
       const allRes = await api(`/api/cards?card_type=word_card`);
       startQuiz(list, allRes.items);
+    } else if (mode === "recall") {
+      startRecall(list);
     } else {
       startList(list);
     }
