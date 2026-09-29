@@ -2956,6 +2956,10 @@ async function renderCards() {
       </div>
       <div class="speed-config" style="margin-top:12px">
         <div class="cfg-inline">
+          <span>模式 <select id="cMode">
+            <option value="flip">翻转记忆</option>
+            <option value="quiz">看义选词（测验）</option>
+          </select></span>
           <span>类型 <select id="cType">
             <option value="word_card">词语辨析卡</option>
             <option value="error_card">错题考点卡</option>
@@ -3066,11 +3070,99 @@ async function renderCards() {
     return a;
   }
 
+  /* ---- 看义选词（借鉴词语辨析自测：辨析要点作题干，遮蔽答案，四选一）---- */
+  function maskWord(text, word) {
+    if (!word) return text;
+    return text.split(word).join("＿".repeat(Math.min(word.length, 4)));
+  }
+
+  function startQuiz(cards, pool) {
+    if (!cards.length) { body.innerHTML = `<div class="panel empty">该范围没有卡片</div>`; return; }
+    let idx = 0, okN = 0, noN = 0, timer = null;
+    const poolWords = pool.filter(x => x.stem && x.stem.length >= 2);
+    showQ();
+
+    function showQ() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (idx >= cards.length) {
+        const rate = Math.round(okN / (okN + noN) * 100);
+        body.innerHTML = `
+          <div class="panel" style="text-align:center">
+            <h3>本组完成</h3>
+            <div class="summary-grid">
+              <div class="stat-card" style="--accent:var(--bamboo)"><div class="v">${okN}</div><div class="k">答对</div></div>
+              <div class="stat-card" style="--accent:var(--cinnabar)"><div class="v">${noN}</div><div class="k">答错（已排复习）</div></div>
+              <div class="stat-card" style="--accent:var(--amber)"><div class="v">${rate}%</div><div class="k">正确率</div></div>
+            </div>
+            <button class="btn btn-primary" id="cAgain">再来一组</button>
+            <button class="btn" id="cBack">返回配置</button>
+          </div>`;
+        $("#cAgain").onclick = () => startQuiz(shuffleCopy(cards), pool);
+        $("#cBack").onclick = renderCards;
+        return;
+      }
+      const c = cards[idx];
+      const sameLen = shuffleCopy(poolWords.filter(x => x.id !== c.id && x.stem.length === c.stem.length));
+      let distract = sameLen.slice(0, 3);
+      if (distract.length < 3) {
+        const rest = shuffleCopy(poolWords.filter(x => x.id !== c.id && !distract.includes(x)));
+        distract = distract.concat(rest.slice(0, 3 - distract.length));
+      }
+      const opts = shuffleCopy([c, ...distract]);
+      // 题干取释义部分（例句含答案，不作题干），遮蔽词本身
+      let stem = (c.analysis || "").split("【例】")[0].trim();
+      if (!stem) stem = c.analysis || "";
+      stem = maskWord(stem, c.stem);
+      body.innerHTML = `
+        <div class="panel">
+          <div class="paper-runner-top">
+            <span>${esc(c.module)}${c.category ? " · " + esc(c.category) : ""} · 看义选词</span>
+            <span>${idx + 1} / ${cards.length}</span>
+          </div>
+          <div style="font-size:13px;color:var(--ink-3);margin-top:12px">根据辨析要点，选出对应的词语：</div>
+          <div class="qz-stem">${esc(stem)}</div>
+          <div id="qzOpts">
+            ${opts.map(o => `<button class="qz-opt" data-id="${o.id}">${esc(o.stem)}</button>`).join("")}
+          </div>
+          <div id="qzExp" class="qz-exp" style="display:none"></div>
+        </div>`;
+      $$(".qz-opt", body).forEach(btn => {
+        btn.onclick = async () => {
+          $$(".qz-opt", body).forEach(b => {
+            b.disabled = true;
+            if (b.dataset.id === c.id) b.classList.add("right");
+          });
+          const correct = btn.dataset.id === c.id;
+          if (correct) okN++; else { btn.classList.add("wrong"); noN++; }
+          // 接入现有艾宾浩斯体系：对=认识(2)，错=不会(0)
+          await api("/api/card-review", { card_id: c.id, level: correct ? 2 : 0 });
+          const exp = $("#qzExp");
+          exp.style.display = "block";
+          exp.innerHTML = `
+            <div class="sec-title">${correct ? "✔ 回答正确" : "✘ 回答错误"} · 正解 ${esc(c.stem)}</div>
+            <div style="margin-top:8px">${md(c.analysis || "")}</div>
+            <div class="answer-bar" style="justify-content:flex-end">
+              <button class="btn btn-primary btn-sm" id="qzNext">${idx === cards.length - 1 ? "完成" : "下一题"}</button>
+            </div>`;
+          $("#qzNext").onclick = () => { idx++; showQ(); };
+          if (correct) timer = setTimeout(() => { idx++; showQ(); }, 1100);
+        };
+      });
+    }
+  }
+
   $("#cStart").onclick = async () => {
-    const t = $("#cType").value;
+    const mode = $("#cMode").value;
+    const t = mode === "quiz" ? "word_card" : $("#cType").value;   // 看义选词仅适用词语卡
     const cat = $("#cCat").value.replace(/（\d+）$/, "");
     const res = await api(`/api/cards?card_type=${encodeURIComponent(t)}&category=${encodeURIComponent(cat)}`);
-    startList(shuffleCopy(res.items).slice(0, +$("#cN").value));
+    const list = shuffleCopy(res.items).slice(0, +$("#cN").value);
+    if (mode === "quiz") {
+      const allRes = await api(`/api/cards?card_type=word_card`);
+      startQuiz(list, allRes.items);
+    } else {
+      startList(list);
+    }
   };
   const dueBtn = $("#cDue");
   if (dueBtn) dueBtn.onclick = () => startList(dueCards);

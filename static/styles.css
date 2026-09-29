@@ -530,6 +530,21 @@ input, select, textarea { font-family: var(--sans); }
 .fc-detail { font-size: 15px; line-height: 1.8; text-align: center; white-space: pre-wrap;
   max-height: 300px; overflow: auto; }
 
+/* ---- F9 看义选词 测验 ---- */
+.qz-stem { font-size: 15px; line-height: 1.9; background: rgba(176,58,46,.05);
+  border-left: 3px solid var(--cinnabar); border-radius: 0 8px 8px 0;
+  padding: 13px 15px; margin: 12px 0 16px; white-space: pre-wrap; }
+.qz-opt { display: block; width: 100%; text-align: left; background: var(--panel);
+  border: 1.5px solid var(--line); border-radius: var(--radius);
+  padding: 11px 15px; margin-bottom: 10px; font-size: 16px; cursor: pointer;
+  font-family: var(--serif); letter-spacing: 1px; transition: border-color .15s, background .15s; }
+.qz-opt:hover { border-color: var(--cinnabar); }
+.qz-opt:disabled { cursor: default; }
+.qz-opt.right { background: var(--bamboo-soft); border-color: var(--bamboo); color: var(--bamboo); font-weight: 700; }
+.qz-opt.wrong { background: var(--cinnabar-soft); border-color: var(--cinnabar); color: var(--cinnabar); }
+.qz-exp { margin-top: 6px; font-size: 14px; line-height: 1.8; max-height: 280px; overflow: auto; }
+.qz-exp .sec-title { font-size: 13.5px; }
+
 /* ---- F5 配比模板按钮 ---- */
 .tpl-btn { margin-right: 8px; }
 

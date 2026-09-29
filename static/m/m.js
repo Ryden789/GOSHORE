@@ -1520,6 +1520,7 @@ async function renderCards() {
     <div class="tab-strip">
       <div class="tab-chip ${cardTab === "today" ? "on" : ""}" data-t="today">今日到期</div>
       <div class="tab-chip ${cardTab === "library" ? "on" : ""}" data-t="library">卡片库</div>
+      <div class="tab-chip ${cardTab === "quiz" ? "on" : ""}" data-t="quiz">看义选词</div>
       <div class="tab-chip ${cardTab === "progress" ? "on" : ""}" data-t="progress">学习进度</div>
     </div>
     <div id="cardBody"></div>`;
@@ -1530,6 +1531,7 @@ async function renderCards() {
   const box = $("#cardBody");
   if (cardTab === "today") drawDueCards(box, tok);
   else if (cardTab === "library") drawCardLibrary(box, tok);
+  else if (cardTab === "quiz") drawQuiz(box, tok);
   else drawCardProgress(box, tok);
 }
 
@@ -1693,6 +1695,119 @@ async function drawCardLibrary(box, tok) {
   }
 
   applyFilters();
+}
+
+/* 看义选词测验：配置 → 逐题作答（借鉴词语辨析自测） */
+async function drawQuiz(box, tok) {
+  box.innerHTML = `<div class="empty">加载中…</div>`;
+  const facets = await api("/api/cards/facets");
+  if (tok !== cardToken) return;
+  const cats = facets.categorys || [];
+  box.innerHTML = `
+    <div class="card qz-cfg">
+      <div class="qz-prog">看辨析要点，选出对应词语；答错自动按艾宾浩斯安排复习</div>
+      <select id="qzCat">
+        <option value="">全部分类</option>
+        ${cats.map(c => `<option value="${esc(c.k)}">${esc(c.k)}（${c.c}）</option>`).join("")}
+      </select>
+      <select id="qzN">
+        <option>10</option><option selected>20</option><option>30</option>
+      </select>
+      <button class="btn btn-primary btn-block" id="qzStart">开始测验</button>
+    </div>`;
+  $("#qzStart").onclick = async () => {
+    const cat = $("#qzCat").value;
+    const n = +$("#qzN").value;
+    const [all, poolRes] = await Promise.all([
+      api(`/api/cards?card_type=word_card${cat ? "&category=" + encodeURIComponent(cat) : ""}`),
+      api(`/api/cards?card_type=word_card`),
+    ]);
+    if (tok !== cardToken) return;
+    const cards = shuffleCopy(all.items || []).slice(0, n);
+    runQuiz(cards, poolRes.items || []);
+  };
+
+  function shuffleCopy(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  function runQuiz(cards, pool) {
+    if (!cards.length) { box.innerHTML = `<div class="empty">该范围没有词语卡片</div>`; return; }
+    let idx = 0, okN = 0, noN = 0, timer = null;
+    const poolWords = pool.filter(x => x.stem && x.stem.length >= 2);
+    showQ();
+
+    function maskWord(text, word) {
+      if (!word) return text;
+      return text.split(word).join("＿".repeat(Math.min(word.length, 4)));
+    }
+
+    function showQ() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (idx >= cards.length) {
+        const rate = Math.round(okN / (okN + noN) * 100);
+        box.innerHTML = `
+          <div class="card" style="text-align:center">
+            <div style="font-size:16px;font-weight:700;margin-bottom:12px">本组完成</div>
+            <div class="cd-stat-grid">
+              <div><b style="color:var(--green)">${okN}</b><span>答对</span></div>
+              <div><b style="color:var(--cinnabar)">${noN}</b><span>答错</span></div>
+              <div><b style="color:var(--amber)">${rate}%</b><span>正确率</span></div>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" id="qzAgain">再来一组</button>
+          <button class="btn btn-block" id="qzBack">返回</button>`;
+        $("#qzAgain").onclick = () => runQuiz(shuffleCopy(cards), pool);
+        $("#qzBack").onclick = () => renderCards();
+        return;
+      }
+      const c = cards[idx];
+      const sameLen = shuffleCopy(
+        poolWords.filter(x => x.id !== c.id && x.stem.length === c.stem.length));
+      let distract = sameLen.slice(0, 3);
+      if (distract.length < 3) {
+        const rest = shuffleCopy(
+          poolWords.filter(x => x.id !== c.id && !distract.includes(x)));
+        distract = distract.concat(rest.slice(0, 3 - distract.length));
+      }
+      const opts = shuffleCopy([c, ...distract]);
+      let stem = (c.analysis || "").split("【例】")[0].trim() || c.analysis || "";
+      stem = maskWord(stem, c.stem);
+      box.innerHTML = `
+        <div class="qz-prog">第 ${idx + 1} / ${cards.length} 题 · ${esc(c.category || "")}</div>
+        <div class="qz-stem">${esc(stem)}</div>
+        <div id="qzOpts">
+          ${opts.map(o => `<button class="qz-opt" data-id="${o.id}">${esc(o.stem)}</button>`).join("")}
+        </div>
+        <div id="qzExpWrap" hidden>
+          <div id="qzExp" class="qz-exp"></div>
+          <button class="btn btn-primary btn-block" id="qzNext">下一题</button>
+        </div>`;
+      $$(".qz-opt", box).forEach(btn => {
+        btn.onclick = async () => {
+          $$(".qz-opt", box).forEach(b => {
+            b.disabled = true;
+            if (b.dataset.id === c.id) b.classList.add("right");
+          });
+          const correct = btn.dataset.id === c.id;
+          if (correct) okN++; else { btn.classList.add("wrong"); noN++; }
+          await api("/api/card-review", { card_id: c.id, level: correct ? 2 : 0 });
+          if (tok !== cardToken) return;
+          $("#qzExp").innerHTML =
+            `${correct ? "✔ 回答正确" : "✘ 回答错误"} · 正解 ${esc(c.stem)}\n${c.analysis || ""}`;
+          $("#qzExpWrap").hidden = false;
+          $("#qzNext").textContent = idx === cards.length - 1 ? "完成" : "下一题";
+          $("#qzNext").onclick = () => { idx++; showQ(); };
+          if (correct) timer = setTimeout(() => { idx++; showQ(); }, 1100);
+        };
+      });
+    }
+  }
 }
 
 /* 学习进度 */
