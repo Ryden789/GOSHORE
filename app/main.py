@@ -486,6 +486,40 @@ async def api_import_web_preview(b: ImportUrlIn):
     return {"items": items, "error": err, "count": len(items)}
 
 
+class ImportFileIn(BaseModel):
+    name: str
+    data_b64: str
+
+
+@app.post("/api/import/file/preview")
+async def api_import_file_preview(b: ImportFileIn):
+    """解析上传文件（PDF/Word/Excel/CSV/MD），AI 抽取真题，返回预览（不入库）。"""
+    import base64
+    if not b.name or not b.data_b64:
+        return {"items": [], "error": "文件为空"}
+    try:
+        data = base64.b64decode(b.data_b64)
+    except Exception:
+        return {"items": [], "error": "文件数据解码失败"}
+    if len(data) > 20 * 1024 * 1024:
+        return {"items": [], "error": "文件过大（上限 20MB）"}
+    ext = b.name.rsplit(".", 1)[-1].lower() if "." in b.name else ""
+    if ext not in ("pdf", "docx", "xlsx", "xls", "csv", "md", "txt", "json"):
+        return {"items": [], "error": f"不支持的格式 .{ext}，支持 pdf/docx/xlsx/csv/md/txt/json"}
+    try:
+        text = importer.extract_text_from_file(b.name, data)
+    except Exception as e:
+        return {"items": [], "error": f"文件解析失败：{e}"}
+    if len(text.strip()) < 20:
+        return {"items": [], "error": "文件内容为空或过短"}
+    # JSON 文件直接解析，不走 AI
+    if ext == "json":
+        items, errors = importer.parse_json_bank(text)
+        return {"items": items, "errors": errors, "count": len(items)}
+    items, err = await importer.ai_extract_questions(text)
+    return {"items": items, "error": err, "count": len(items)}
+
+
 class ImportCommitIn(BaseModel):
     items: list[dict]
     defaults: dict = {}

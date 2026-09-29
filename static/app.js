@@ -2408,6 +2408,7 @@ function renderImport() {
     <div class="panel rise rise-1">
       <div class="ai-mode-row" style="margin-bottom:14px">
         <button class="mode-chip active" data-tab="json">JSON 题库</button>
+        <button class="mode-chip" data-tab="file">文件导入</button>
         <button class="mode-chip" data-tab="web">网页 / 文本真题</button>
       </div>
 
@@ -2418,6 +2419,16 @@ function renderImport() {
           <input type="file" id="jsonFile" accept=".json,.txt"/>
           <button class="btn btn-primary" id="jsonPreview">解析预览</button>
         </div>
+      </div>
+
+      <div id="tabFile" style="display:none">
+        <p class="hint" style="margin-bottom:8px">支持 PDF、Word、Excel、CSV、Markdown、TXT、JSON 格式，由 AI 自动识别题目结构</p>
+        <div class="imp-area" id="fileDrop" style="height:120px;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative">
+          <div id="fileDropText">📂 拖拽文件到此处，或点击上传</div>
+          <input type="file" id="fileInput" style="position:absolute;inset:0;opacity:0;cursor:pointer"/>
+        </div>
+        <div id="fileName" class="hint" style="margin-top:6px;display:none"></div>
+        <div style="margin-top:8px"><button class="btn btn-primary" id="filePreview" style="display:none">解析预览</button></div>
       </div>
 
       <div id="tabWeb" style="display:none">
@@ -2448,6 +2459,7 @@ function renderImport() {
     $$(".mode-chip", view).forEach(x => x.classList.toggle("active", x === c));
     state.tab = c.dataset.tab;
     $("#tabJson").style.display = state.tab === "json" ? "" : "none";
+    $("#tabFile").style.display = state.tab === "file" ? "" : "none";
     $("#tabWeb").style.display = state.tab === "web" ? "" : "none";
   });
 
@@ -2456,13 +2468,25 @@ function renderImport() {
     if (f) $("#jsonText").value = await f.text();
   };
 
-  // 拖拽导入：拖入文件到文本框区域
+  // 拖拽导入：JSON/TXT 读入文本框，其他格式转文件导入标签
   const jsonArea = $("#jsonText");
   const loadDropFile = async (f) => {
     if (!f) return;
-    if (!/\.(json|txt)$/i.test(f.name)) { toast("仅支持 .json / .txt 文件"); return; }
-    jsonArea.value = await f.text();
-    toast(`已载入「${f.name}」，点「解析预览」继续`);
+    if (/\.(json|txt)$/i.test(f.name)) {
+      jsonArea.value = await f.text();
+      toast(`已载入「${f.name}」，点「解析预览」继续`);
+      return;
+    }
+    if (/\.(pdf|docx|xlsx|xls|csv|md)$/i.test(f.name)) {
+      state.tab = "file";
+      $$(".mode-chip", view).forEach(x => x.classList.toggle("active", x.dataset.tab === "file"));
+      $("#tabJson").style.display = "none";
+      $("#tabFile").style.display = "";
+      $("#tabWeb").style.display = "none";
+      handleFile(f);
+      return;
+    }
+    toast("仅支持 .json / .txt / .pdf / .docx / .xlsx / .csv / .md 文件");
   };
   jsonArea.addEventListener("dragover", e => { e.preventDefault(); jsonArea.classList.add("drag-over"); });
   jsonArea.addEventListener("dragleave", () => jsonArea.classList.remove("drag-over"));
@@ -2471,6 +2495,45 @@ function renderImport() {
     jsonArea.classList.remove("drag-over");
     loadDropFile(e.dataTransfer.files[0]);
   });
+
+  // 文件导入标签：点击/拖拽上传
+  const fileDrop = $("#fileDrop");
+  const fileInput = $("#fileInput");
+  let pickedFile = null;
+
+  fileDrop.addEventListener("dragover", e => { e.preventDefault(); fileDrop.classList.add("drag-over"); });
+  fileDrop.addEventListener("dragleave", () => fileDrop.classList.remove("drag-over"));
+  fileDrop.addEventListener("drop", e => {
+    e.preventDefault();
+    fileDrop.classList.remove("drag-over");
+    handleFile(e.dataTransfer.files[0]);
+  });
+  fileInput.onchange = () => handleFile(fileInput.files[0]);
+
+  function handleFile(f) {
+    if (!f) return;
+    if (!/\.(pdf|docx|xlsx|xls|csv|md|txt|json)$/i.test(f.name)) {
+      toast("仅支持 PDF / Word / Excel / CSV / MD / TXT / JSON");
+      return;
+    }
+    pickedFile = f;
+    $("#fileName").textContent = `已选择：${f.name}（${(f.size / 1024).toFixed(0)} KB）`;
+    $("#fileName").style.display = "";
+    $("#filePreview").style.display = "";
+  }
+
+  $("#filePreview").onclick = async () => {
+    if (!pickedFile) return;
+    const btn = $("#filePreview");
+    btn.disabled = true; btn.textContent = "解析中（约 10~60 秒）…";
+    try {
+      const buf = await pickedFile.arrayBuffer();
+      const b64 = btoa(new Uint8Array(buf).reduce((s, b) => s + String.fromCharCode(b), ""));
+      const res = await api("/api/import/file/preview", { name: pickedFile.name, data_b64: b64 });
+      showPreview(res);
+    } catch (e) { alert("解析失败：" + e.message); }
+    finally { btn.disabled = false; btn.textContent = "解析预览"; }
+  };
 
   const showPreview = (res) => {
     const el = $("#impPreview");

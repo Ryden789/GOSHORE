@@ -182,6 +182,47 @@ def commit_items(items: list[dict], defaults: dict) -> dict:
     return {"ok": True, "saved": saved, "failed": failed, "total": db.facets().get("counts", {}).get("真题", 0)}
 
 
+# ---------------- 文件格式解析（PDF / Word / Excel） ----------------
+
+def extract_text_from_file(name: str, data: bytes) -> str:
+    """从上传文件中提取纯文本。支持 .pdf/.docx/.xlsx/.csv/.md/.txt。"""
+    import io
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext == "pdf":
+        import pdfplumber
+        parts = []
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text() or ""
+                if t.strip():
+                    parts.append(t)
+        return "\n\n".join(parts)
+    if ext == "docx":
+        import docx
+        doc = docx.Document(io.BytesIO(data))
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    if ext in ("xlsx", "xls"):
+        import pandas as pd
+        df = pd.read_excel(io.BytesIO(data))
+        return df.to_csv(index=False, sep="\t")
+    if ext == "csv":
+        import pandas as pd
+        for enc in ("utf-8", "gbk", "gb18030"):
+            try:
+                df = pd.read_csv(io.BytesIO(data), encoding=enc)
+                return df.to_csv(index=False, sep="\t")
+            except Exception:
+                continue
+        return data.decode("utf-8", errors="ignore")
+    # md / txt / 其他纯文本
+    for enc in ("utf-8", "gbk", "gb18030"):
+        try:
+            return data.decode(enc)
+        except Exception:
+            continue
+    return data.decode("utf-8", errors="ignore")
+
+
 # ---------------- 网页/文本 → AI 抽取 ----------------
 
 async def fetch_url_text(url: str) -> str:
