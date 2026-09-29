@@ -1215,11 +1215,31 @@ def api_ce_paper():
                     if len(sub) < sub_n:
                         short.append(f"{top_kd}（{len(sub)}/{sub_n}）")
             elif kd_filter:
-                # 综合分析：只抽策略制定/实验设计
-                placeholders = ",".join("?" * len(kd_filter))
-                taken = _take_from(
-                    f"module=? AND kaodian IN ({placeholders})",
-                    (module, *kd_filter), n)
+                # 综合分析：策略制定/实验设计按材料组抽取（同材料小题连续）
+                # 真实卷面：91-95策略制定（1组材料5题），96-100实验设计（1组材料5题）
+                # 题库材料组3-4题/组，策略2组+实验2组凑满10题
+                for kd in kd_filter:
+                    fp_rows = cur.execute(
+                        "SELECT material_fp FROM documents "
+                        "WHERE module=? AND kaodian=? AND material_fp!='' "
+                        "GROUP BY material_fp ORDER BY RANDOM() LIMIT 2",
+                        (module, kd)).fetchall()
+                    for (fp,) in fp_rows:
+                        if len(taken) >= n:
+                            break
+                        sub = cur.execute(
+                            "SELECT id FROM documents WHERE material_fp=? ORDER BY id",
+                            (fp,)).fetchall()
+                        taken.extend(r[0] for r in sub)
+                # 单题补满（实验设计有4道单题）
+                if len(taken) < n:
+                    placeholders = ",".join("?" * len(kd_filter))
+                    single_rows = cur.execute(
+                        f"SELECT id FROM documents WHERE module=? AND kaodian IN ({placeholders}) "
+                        "AND (material_fp='' OR material_fp IS NULL) ORDER BY RANDOM()",
+                        (module, *kd_filter)).fetchall()
+                    taken.extend(r[0] for r in single_rows)
+                taken = taken[:n]
             else:
                 taken = _take_from("module=?", (module,), n)
 
