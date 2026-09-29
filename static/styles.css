@@ -563,6 +563,12 @@ input, select, textarea { font-family: var(--sans); }
   position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
   pointer-events: none; color: var(--ink-3, #8a8474); font-size: 11px;
 }
+.kd-drop {
+  max-height: 320px; overflow-y: auto;
+  background: var(--paper, #faf7ef);
+  border: 1px solid var(--line, #d8d2c4); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(43,38,32,.14);
+}
 .kd-combo .kd-drop {
   position: absolute; z-index: 60; top: calc(100% + 4px); left: 0; right: 0;
   max-height: 320px; overflow-y: auto;

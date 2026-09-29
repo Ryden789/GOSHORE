@@ -1624,7 +1624,7 @@ async function renderPaper() {
   const kdDrop = document.createElement("div");
   kdDrop.className = "kd-drop";
   kdDrop.style.display = "none";
-  kdDrop.style.position = "fixed";
+  kdDrop.style.position = "fixed";     // fixed 视口定位，滚动时 JS 动态更新
   kdDrop.style.zIndex = "1000";
   document.body.appendChild(kdDrop);
 
@@ -1684,6 +1684,7 @@ async function renderPaper() {
   function kdRender() {
     kdList = kdFiltered();
     const q = kdInput.value.trim();
+    console.log("[kd] render, query:", q, "items:", kdList.length);
     if (!kdList.length) {
       kdDrop.innerHTML = `<div class="kd-empty">没有匹配「${esc(q)}」的考点</div>`;
       kdActIdx = -1;
@@ -1699,6 +1700,7 @@ async function renderPaper() {
     $$(".kd-item", kdDrop).forEach(el => {
       el.onmousedown = e => {  // 用 mousedown 抢在 blur 之前
         e.preventDefault();
+        console.log("[kd] mousedown on item:", el.dataset.i);
         kdChoose(+el.dataset.i);
       };
     });
@@ -1716,17 +1718,35 @@ async function renderPaper() {
     kdOpen = true;
     kdActIdx = -1;
     kdRender();
-    // 动态定位：跟随输入框，避免被 sticky 面板遮挡
-    const rect = kdInput.getBoundingClientRect();
-    kdDrop.style.left = rect.left + "px";
-    kdDrop.style.top = (rect.bottom + 4) + "px";
-    kdDrop.style.width = rect.width + "px";
+    kdUpdatePos();  // 先定位再显示
     kdDrop.style.display = "";
+    console.log("[kd] show, items:", kdList.length);
   }
   function kdHide() {
     kdOpen = false;
     kdDrop.style.display = "none";
+    console.log("[kd] hide");
   }
+
+  // 页面滚动时更新下拉位置（fixed 定位不随页面滚动）
+  // 用 requestAnimationFrame 节流，避免高频滚动时卡顿
+  let kdPosRaf = null;
+  function kdUpdatePos() {
+    if (!kdOpen) return;
+    if (kdPosRaf) return;  // 已有待执行的更新
+    kdPosRaf = requestAnimationFrame(() => {
+      kdPosRaf = null;
+      if (!kdOpen) return;
+      const rect = kdInput.getBoundingClientRect();
+      kdDrop.style.left = rect.left + "px";
+      kdDrop.style.top = (rect.bottom + 4) + "px";
+      kdDrop.style.width = rect.width + "px";
+    });
+  }
+  // 监听所有可能的滚动源（window、主内容区、侧边栏）
+  window.addEventListener("scroll", kdUpdatePos, true);
+  document.addEventListener("scroll", kdUpdatePos, true);
+  window.addEventListener("resize", kdUpdatePos);
 
   kdInput.addEventListener("focus", kdShow);
   kdInput.addEventListener("input", () => {
