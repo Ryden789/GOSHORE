@@ -821,18 +821,31 @@
     });
   }
 
-  /* 安卓 APP 按钮：goshor:// 协议 → tools/open_app.bat → 模拟器拉起 */
+  /* 安卓 APP 按钮：优先本地服务接口（结果可信），降级 goshor:// 协议 */
   var openApp=document.getElementById('openApp');
   if(openApp){
     openApp.addEventListener('click',function(e){
       e.preventDefault();
-      toast('正在拉起模拟器中的 APP · 首次使用请在弹窗中选择「打开」');
-      var a=document.createElement('a');
-      a.href='goshor://open';
-      document.body.appendChild(a);a.click();a.remove();
-      setTimeout(function(){
-        toast('若模拟器未响应 · 请先运行 tools\\install_protocol.bat 注册启动协议');
-      },4000);
+      toast('正在拉起模拟器中的 APP…');
+      var ctrl=new AbortController();
+      var timer=setTimeout(function(){ctrl.abort()},95000);
+      fetch('http://127.0.0.1:8765/api/open_app',{method:'POST',signal:ctrl.signal})
+        .then(function(r){return r.json()})
+        .then(function(d){
+          clearTimeout(timer);
+          if(d.ok){toast('✓ '+(d.msg||'APP 已启动'));}
+          else{toast(d.msg||'启动失败 · 请运行 tools\\open_app.bat 查看详情');}
+        })
+        .catch(function(){
+          clearTimeout(timer);
+          toast('本地服务未运行 · 已尝试 goshor:// 协议拉起…');
+          var a=document.createElement('a');
+          a.href='goshor://open';
+          document.body.appendChild(a);a.click();a.remove();
+          setTimeout(function(){
+            toast('仍无反应 · 请先运行 start.bat 启动服务，或手动运行 tools\\open_app.bat');
+          },3200);
+        });
     });
   }
 })();

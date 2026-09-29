@@ -60,6 +60,46 @@ def _startup_selfcheck() -> None:
 
 app = FastAPI(title="GOSHORE 上岸", lifespan=lifespan)
 
+# 允许本地 file:// 演示页（Origin: null）调用 open_app 接口
+try:
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["null", "http://127.0.0.1:8765", "http://localhost:8765"],
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"],
+    )
+except Exception:
+    pass
+
+
+# ---------------- 一键拉起模拟器 APP ----------------
+
+@app.post("/api/open_app")
+def api_open_app():
+    """执行 tools/open_app.bat silent：自动连接模拟器并拉起上岸题库 APP"""
+    import subprocess
+    bat = Path(__file__).resolve().parents[1] / "tools" / "open_app.bat"
+    if not bat.exists():
+        raise HTTPException(404, "tools/open_app.bat 不存在")
+    try:
+        proc = subprocess.run(
+            ["cmd", "/c", str(bat), "silent"],
+            cwd=str(bat.parent), capture_output=True, timeout=90,
+        )
+        out = (proc.stdout or b"").decode("utf-8", "ignore")
+        if proc.returncode == 0 and "[OK] APP_STARTED" in out:
+            return {"ok": True, "msg": "APP 已在模拟器中启动"}
+        if "[ERR] NO_DEVICE" in out:
+            return {"ok": False, "msg": "未检测到模拟器，请先启动安卓模拟器"}
+        if "[ERR] NO_ADB" in out:
+            return {"ok": False, "msg": "未找到 adb，请安装 Android platform-tools"}
+        if "[INFO] INSTALLING_APK" in out:
+            return {"ok": False, "msg": "APK 自动安装未完成，请重新点击或手动安装"}
+        return {"ok": False, "msg": "启动失败，请直接运行 tools/open_app.bat 查看详情"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "msg": "启动超时，请检查模拟器状态后重试"}
+
 
 # ---------------- 题库 ----------------
 

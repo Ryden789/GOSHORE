@@ -7,7 +7,7 @@ rem 作用：PPT / 浏览器中的 goshor://open 链接将调用 open_app.bat �
 
 reg add "HKCU\Software\Classes\goshor" /ve /d "URL:GOSHORE App Launcher" /f >nul
 reg add "HKCU\Software\Classes\goshor" /v "URL Protocol" /d "" /f >nul
-reg add "HKCU\Software\Classes\goshor\shell\open\command" /ve /d "\"%~dp0open_app.bat\"" /f >nul
+reg add "HKCU\Software\Classes\goshor\shell\open\command" /ve /d "cmd.exe /c \"\"%~dp0open_app.bat\" \"%1\"\"" /f >nul
 
 echo [OK] goshor:// 协议已注册（当前用户级）
 echo      关联程序: %~dp0open_app.bat
