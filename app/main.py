@@ -516,7 +516,18 @@ async def api_import_file_preview(b: ImportFileIn):
     if ext == "json":
         items, errors = importer.parse_json_bank(text)
         return {"items": items, "errors": errors, "count": len(items)}
-    items, err = await importer.ai_extract_questions(text)
+    fig_items, attach = [], {}
+    if ext == "pdf":
+        from .pdf_visual import build_figure_items
+        try:
+            fig_items, attach = await build_figure_items(data, load_settings())
+        except Exception:
+            fig_items, attach = [], {}  # 图形提取失败不影响文字题流程
+    items, err = await importer.ai_extract_questions(text, extra_items=fig_items)
+    for it in items:  # 文字题补图（如资料分析图表题，AI 已抽到但缺图）
+        tags = attach.get(it.get("no"))
+        if tags and "<img" not in it["stem"]:
+            it["stem"] += "\n" + "\n".join(tags)
     return {"items": items, "error": err, "count": len(items)}
 
 

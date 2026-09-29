@@ -403,8 +403,8 @@ def _completeness_note(text: str, items: list[dict]) -> str:
     return note
 
 
-async def ai_extract_questions(text: str) -> tuple[list[dict], str]:
-    """用 DeepSeek 从网页文本中抽取真题。返回 (items, 错误信息)。"""
+async def ai_extract_questions(text: str, extra_items: list[dict] | None = None) -> tuple[list[dict], str]:
+    """用 DeepSeek 从网页文本中抽取真题。extra_items 为图形题等外部构造条目，合并后再做完整性核对。"""
     s = load_settings()
     if not s["deepseek_api_key"]:
         return [], "未配置 DeepSeek API Key，请先在设置页配置"
@@ -444,13 +444,28 @@ async def ai_extract_questions(text: str) -> tuple[list[dict], str]:
                 continue
             got, errors = parse_json_bank(content)
             for it in got:
-                key = re.sub(r"\s+", "", it["stem"])[:40]
+                # 有原卷题号按题号去重（滑窗重叠段会重复抽题），否则按题干前缀
+                key = f"no:{it['no']}" if it.get("no") else re.sub(r"\s+", "", it["stem"])[:40]
                 if key and key not in seen:
                     seen.add(key)
                     items.append(it)
             notes.extend(f"第{i}段：{e}" for e in errors[:2])
     if not items and not notes:
         return [], "AI 未从内容中识别出完整题目"
+    if extra_items:
+        by_no = {it.get("no"): it for it in items}
+        added = 0
+        for f in extra_items:
+            ex = by_no.get(f.get("no"))
+            if ex is None:
+                items.append(f)
+                added += 1
+            elif all(len(o["text"]) <= 2 for o in ex["options"]):
+                items[items.index(ex)] = f  # AI 抽到的是无图占位版 → 换带图版
+                added += 1
+        if added:
+            items.sort(key=lambda x: (x.get("no") or 9999))
+            notes.append(f"图形题补抽 {added} 道（图形已存入题库图片目录）")
     if answers:
         notes.append(f"已检测到官方答案表（{len(answers)} 题），答案以原卷为准")
     comp = _completeness_note(text, items)
