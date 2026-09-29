@@ -203,7 +203,7 @@ async def fetch_url_text(url: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-_EXTRACT_PROMPT = """你是行测题库录入员。从用户给的网页/文本内容中抽取所有选择题（真题），输出 JSON 数组，不要任何额外文字或 markdown 代码块。
+_EXTRACT_PROMPT = """你是事业单位C类题库录入员。从用户给的网页/文本内容中抽取所有选择题（真题），输出 JSON 数组，不要任何额外文字或 markdown 代码块。
 
 每题格式：
 {"stem":"完整题干（含材料中的设问句）","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","analysis":"解析（原文有则保留，没有则留空）","module":"模块","kaodian":"考点","year":"年份","exam":"试卷名"}
