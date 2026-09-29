@@ -2537,15 +2537,18 @@ function renderImport() {
 
   const showPreview = (res) => {
     const el = $("#impPreview");
-    if (res.error) { el.innerHTML = `<div class="panel"><div class="empty" style="padding:20px;color:var(--cinnabar)">${esc(res.error)}</div></div>`; return; }
     state.items = res.items || [];
-    if (!state.items.length) { el.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">未识别到题目</div></div>`; return; }
+    if (!state.items.length) {
+      const msg = res.error || "未识别到题目";
+      el.innerHTML = `<div class="panel"><div class="empty" style="padding:20px;color:var(--cinnabar)">${esc(msg)}</div></div>`; return;
+    }
     el.innerHTML = `
       <div class="panel">
         <h3>识别到 ${state.items.length} 题${res.errors?.length ? `（${res.errors.length} 条被跳过）` : ""}</h3>
+        ${res.error ? `<div class="hint" style="color:var(--amber);border:1px solid var(--amber);border-radius:6px;padding:8px 10px;margin-bottom:8px">${esc(res.error)}</div>` : ""}
         ${state.items.slice(0, 10).map((it, i) => `
           <div class="imp-item">
-            <b>${i + 1}.</b> ${esc(it.stem.slice(0, 80))}${it.stem.length > 80 ? "…" : ""}
+            <b>${it.no || i + 1}.</b> ${esc(it.stem.slice(0, 80))}${it.stem.length > 80 ? "…" : ""}
             <span class="imp-meta">${esc(it.module || "未分类")} · 答案 ${esc(it.answer)}</span>
           </div>`).join("")}
         ${state.items.length > 10 ? `<div class="hint">… 其余 ${state.items.length - 10} 题省略预览</div>` : ""}

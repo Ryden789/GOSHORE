@@ -1899,21 +1899,19 @@ async function renderImport() {
 
   const showPreview = res => {
     const el = $("#impPreview");
-    if (res.error) {
-      el.innerHTML = `<div class="card"><div class="empty" style="color:var(--cinnabar)">${esc(res.error)}</div></div>`;
-      return;
-    }
     st.items = res.items || [];
     if (!st.items.length) {
-      el.innerHTML = `<div class="card"><div class="empty">未识别到题目</div></div>`;
+      const msg = res.error || "未识别到题目";
+      el.innerHTML = `<div class="card"><div class="empty" style="color:var(--cinnabar)">${esc(msg)}</div></div>`;
       return;
     }
     el.innerHTML = `
       <div class="card">
         <h3>识别到 ${st.items.length} 题${res.errors && res.errors.length ? `（${res.errors.length} 条被跳过）` : ""}</h3>
+        ${res.error ? `<div class="muted" style="color:var(--amber);border:1px solid var(--amber);border-radius:6px;padding:8px 10px;margin-bottom:8px">${esc(res.error)}</div>` : ""}
         ${st.items.slice(0, 10).map((it, i) => `
           <div class="imp-item">
-            <b>${i + 1}.</b> <span>${esc(it.stem.slice(0, 70))}${it.stem.length > 70 ? "…" : ""}</span>
+            <b>${it.no || i + 1}.</b> <span>${esc(it.stem.slice(0, 70))}${it.stem.length > 70 ? "…" : ""}</span>
             <span class="imp-meta">${esc(it.module || "未分类")} · 答案 ${esc(it.answer)}</span>
           </div>`).join("")}
         ${st.items.length > 10 ? `<div class="muted">… 其余 ${st.items.length - 10} 题省略预览</div>` : ""}

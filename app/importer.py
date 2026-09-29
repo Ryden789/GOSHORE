@@ -83,7 +83,12 @@ def normalize_item(raw: dict, idx: int = 0) -> tuple[dict | None, str]:
         return None, f"第{idx}题：答案 {answer or '（空）'} 不在选项中"
 
     module = str(raw.get("module") or raw.get("模块") or "").strip()
+    try:
+        no = int(raw.get("no") or raw.get("题号") or 0)
+    except (TypeError, ValueError):
+        no = 0
     return {
+        "no": no,
         "stem": stem,
         "options": options,
         "answer": answer,
@@ -303,8 +308,9 @@ async def fetch_url_text(url: str) -> str:
 _EXTRACT_PROMPT = """你是事业单位C类题库录入员。从用户给的网页/文本内容中抽取所有选择题（真题），输出 JSON 数组，不要任何额外文字或 markdown 代码块，JSON 紧凑输出（不缩进、不换行）。
 
 每题格式：
-{"stem":"完整题干（含材料中的设问句）","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","analysis":"一两句简析（60字内）","module":"模块","kaodian":"考点","year":"年份","exam":"试卷名"}
+{"no":1,"stem":"完整题干（含材料中的设问句）","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","analysis":"一两句简析（60字内）","module":"模块","kaodian":"考点","year":"年份","exam":"试卷名"}
 
+no 为原卷题号（数字，如 1、2…100；原文没给题号填 0），用于完整性核对，必须如实填写、不得编造跳过。
 module 只能是：常识判断 / 言语理解 / 数量关系 / 判断推理 / 资料分析 / 综合分析（按题目内容判断）。
 answer 与 analysis 规则：
 - 用户消息附【官方答案表】时，answer 严格按表中题号对应填写，analysis 由你依据该正确答案写简析
@@ -366,6 +372,37 @@ def _extract_answer_table(text: str) -> dict[int, str]:
     return table if len(table) >= 5 else {}
 
 
+def _compress_ranges(nums: list[int]) -> str:
+    """把连续题号压缩为区间显示，如 [21,22,23,67] → '21-23、67'。"""
+    if not nums:
+        return ""
+    parts, start, prev = [], nums[0], nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        parts.append(f"{start}-{prev}" if start != prev else str(start))
+        start = prev = n
+    parts.append(f"{start}-{prev}" if start != prev else str(start))
+    return "、".join(parts)
+
+
+_QNO_RE = re.compile(r"(?m)^\s*(\d{1,3})\s*[.、．]\S")
+
+
+def _completeness_note(text: str, items: list[dict]) -> str:
+    """对比原文题号序列与抽取结果，生成完整性提示（网友回忆版常缺半份题）。"""
+    src_nos = sorted({int(m.group(1)) for m in _QNO_RE.finditer(text) if int(m.group(1)) <= 200})
+    got_nos = {it.get("no", 0) for it in items} - {0}
+    if not src_nos or len(got_nos) < len(items) * 0.8:
+        return ""  # 题号缺失太多说明 AI 没按格式填 no，核对无意义
+    missing = sorted(set(src_nos) - got_nos)
+    note = f"完整性核对：原卷检测到 {len(src_nos)} 题，成功抽取 {len(got_nos)} 题"
+    if missing:
+        note += f"，缺失题号：{_compress_ranges(missing)}（源文件不完整或抽取遗漏，建议换完整版重新导入）"
+    return note
+
+
 async def ai_extract_questions(text: str) -> tuple[list[dict], str]:
     """用 DeepSeek 从网页文本中抽取真题。返回 (items, 错误信息)。"""
     s = load_settings()
@@ -416,6 +453,9 @@ async def ai_extract_questions(text: str) -> tuple[list[dict], str]:
         return [], "AI 未从内容中识别出完整题目"
     if answers:
         notes.append(f"已检测到官方答案表（{len(answers)} 题），答案以原卷为准")
+    comp = _completeness_note(text, items)
+    if comp:
+        notes.append(comp)
     # 选项数异常提示（C类正常为4选项，AI 可能漏抽尾部选项）
     odd = [i + 1 for i, it in enumerate(items) if len(it["options"]) < 4]
     if odd:
