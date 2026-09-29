@@ -306,7 +306,10 @@ _EXTRACT_PROMPT = """你是事业单位C类题库录入员。从用户给的网�
 {"stem":"完整题干（含材料中的设问句）","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","analysis":"一两句简析（60字内）","module":"模块","kaodian":"考点","year":"年份","exam":"试卷名"}
 
 module 只能是：常识判断 / 言语理解 / 数量关系 / 判断推理 / 资料分析 / 综合分析（按题目内容判断）。
-原文未附答案时，由你自己作答给出最可能的字母并写简析；原文有解析可概括保留。
+answer 与 analysis 规则：
+- 用户消息附【官方答案表】时，answer 严格按表中题号对应填写，analysis 由你依据该正确答案写简析
+- 原文题目附近自带答案（如"【答案】B"）时以原文答案为准
+- 都没有时才由你自己作答给出最可能的字母并写简析
 只抽取完整的选择题（题干+至少2个选项+答案），不完整的跳过。没有可抽取的题就输出 []。"""
 
 
@@ -329,12 +332,54 @@ def _chunk_text(text: str, size: int = 8000, overlap: int = 2500) -> list[str]:
     return chunks
 
 
+_ANSWER_PAIR_RE = re.compile(r"(\d{1,3})[ \t]*[.、．:：\]】][ \t]*(?:【答案】[ \t]*)?([A-DＡ-Ｄ])(?![a-zA-Z])")
+
+
+def _find_answer_region(text: str) -> str:
+    """定位答案区：优先找“参考答案/答案速查”等标题，否则找全局最密集的“题号+字母”窗口。"""
+    m = list(re.finditer(r"参考答案|答案速查|答案与解析|答案解析|试题答案|答案一览", text))
+    if m:
+        start = m[-1].start()
+        return text[start:start + 8000]
+    best, best_cnt = "", 0
+    step, win = 2000, 3000
+    for i in range(0, max(len(text) - win, 1), step):
+        seg = text[i:i + win]
+        cnt = len(_ANSWER_PAIR_RE.findall(seg))
+        if cnt > best_cnt:
+            best, best_cnt = seg, cnt
+    return best if best_cnt >= 8 else ""
+
+
+def _extract_answer_table(text: str) -> dict[int, str]:
+    """从全文中识别官方答案表，返回 {题号: 答案字母}。识别不到返回空 dict。"""
+    region = _find_answer_region(text)
+    if not region:
+        return {}
+    table: dict[int, str] = {}
+    for mm in _ANSWER_PAIR_RE.finditer(region):
+        qno, letter = int(mm.group(1)), mm.group(2)
+        if "Ａ" <= letter <= "Ｄ":  # 全角字母转半角
+            letter = chr(ord(letter) - 0xFEE0)
+        if 1 <= qno <= 200 and qno not in table:  # 同题号首次出现为准（答案行总在解析前）
+            table[qno] = letter
+    return table if len(table) >= 5 else {}
+
+
 async def ai_extract_questions(text: str) -> tuple[list[dict], str]:
     """用 DeepSeek 从网页文本中抽取真题。返回 (items, 错误信息)。"""
     s = load_settings()
     if not s["deepseek_api_key"]:
         return [], "未配置 DeepSeek API Key，请先在设置页配置"
     chunks = _chunk_text(text)
+    # 答案表常在文末，分段后前面段落看不到 → 识别出来附加到每段，强制按官方答案抽取
+    answers = _extract_answer_table(text)
+    answer_hint = ""
+    if answers:
+        pairs = " ".join(f"{k}.{v}" for k, v in sorted(answers.items()))
+        answer_hint = (
+            "\n\n【官方答案表】（answer 必须严格按此表题号对应填写；表中缺失的题号才允许自行作答）\n" + pairs
+        )
     url = s["deepseek_base_url"].rstrip("/") + "/chat/completions"
     headers = {"Authorization": f"Bearer {s['deepseek_api_key']}"}
     items: list[dict] = []
@@ -346,7 +391,7 @@ async def ai_extract_questions(text: str) -> tuple[list[dict], str]:
                 "model": s["deepseek_model"],
                 "messages": [
                     {"role": "system", "content": _EXTRACT_PROMPT},
-                    {"role": "user", "content": chunk},
+                    {"role": "user", "content": chunk + answer_hint},
                 ],
                 "temperature": 0,
                 "max_tokens": 8000,
@@ -369,6 +414,8 @@ async def ai_extract_questions(text: str) -> tuple[list[dict], str]:
             notes.extend(f"第{i}段：{e}" for e in errors[:2])
     if not items and not notes:
         return [], "AI 未从内容中识别出完整题目"
+    if answers:
+        notes.append(f"已检测到官方答案表（{len(answers)} 题），答案以原卷为准")
     # 选项数异常提示（C类正常为4选项，AI 可能漏抽尾部选项）
     odd = [i + 1 for i, it in enumerate(items) if len(it["options"]) < 4]
     if odd:
