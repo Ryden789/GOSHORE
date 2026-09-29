@@ -2412,8 +2412,8 @@ function renderImport() {
       </div>
 
       <div id="tabJson">
-        <p class="hint" style="margin-bottom:8px">粘贴 JSON 数组，每题字段：stem（题干）、options（选项数组）、answer（答案字母）、analysis（解析，可空）、module / kaodian / year / exam（可空）</p>
-        <textarea id="jsonText" class="imp-area" rows="10" placeholder='[{"stem":"……","options":["A. …","B. …","C. …","D. …"],"answer":"B","analysis":"……","module":"言语理解"}]'></textarea>
+        <p class="hint" style="margin-bottom:8px">粘贴 JSON 数组，或直接把 .json / .txt 文件拖进文本框。每题字段：stem（题干）、options（选项数组）、answer（答案字母）、analysis（解析，可空）、module / kaodian / year / exam（可空）</p>
+        <textarea id="jsonText" class="imp-area" rows="10" placeholder='[{"stem":"……","options":["A. …","B. …","C. …","D. …"],"answer":"B","analysis":"……","module":"言语理解"}]&#10;&#10;📂 也可将题库文件拖拽到此'></textarea>
         <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
           <input type="file" id="jsonFile" accept=".json,.txt"/>
           <button class="btn btn-primary" id="jsonPreview">解析预览</button>
@@ -2455,6 +2455,22 @@ function renderImport() {
     const f = e.target.files[0];
     if (f) $("#jsonText").value = await f.text();
   };
+
+  // 拖拽导入：拖入文件到文本框区域
+  const jsonArea = $("#jsonText");
+  const loadDropFile = async (f) => {
+    if (!f) return;
+    if (!/\.(json|txt)$/i.test(f.name)) { toast("仅支持 .json / .txt 文件"); return; }
+    jsonArea.value = await f.text();
+    toast(`已载入「${f.name}」，点「解析预览」继续`);
+  };
+  jsonArea.addEventListener("dragover", e => { e.preventDefault(); jsonArea.classList.add("drag-over"); });
+  jsonArea.addEventListener("dragleave", () => jsonArea.classList.remove("drag-over"));
+  jsonArea.addEventListener("drop", e => {
+    e.preventDefault();
+    jsonArea.classList.remove("drag-over");
+    loadDropFile(e.dataTransfer.files[0]);
+  });
 
   const showPreview = (res) => {
     const el = $("#impPreview");
