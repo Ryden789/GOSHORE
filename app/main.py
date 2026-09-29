@@ -1155,6 +1155,59 @@ def api_exam_paper(b: ExamPaperIn):
     return {"ids": ids, "minutes": minutes, "name": b.exam}
 
 
+# ---------------- C类职测智能组卷 ----------------
+
+# 事业单位联考C类《职测》规格：100题/90分钟/满分150
+# 模块顺序与分值：常识20×1、言语25×1.6、数量分析15×2（数量5+资料10）、判断30×1.5、综合分析10×1.5
+_CE_SPEC = [
+    ("常识判断", 20, 1.0, None),
+    ("言语理解", 25, 1.6, None),
+    ("数量关系", 5, 2.0, None),
+    ("资料分析", 10, 2.0, None),
+    ("判断推理", 30, 1.5, None),
+    ("综合分析", 10, 1.5, ["策略制定", "实验设计"]),
+]
+
+
+@app.post("/api/ce-paper")
+def api_ce_paper():
+    """按C类职测规格智能组卷。综合分析只抽策略制定/实验设计考点。"""
+    import random
+    conn = db.connect()
+    try:
+        cur = conn.cursor()
+        ids: list[int] = []
+        weights: dict[int, float] = {}
+        short: list[str] = []
+        for module, n, score, kd_filter in _CE_SPEC:
+            if kd_filter:
+                placeholders = ",".join("?" * len(kd_filter))
+                rows = cur.execute(
+                    f"SELECT id FROM documents WHERE module=? AND kaodian IN ({placeholders})",
+                    (module, *kd_filter)).fetchall()
+            else:
+                rows = cur.execute(
+                    "SELECT id FROM documents WHERE module=?", (module,)).fetchall()
+            pool = [r[0] for r in rows]
+            random.shuffle(pool)
+            take = pool[:n]
+            if len(take) < n:
+                short.append(f"{module}（{len(take)}/{n}）")
+            ids.extend(take)
+            for i in take:
+                weights[i] = score
+        return {
+            "ids": ids,
+            "weights": weights,
+            "minutes": 90,
+            "full_score": 150,
+            "name": "事业单位C类·职测智能组卷",
+            "short": short,
+        }
+    finally:
+        conn.close()
+
+
 # ---------------- 辨析卡进度 ----------------
 
 @app.get("/api/cards/progress")

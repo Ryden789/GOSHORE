@@ -1516,6 +1516,20 @@ async function renderPaper() {
         </div>
       </div>
     </div>
+    <div class="panel rise rise-2">
+      <div class="speed-config">
+        <div class="cfg-group">
+          <div class="cfg-label">事业单位C类 · 职测整卷（100题 / 90分钟 / 满分150，按C类规格智能抽题）</div>
+          <div class="cfg-inline">
+            <button class="btn btn-primary" id="ceStart">开始C类职测整卷</button>
+          </div>
+          <div style="font-size:13px;color:var(--ink-3);margin-top:6px">
+            常识20×1分 · 言语25×1.6分 · 数量分析15×2分 · 判断30×1.5分 · 综合分析10×1.5分（策略制定+实验设计）
+          </div>
+          <div id="ceMsg" style="font-size:13px;color:var(--ink-3);margin-top:4px"></div>
+        </div>
+      </div>
+    </div>
     <div id="paperBody"></div>`;
 
   // 真题套卷下拉
@@ -1543,6 +1557,28 @@ async function renderPaper() {
     } finally {
       const b = $("#examStart");
       if (b) { b.disabled = false; b.textContent = "开始整卷"; }
+    }
+  };
+
+  // C类职测整卷（智能组卷）
+  $("#ceStart").onclick = async () => {
+    const btn = $("#ceStart");
+    btn.disabled = true; btn.textContent = "组卷中…";
+    try {
+      const r = await api("/api/ce-paper", {});
+      if (!r.ids.length) { $("#ceMsg").textContent = "题库题量不足，无法组卷"; return; }
+      if (r.short && r.short.length) {
+        $("#ceMsg").innerHTML = `<span style="color:var(--amber)">⚠ 题库不足，已按实际量出题：${esc(r.short.join("、"))}</span>`;
+      }
+      runPaper(r.ids, {
+        title: r.name,
+        minutes: r.minutes,
+        weights: r.weights || {},
+        fullScore: r.full_score || 150,
+      });
+    } finally {
+      const b = $("#ceStart");
+      if (b) { b.disabled = false; b.textContent = "开始C类职测整卷"; }
     }
   };
 
@@ -1915,20 +1951,37 @@ async function runPaper(ids, opt = {}) {
     const unDone = answers.length - done.length;
     const totalMs = Date.now() - t0;
     const wrongIdx = answers.map((a, i) => a && !a.correct ? i : -1).filter(i => i >= 0);
+    // C类职测：按模块分值加权计分（未答按错计）
+    const weights = opt.weights || null;
+    const fullScore = opt.fullScore || 0;
+    let gotScore = 0;
+    if (weights) {
+      docs.forEach((doc, i) => {
+        if (answers[i] && answers[i].correct) gotScore += weights[doc.id] || 0;
+      });
+      gotScore = Math.round(gotScore * 10) / 10;
+    }
     // F5.5 模块顺序报告（含用时，供节奏分析）
     const modMap = {};
     docs.forEach((doc, i) => {
       const m = doc.module || "未分类";
-      if (!modMap[m]) modMap[m] = { m, total: 0, ok: 0, ms: 0 };
+      if (!modMap[m]) modMap[m] = { m, total: 0, ok: 0, ms: 0, score: 0, got: 0 };
       modMap[m].total++;
-      if (answers[i]?.correct) modMap[m].ok++;
+      if (weights) modMap[m].score += weights[doc.id] || 0;
+      if (answers[i]?.correct) {
+        modMap[m].ok++;
+        if (weights) modMap[m].got += weights[doc.id] || 0;
+      }
       if (answers[i]) modMap[m].ms += answers[i].ms || 0;
     });
     const modRows = Object.values(modMap).sort((a,b)=>b.total-a.total).map(x=>
-      `<div class="bar-row"><span class="name">${esc(x.m)}</span><span class="track"><span class="fill" style="display:block;width:${x.total?x.ok/x.total*100:0}%"></span></span><span class="pct">${x.ok}/${x.total}</span></div>`).join("");
-    // 节奏报告：各模块实际用时 vs 建议用时（做题顺序铁律：常识8→言语20→判断25→资料15→综合14→数量8，共110分钟基准）
-    const OPT_MIN = { "常识判断": 8, "言语理解": 20, "判断推理": 25, "资料分析": 15, "综合分析": 14, "数量关系": 8 };
-    const pScale = opt.minutes ? opt.minutes / 110 : 1;
+      `<div class="bar-row"><span class="name">${esc(x.m)}</span><span class="track"><span class="fill" style="display:block;width:${x.total?x.ok/x.total*100:0}%"></span></span><span class="pct">${x.ok}/${x.total}${weights ? ` · ${Math.round(x.got*10)/10}/${Math.round(x.score*10)/10}分` : ""}</span></div>`).join("");
+    // 节奏报告：C类90分钟基准（常识5→言语15→数量分析13→判断27→综合15→留15分钟检查/涂卡）
+    const OPT_MIN = weights
+      ? { "常识判断": 5, "言语理解": 15, "数量关系": 4, "资料分析": 9, "判断推理": 27, "综合分析": 15 }
+      : { "常识判断": 8, "言语理解": 20, "判断推理": 25, "资料分析": 15, "综合分析": 14, "数量关系": 8 };
+    const pBase = weights ? 75 : 110;
+    const pScale = opt.minutes ? opt.minutes / pBase : 1;
     const paceRows = Object.values(modMap).filter(x => x.ms > 0).sort((a, b) => (b.ms - a.ms)).map(x => {
       const used = x.ms / 60000, rec = (OPT_MIN[x.m] || 10) * pScale * (x.total / 20);
       const over = used > rec * 1.2;
@@ -1952,6 +2005,7 @@ async function runPaper(ids, opt = {}) {
       <div class="panel" style="text-align:center">
         <h3>本卷判分${auto?" · 到时自动交卷":""}</h3>
         <div class="summary-grid">
+          ${weights ? `<div class="stat-card" style="--accent:var(--cinnabar)"><div class="v">${gotScore}<small>/${fullScore}分</small></div><div class="k">C类职测得分</div></div>` : ""}
           <div class="stat-card"><div class="v">${ok}/${done.length}</div><div class="k">已答 · 答对</div></div>
           <div class="stat-card" style="--accent:var(--indigo)"><div class="v">${done.length ? Math.round(ok / done.length * 100) : 0}%</div><div class="k">已答正确率</div></div>
           <div class="stat-card" style="--accent:var(--bamboo)"><div class="v">${Math.round(ok / answers.length * 100)}%</div><div class="k">全卷得分率（未答按错计）</div></div>
