@@ -281,12 +281,18 @@ const ALIAS = {
 const TODO_ROUTES = [];
 
 let ME = null;
+let mFacetsCache = null;
 
 /* 页面/题目切入动画：重排后重播，毫秒级、无白屏 */
 function animIn(el) {
   el.classList.remove("page-in");
   void el.offsetWidth;
   el.classList.add("page-in");
+}
+
+function routeLoadingMarkup(name) {
+  const label = TITLES[name] || "上岸自习室";
+  return `<div class="route-skeleton" aria-live="polite" aria-label="正在加载${esc(label)}"><div class="route-skeleton-head"><span class="route-skeleton-title">${esc(label)}</span><span class="route-spinner" aria-hidden="true"></span></div><div class="route-skeleton-line wide"></div><div class="route-skeleton-line"></div><div class="route-skeleton-block"></div></div>`;
 }
 
 function route() {
@@ -311,6 +317,7 @@ function route() {
   // 入场动画必须在渲染完成后播放：否则等待接口期间旧页面会先淡入，
   // 新内容替换时再闪一次（用户感知为“闪两次再跳转”）
   const go = ROUTES[tabName] || renderHome;
+  view.innerHTML = routeLoadingMarkup(name);
   view.classList.add("route-loading");
   Promise.resolve(go())
     .then(() => { view.classList.remove("route-loading"); animIn(view); })
@@ -1136,23 +1143,31 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
     const used = Math.round((Date.now() - t0) / 1000);
     const wrongIdx = answers.map((a, i) => a && !a.correct && !a.skip ? i : -1).filter(i => i >= 0);
     view.innerHTML = `
-      <div class="card" style="text-align:center">
+      <div class="card result-card run-result">
         <div class="muted">${esc(opt.title || "本次练习")}</div>
         <div class="sum-num" style="color:${judgedN && ok / judgedN >= .6 ? "var(--green)" : "var(--cinnabar)"}">
           ${ok} / ${judgedN}</div>
         <div class="muted">正确率 ${judgedN ? Math.round(ok / judgedN * 100) : 0}% · 用时 ${Math.floor(used / 60)}分${used % 60}秒</div>
+        <div class="run-result-stats">
+          <span><b>${docs.length}</b> 总题数</span>
+          <span><b>${ok}</b> 答对</span>
+          <span><b>${wrongIdx.length}</b> 答错</span>
+          <span><b>${skippedN}</b> 跳过</span>
+        </div>
         ${skippedN ? `<div class="muted" style="margin-top:6px">⏭ 已跳过 ${skippedN} 题（不计入正确率）</div>` : ""}
       </div>
       ${wrongIdx.length ? `<h2 class="sec">错题回顾（${wrongIdx.length}）</h2>` +
         wrongIdx.map(i => `
-          <div class="item">
+          <div class="item run-wrong-item">
             <b>${esc(docs[i].title || "")}</b>
             <div class="meta">${esc(docs[i].kaodian || "")} · 你选 ${answers[i].sel}，正确 ${(docs[i].data.options.find(o => o.correct) || {}).label}</div>
+            <button class="btn btn-sm run-review" data-i="${i}">查看解析</button>
           </div>`).join("") : ""}
-      <div style="display:flex;gap:10px;margin-top:14px">
+      <div class="run-result-actions">
         <button class="btn btn-block" onclick="location.hash='#/practice'">返回刷题</button>
         ${wrongIdx.length ? `<button class="btn btn-primary btn-block" id="redoBtn">只练错题（${wrongIdx.length}）</button>` : ""}
       </div>`;
+    $$(".run-review").forEach(b => b.onclick = () => runPaper([docs[+b.dataset.i].id], { title: "错题解析" }));
     const rb = $("#redoBtn");
     if (rb) rb.onclick = () => runPaper(wrongIdx.map(i => docs[i].id), { title: "错题重练" });
   }
@@ -1274,23 +1289,28 @@ async function renderReview() {
 /* 今日复习：到期列表 + 重做 */
 async function drawDue(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
-  const r = await api("/api/reviews");
+  const [r, dash] = await Promise.all([api("/api/reviews"), api("/api/review/dashboard")]);
   if (tok !== reviewToken) return;
   const items = r.items || [];
-  if (!items.length) {
-    box.innerHTML = `<div class="empty">今日没有到期复习<br>做完新题后会按遗忘曲线安排复习</div>`;
-    return;
-  }
   box.innerHTML = `
-    <button class="btn btn-primary btn-block" id="rvAll">全部重练（${items.length}）</button>
+    <div class="card review-dashboard">
+      <h3>错题复习驾驶舱</h3>
+      <p class="muted" style="margin-top:-4px">先处理重复错误，再补齐未标注错因的题。</p>
+      <div class="review-dashboard-stats">
+        <div><b>${dash.due}</b><span>待复习</span></div><div><b>${dash.repeat}</b><span>重复错误</span></div><div><b>${dash.untagged}</b><span>未标错因</span></div><div><b>${dash.wrong_total}</b><span>当前错题</span></div>
+      </div>
+      <button class="btn btn-block" id="dashWrong">打开错题本</button>
+    </div>
+    ${items.length ? `<button class="btn btn-primary btn-block" id="rvAll">全部重练（${items.length}）</button>` : `<div class="empty">今日没有到期复习<br>做完新题错题会自动进入复习计划</div>`}
     ${items.map(it => `
       <div class="item">
         <b>${esc(it.title)}</b>
         <div class="meta">${esc(it.kaodian || it.module || "")} · 复习第 ${it.stage} 轮</div>
         <div class="row"><button class="btn rv-one" data-id="${it.id}">重做此题</button></div>
       </div>`).join("")}`;
-  $("#rvAll").onclick = () =>
+  if ($("#rvAll")) $("#rvAll").onclick = () =>
     runPaper(items.map(it => it.id), { title: `今日复习（${items.length}）` });
+  $("#dashWrong").onclick = () => { location.hash = "#/wrong"; };
   $$(".rv-one").forEach(b => b.onclick = () =>
     runPaper([+b.dataset.id], { title: "复习重做" }));
 }
@@ -1571,6 +1591,26 @@ function mRunFlip(box, tok, items) {
   show();
 }
 
+/* 看词写意：自动评判——取释义部分（【例】之前），与用户默写做 bigram 重叠匹配 */
+function judgeRecall(userText, refAnalysis) {
+  const def = (refAnalysis || "").split("【例】")[0].trim();
+  if (!def) return { correct: false, ratio: 0 };
+  const norm = s => (s || "").replace(/[\s，。、；：！？""''（）《》【】\[\].,;:!?'"()<>]/g, "");
+  const ref = norm(def), usr = norm(userText);
+  if (!usr) return { correct: false, ratio: 0 };
+  const bg = s => {
+    const set = new Set();
+    for (let i = 0; i < s.length - 1; i++) set.add(s[i] + s[i + 1]);
+    return set;
+  };
+  const rBg = bg(ref), uBg = bg(usr);
+  if (rBg.size === 0) return { correct: usr.includes(ref), ratio: usr.includes(ref) ? 1 : 0 };
+  let shared = 0;
+  rBg.forEach(b => { if (uBg.has(b)) shared++; });
+  const ratio = shared / rBg.size;
+  return { correct: ratio >= 0.25, ratio };
+}
+
 /* 看词写意运行器 */
 function mRunRecall(box, tok, cards) {
   if (!cards.length) { box.innerHTML = `<div class="empty">该范围没有词语卡片</div>`; return; }
@@ -1605,8 +1645,11 @@ function mRunRecall(box, tok, cards) {
         <div class="cd-rate">
           <button class="btn cd-rate-btn" id="rcShow">显示辨析</button>
         </div>
-        <div class="rc-answer" id="rcAns" hidden>${esc(c.analysis || c.answer || "")}
+        <div class="rc-answer" id="rcAns" hidden>
+          <div id="rcJudge" class="rc-judge"></div>
+          ${esc(c.analysis || c.answer || "")}
           <div class="cd-rate">
+            <span style="color:var(--ink-3);font-size:12px">自评（可覆盖）：</span>
             <button class="btn cd-rate-btn" data-l="0">不会</button>
             <button class="btn cd-rate-btn" data-l="1">模糊</button>
             <button class="btn btn-primary cd-rate-btn" data-l="2">认识</button>
@@ -1615,6 +1658,14 @@ function mRunRecall(box, tok, cards) {
       </div>`;
     $("#rcShow").onclick = () => {
       $("#rcAns").hidden = false;
+      const judge = judgeRecall($("#rcArea").value, c.analysis || c.answer || "");
+      const pct = Math.round(judge.ratio * 100);
+      $("#rcJudge").innerHTML = judge.correct
+        ? `<span style="color:var(--green);font-weight:700">✔ 回答正确</span> <span style="color:var(--ink-3);font-size:12px">（匹配度 ${pct}%）</span>`
+        : `<span style="color:var(--cinnabar);font-weight:700">✘ 回答错误</span> <span style="color:var(--ink-3);font-size:12px">（匹配度 ${pct}%）</span>`;
+      $$("[data-l]", box).forEach(b => b.classList.remove("rc-lv-suggest"));
+      const sb = box.querySelector(`[data-l="${judge.correct ? 2 : 0}"]`);
+      if (sb) sb.classList.add("rc-lv-suggest");
       $("#rcArea").focus();
     };
     $$("[data-l]", box).forEach(b => b.onclick = async () => {
@@ -1630,7 +1681,7 @@ function mRunRecall(box, tok, cards) {
 /* 看义选词运行器 */
 function mRunQuiz(box, tok, cards, pool) {
   if (!cards.length) { box.innerHTML = `<div class="empty">该范围没有词语卡片</div>`; return; }
-  let idx = 0, okN = 0, noN = 0, timer = null;
+  let idx = 0, okN = 0, noN = 0;
   const poolWords = pool.filter(x => x.stem && x.stem.length >= 2);
   showQ();
 
@@ -1640,7 +1691,6 @@ function mRunQuiz(box, tok, cards, pool) {
     }
 
   function showQ() {
-    if (timer) { clearTimeout(timer); timer = null; }
     if (idx >= cards.length) {
       const rate = Math.round(okN / (okN + noN) * 100);
       box.innerHTML = `
@@ -1695,7 +1745,6 @@ function mRunQuiz(box, tok, cards, pool) {
         $("#qzExpWrap").hidden = false;
         $("#qzNext").textContent = idx === cards.length - 1 ? "完成" : "下一题";
         $("#qzNext").onclick = () => { idx++; showQ(); };
-        if (correct) timer = setTimeout(() => { idx++; showQ(); }, 1100);
       };
     });
   }
@@ -1990,7 +2039,8 @@ async function drawCardProgress(box, tok) {
 /* ---------- 搜题 ---------- */
 
 async function renderSearch() {
-  const f = await api("/api/facets");
+  if (!mFacetsCache) mFacetsCache = await api("/api/facets");
+  const f = mFacetsCache;
   const st = { q: "", module: "", daclass: "", region: "", year: "", page: 1 };
   const opts = arr => `<option value="">全部</option>` +
     arr.map(x => `<option>${esc(x)}</option>`).join("");
@@ -2008,7 +2058,7 @@ async function renderSearch() {
         <select id="srYear" class="m-select">${opts(f.years)}</select>
       </div>
     </div>
-    <div class="muted" id="srCount"></div>
+    <div class="sr-count muted" id="srCount" aria-live="polite"></div>
     <div id="srList"></div>
     <div id="srPager"></div>`;
 
@@ -2016,6 +2066,7 @@ async function renderSearch() {
   const doSearch = async (page = 1) => {
     st.page = page;
     const seq = ++reqSeq;
+    $("#srCount").textContent = "正在检索…";
     const res = await api("/api/search", { ...st, page, page_size: 20 });
     if (seq !== reqSeq) return;  // 已被更新的搜索取代（防竞态覆盖）
     $("#srCount").textContent = `找到 ${res.total} 条结果`;
@@ -2028,6 +2079,7 @@ async function renderSearch() {
             <div class="sr-title">${esc(it.title)}</div>
             <div class="sr-sub">${esc([it.kaodian, it.region + " " + it.year, it.qid].filter(Boolean).join(" · "))}</div>
           </div>
+          <span class="sr-open-hint">练习</span>
         </div>`).join("")
       : `<div class="empty">没有符合条件的结果</div>`;
     $$("#srList .sr-item").forEach(el => {
@@ -3862,7 +3914,12 @@ async function renderAiAsk() {
       <div id="aiChips" style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0">
         ${chips.map(c => `<button class="btn" data-q="${esc(c)}" style="font-size:12px;padding:4px 10px">${esc(c)}</button>`).join("")}
       </div>
+      <div id="aiPreviews" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0"></div>
       <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-end">
+        <label id="aiImgBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--line,#ddd);border-radius:8px;flex-shrink:0" title="上传图片">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+          <input type="file" accept="image/*" multiple style="display:none" id="aiFile">
+        </label>
         <textarea id="aiInput" rows="2" placeholder="随便问：考点 · 技巧 · 规划…"
           style="flex:1;resize:none;border:1px solid var(--line,#ddd);border-radius:10px;padding:8px;font-size:15px;font-family:inherit;background:transparent;color:inherit"></textarea>
         <button class="btn" id="aiGo" style="padding:8px 14px">发送</button>
@@ -3876,8 +3933,51 @@ async function renderAiAsk() {
   const input = $("#aiInput");
   const goBtn = $("#aiGo");
   const newBtn = $("#aiNew");
+  const fileInput = $("#aiFile");
+  const previewBox = $("#aiPreviews");
+  let attachedImages = [];
 
-  const bubble = (role, text) => {
+  const compressImage = (file) => new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 1024;
+        let w = img.width, h = img.height;
+        if (w > maxW) { h = h * maxW / w; w = maxW; }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const renderPreviews = () => {
+    previewBox.innerHTML = attachedImages.map((src, i) =>
+      `<div style="position:relative;width:56px;height:56px">
+        <img src="${src}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;border:1px solid var(--line,#ddd)">
+        <span data-rm="${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar,#a33);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;line-height:1">×</span>
+      </div>`).join("");
+    previewBox.querySelectorAll("[data-rm]").forEach(el => {
+      el.onclick = () => { attachedImages.splice(+el.dataset.rm, 1); renderPreviews(); };
+    });
+  };
+
+  fileInput.onchange = async () => {
+    const files = Array.from(fileInput.files).slice(0, 3 - attachedImages.length);
+    for (const f of files) {
+      if (!f.type.startsWith("image/")) continue;
+      const compressed = await compressImage(f);
+      attachedImages.push(compressed);
+    }
+    renderPreviews();
+    fileInput.value = "";
+  };
+
+  const bubble = (role, text, images) => {
     const row = document.createElement("div");
     row.style.cssText = "display:flex;margin:10px 0;justify-content:" +
       (role === "user" ? "flex-end" : "flex-start");
@@ -3886,8 +3986,14 @@ async function renderAiAsk() {
       (role === "user"
         ? ";background:var(--cinnabar,#a33);color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap"
         : ";background:rgba(0,0,0,.05);border-bottom-left-radius:4px");
-    if (role === "user") b.textContent = text;
-    else b.innerHTML = md(text || "");
+    if (images && images.length) {
+      const imgHtml = images.map(src => `<img src="${src}" style="max-width:150px;max-height:150px;border-radius:6px;margin-bottom:6px;display:block">`).join("");
+      if (role === "user") b.innerHTML = imgHtml + esc(text);
+      else b.innerHTML = imgHtml + md(text || "");
+    } else {
+      if (role === "user") b.textContent = text;
+      else b.innerHTML = md(text || "");
+    }
     row.appendChild(b);
     list.appendChild(row);
     list.scrollTop = list.scrollHeight;
@@ -3904,13 +4010,24 @@ async function renderAiAsk() {
 
   const send = async () => {
     const ask = input.value.trim();
-    if (!ask || streaming) return;
+    const imgs = attachedImages.slice();
+    if ((!ask && !imgs.length) || streaming) return;
     streaming = true;
     goBtn.disabled = true;
     input.value = "";
-    bubble("user", ask);
+    attachedImages = [];
+    renderPreviews();
+    bubble("user", ask || "(图片)", imgs);
+
     const his = msgs.map(m => ({ role: m.role, content: m.content }));
-    his.push({ role: "user", content: ask });
+    if (imgs.length) {
+      const content = [];
+      if (ask) content.push({ type: "text", text: ask });
+      for (const src of imgs) content.push({ type: "image_url", image_url: { url: src } });
+      his.push({ role: "user", content });
+    } else {
+      his.push({ role: "user", content: ask });
+    }
 
     let full = "";
     const b = bubble("ai", "");
@@ -3948,7 +4065,8 @@ async function renderAiAsk() {
       b.innerHTML = md(full);
     }
     list.scrollTop = list.scrollHeight;
-    msgs = [...msgs, { role: "user", content: ask }];
+    const savedContent = imgs.length ? `[图片] ${ask}` : ask;
+    msgs = [...msgs, { role: "user", content: savedContent }];
     if (full.trim()) msgs = [...msgs, { role: "assistant", content: full }];
     aiAskSave(msgs);
     streaming = false;

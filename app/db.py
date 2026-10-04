@@ -1,4 +1,4 @@
-﻿"""SQLite 存储层 + 增量索引 + 检索。"""
+"""SQLite 存储层 + 增量索引 + 检索。"""
 from __future__ import annotations
 
 import contextvars
@@ -1194,6 +1194,43 @@ def list_wrong_book() -> list[dict]:
     return out
 
 
+def review_dashboard() -> dict:
+    """复习驾驶舱聚合数据，避免前端为同一批错题重复请求。"""
+    conn = connect()
+    now = time.time()
+    due = conn.execute("SELECT COUNT(*) c FROM review_plan WHERE due_at<=?", (now,)).fetchone()["c"]
+    rows = conn.execute(
+        """SELECT d.id, d.title, d.module, d.kaodian, d.data,
+                  a.selected last_selected, a.created_at last_at,
+                  s.tries, s.wrongs, wr.reason
+           FROM documents d
+           JOIN answers a ON a.doc_id=d.id
+           JOIN (SELECT doc_id, COUNT(*) tries, SUM(correct=0) wrongs, MAX(id) max_id
+                 FROM answers GROUP BY doc_id) s ON s.doc_id=d.id AND a.id=s.max_id
+           LEFT JOIN wrong_reasons wr ON wr.doc_id=d.id
+           WHERE a.correct=0 AND d.kind='真题'
+           ORDER BY s.wrongs DESC, a.created_at DESC
+           LIMIT 200"""
+    ).fetchall()
+    by_module, by_reason = {}, {}
+    untagged = repeat = 0
+    items = []
+    for r in rows:
+        reason = r["reason"] or "未标注"
+        by_module[r["module"] or "未分类"] = by_module.get(r["module"] or "未分类", 0) + 1
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+        if reason == "未标注": untagged += 1
+        if (r["wrongs"] or 0) >= 2: repeat += 1
+        items.append({k: r[k] for k in ("id", "title", "module", "kaodian", "last_selected", "last_at", "tries", "wrongs", "reason")})
+    conn.close()
+    return {
+        "due": due, "wrong_total": len(items), "repeat": repeat, "untagged": untagged,
+        "by_module": sorted(({"name": k, "count": v} for k, v in by_module.items()), key=lambda x: -x["count"]),
+        "by_reason": sorted(({"name": k, "count": v} for k, v in by_reason.items()), key=lambda x: -x["count"]),
+        "items": items[:30],
+    }
+
+
 def random_paper(module: str = "", kaodian: str = "", n: int = 10, trap: bool = False) -> list[int]:
     """随机组卷：返回 doc_id 列表（真题）。
     资料分析按整篇材料抽取（同材料小题连续出现）。
@@ -1236,8 +1273,8 @@ def random_paper(module: str = "", kaodian: str = "", n: int = 10, trap: bool = 
         where.append("kaodian LIKE ?"); args.append(kaodian + "%")
     sql_where = " AND ".join(where)
 
-    # 资料分析：按材料指纹分组抽
-    if module in ("", "资料分析") and not kaodian:
+    # 资料分析：按材料指纹分组抽（n<5 时单题随机即可，无需整篇材料）
+    if module in ("", "资料分析") and not kaodian and n >= 5:
         # 抽出若干篇材料（每篇取全部小题）
         fp_rows = conn.execute(
             f"SELECT DISTINCT material_fp FROM documents WHERE {sql_where} "

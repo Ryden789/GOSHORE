@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>전개도 도장</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark">▣</span>
+      <div>
+        <h1>전개도 도장</h1>
+        <p>정육면체를 접고 펼치며 방향까지 익힌다</p>
+      </div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button data-mode="lab" class="on">실험실</button>
+      <button data-mode="nets">전개도 11개</button>
+      <button data-mode="rules">법칙 3개</button>
+      <button data-mode="quiz">퀴즈</button>
+      <button data-mode="drill">스피드</button>
+    </nav>
+    <div class="stats" id="stats">맞힘 0 · 연속 0</div>
+  </header>
+
+  <main>
+    <!-- LAB -->
+    <section id="view-lab" class="view on">
+      <div class="stage">
+        <div id="lab-canvas" class="canvas"></div>
+        <div class="net-preview-wrap">
+          <div class="tiny">지금 전개도 (잘리지 않는 2D)</div>
+          <div id="lab-net" class="net-preview"></div>
+        </div>
+        <div class="hint-bar" id="lab-hint">드래그로 회전 · 휠로 확대 · 슬라이더로 접기. 면 클릭하면 반대 면이 켜진다.</div>
+      </div>
+      <aside class="panel">
+        <h2>접기</h2>
+        <label class="slider">
+          <span>펼침</span>
+          <input id="fold" type="range" min="0" max="100" value="100" />
+          <span>접힘</span>
+        </label>
+        <div class="row">
+          <button id="btn-flat" class="ghost">완전 펼침</button>
+          <button id="btn-cube" class="ghost">완전 접힘</button>
+        </div>
+        <div class="row">
+          <button id="btn-anim">천천히 접기</button>
+          <button id="btn-reset" class="ghost">카메라 리셋</button>
+        </div>
+
+        <h2>기호 붙이기</h2>
+        <p class="tiny">면 클릭 후 기호를 붙인다.</p>
+        <div class="row wrap" id="sym-btns">
+          <button data-sym="arrow">화살표</button>
+          <button data-sym="tri">세모</button>
+          <button data-sym="letter">글자</button>
+          <button data-sym="dice">주사위</button>
+          <button data-sym="dot">점</button>
+          <button data-sym="plus">＋</button>
+          <button data-sym="wifi">와이파이</button>
+          <button data-sym="none" class="ghost">지우기</button>
+        </div>
+        <div class="row">
+          <button id="btn-rot-ccw" class="ghost">↺ 90°</button>
+          <button id="btn-rot-cw" class="ghost">↻ 90°</button>
+          <button id="btn-nudge" class="ghost">가장자리로</button>
+        </div>
+
+        <h2>지금 고른 면</h2>
+        <div id="face-card" class="card empty">면을 클릭해 봐</div>
+        <button id="btn-opp" class="ghost wide">반대 면만 보기</button>
+
+        <h2>전개도 모양</h2>
+        <select id="net-select"></select>
+        <p class="tiny">모양만 다르고 접으면 같은 정육면체다.</p>
+      </aside>
+    </section>
+
+    <!-- ALL 11 NETS -->
+    <section id="view-nets" class="view">
+      <article class="lesson wide">
+        <h2>정육면체 전개도는 11개뿐이다</h2>
+        <p id="net-count">육각형 폴리오미노는 35개인데, 접어서 정육면체가 되는 건 <strong>11개</strong>다. 나머지는 접다 겹치거나 반대 면이 맞닿는다. 클릭하면 실험실에서 접어 볼 수 있다.</p>
+        <div id="net-grid" class="net-grid"></div>
+      </article>
+    </section>
+
+    <!-- RULES -->
+    <section id="view-rules" class="view">
+      <article class="lesson">
+        <h2>접을 때 보는 것</h2>
+        <p>색깔만 맞추는 문제가 아니다. <strong>두 기호가 접혔을 때 같은 모서리에서 어느 쪽을 보느냐</strong>다. 맞닿은 두 면의 기호가 공유 모서리를 향하면, 전개도에서도 그 두 칸이 <em>맞닿아 있어야</em> 하고 기호도 <em>그 변을 향해야</em> 한다.</p>
+
+        <div class="rule">
+          <div class="n">1</div>
+          <div>
+            <h3>반대 면은 절대 맞닿지 않는다</h3>
+            <p>위↔아래, 앞↔뒤, 왼↔오. 전개도에서 이 쌍이 변을 공유하면 즉시 틀린 답이다. 십자가 전개도면 보통 <strong>한 칸 건너</strong>가 반대 면이다.</p>
+            <div class="demo" id="demo-opp"></div>
+          </div>
+        </div>
+
+        <div class="rule">
+          <div class="n">2</div>
+          <div>
+            <h3>한 꼭짓점에 모이는 세 면</h3>
+            <p>입체에서 한 모퉁이에 보이는 세 면은, 전개도에서 <strong>한 점에서 만나거나</strong> 접으면 그 점이 된다. 시계 방향 순서는 접어도 유지된다. 순서가 뒤집히면 거울(전개도를 뒤집음)이라 오답.</p>
+          </div>
+        </div>
+
+        <div class="rule">
+          <div class="n">3</div>
+          <div>
+            <h3>기호는 ‘변을 향하나’만 보면 된다</h3>
+            <p>와이파이·화살표는 회전하면 다른 기호가 된다. 입체에서 두 기호가 공유 모서리를 향해 있으면, 전개도에서도 그 두 칸의 <strong>공유하는 변</strong>을 향해 있어야 한다. 한 칸만 180° 돌린 함정이 가장 많다.</p>
+            <ul>
+              <li>입체에서 둘 다 모서리를 향함 → 전개도에서도 둘 다 그 변을 향함</li>
+              <li>입체에서 둘 다 모서리와 평행 → 전개도에서도 평행</li>
+              <li>한 면만 반대 → 오답</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="rule">
+          <div class="n">!</div>
+          <div>
+            <h3>빠르게 보는 순서</h3>
+            <ol>
+              <li>보이는 두 면이 맞닿는지 확인 (맞닿음. 반대면이 아님).</li>
+              <li>두 기호가 공유 모서리를 향하는지 / 그 꼭짓점을 향하는지 표시.</li>
+              <li>선지에서 그 두 면이 맞닿지 않거나, 사이에 칸이 있으면 탈락.</li>
+              <li>남은 선지에서 기호가 그 변을 향하는지 본다. 방향만 틀린 게 보통 2개다.</li>
+              <li>확신이 없으면 실험실에서 같은 기호를 붙이고 접어 본다.</li>
+            </ol>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- QUIZ -->
+    <section id="view-quiz" class="view">
+      <div class="stage">
+        <div class="qhead">
+          <span id="q-title">위의 겨냥도를 나타내는 전개도로 옳은 것은?</span>
+          <div class="row" style="margin:0;align-items:center;gap:8px">
+            <select id="q-type">
+              <option value="net">겨냥도 → 전개도</option>
+              <option value="cube">전개도 → 겨냥도</option>
+              <option value="opp">반대 면</option>
+              <option value="invalid">불가능한 전개도</option>
+              <option value="dice">주사위</option>
+            </select>
+            <span id="q-diff" class="pill">혼합</span>
+          </div>
+        </div>
+        <div class="split">
+          <div>
+            <div id="quiz-canvas" class="canvas short"></div>
+            <p class="center tiny">드래그로 돌려 볼 수 있다.</p>
+          </div>
+          <div id="choices" class="choices"></div>
+        </div>
+        <div id="explain" class="explain" hidden></div>
+        <div class="row qnav">
+          <button id="btn-check">정답 확인</button>
+          <button id="btn-why" class="ghost" disabled>왜? 접어서 보기</button>
+          <button id="btn-next" class="ghost">다음 문제</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- DRILL -->
+    <section id="view-drill" class="view">
+      <div class="stage drill">
+        <div class="qhead">
+          <span>스피드 — 반대 면 / 맞닿음만 빠르게</span>
+          <span id="timer" class="pill">60</span>
+        </div>
+        <p class="lead" id="drill-q">시작을 누르면 한 문제씩 나온다.</p>
+        <div id="drill-opts" class="choices row-choices"></div>
+        <div class="row">
+          <button id="btn-drill">60초 시작</button>
+          <span id="drill-score" class="tiny">이번 라운드 0</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    맞은 전개도는 11가지뿐이다. 기호 방향은 ‘공유하는 변’이 답의 전부다.
+  </footer>
+
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

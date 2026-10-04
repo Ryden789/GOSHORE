@@ -65,6 +65,7 @@ ASK_SYSTEM = """你是一名事业单位C类全科备考答疑老师，学生随
 3. 数值计算保留完整算式，可复算。
 4. 回答用 Markdown：先给结论再展开，简洁分点，不写套话。
 5. 遇到超纲或与备考无关的问题，简短回应后引导回备考话题。
+6. 当用户上传图片时，你应仔细观察图片中的题目（题干、选项、图形/图表），独立分析后给出答案与解析。不要盲目附和用户给出的答案——如果你分析后认为答案与用户不同，应明确指出并说明理由。先给出你的判断依据，再给结论。
 """
 
 MODE_TASKS = {
@@ -272,19 +273,23 @@ async def stream_chat_with_temp(messages: list[dict], temperature: float):
         return
 
 
-async def stream_chat(messages: list[dict]):
-    """yield ('delta'|'think'|'error'|'done', payload)。"""
+async def stream_chat(messages: list[dict], use_vision: bool = False):
+    """yield ('delta'|'think'|'error'|'done', payload)。
+
+    use_vision=True 时切换到 deepseek-flash（V4.1 原生多模态）并关闭思考模式。"""
     s = load_settings()
     if not s["deepseek_api_key"]:
         yield "error", "未配置 DeepSeek API Key，请到「设置」中填写。"
         return
 
     payload = {
-        "model": s["deepseek_model"],
+        "model": "deepseek-flash" if use_vision else s["deepseek_model"],
         "messages": messages,
         "stream": True,
         "temperature": 0.3,
     }
+    if use_vision:
+        payload["max_tokens"] = 4096
     headers = {"Authorization": f"Bearer {s['deepseek_api_key']}"}
     url = s["deepseek_base_url"].rstrip("/") + "/chat/completions"
 

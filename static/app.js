@@ -200,6 +200,12 @@ function syncNavGroup(name) {
   });
 }
 
+const ROUTE_LOADING_LABELS = { home: "今日书房", report: "周报", history: "做题记录", "ai-ask": "AI 答疑", paper: "组卷", logic: "判断专项", formula: "列式专项", wordfill: "词语填空", speed: "速算", cube: "空间折叠", essay: "申论综应", argument: "论证评价", "argument-quiz": "辨析快练", wenxian: "科技文献", "zy-notes": "综应考点", shizheng: "时政", grade: "AI 批改", review: "今日复习", wrong: "错题本", marks: "收藏", cards: "辨析卡", search: "题库检索", doubts: "疑点工作台", import: "导入题库", settings: "设置", exam: "模考试卷", doc: "题目详情" };
+function routeLoadingMarkup(name) {
+  const label = ROUTE_LOADING_LABELS[name] || "上岸自习室";
+  return `<div class="route-skeleton" aria-live="polite" aria-label="正在加载${esc(label)}"><div class="route-skeleton-head"><span class="route-skeleton-title">${esc(label)}</span><span class="route-spinner" aria-hidden="true"></span></div><div class="route-skeleton-line wide"></div><div class="route-skeleton-line"></div><div class="route-skeleton-grid"><i></i><i></i><i></i></div><div class="route-skeleton-block"></div></div>`;
+}
+
 // 点击组名手动展开/收起（静态 DOM，绑定一次）
 document.querySelectorAll(".nav-group-title").forEach(t => t.onclick = () =>
   t.closest(".nav-group").classList.toggle("collapsed"));
@@ -216,6 +222,7 @@ function route() {
   setActive(name);
   window.scrollTo(0, 0);
   const dispatch = fn => {
+    view.innerHTML = routeLoadingMarkup(name);
     view.classList.add("route-loading");
     return Promise.resolve().then(fn).then(() => {
       if (seq === navSeq) view.classList.remove("route-loading");
@@ -235,6 +242,7 @@ function route() {
   else if (name === "argument-quiz") dispatch(renderArgumentQuiz);
   else if (parts[0] === "wordfill") dispatch(renderWordfill);
   else if (parts[0] === "speed") dispatch(renderSpeed);
+  else if (parts[0] === "cube") dispatch(renderCube);
   else if (parts[0] === "settings") dispatch(renderSettings);
   else if (name === "wrong") dispatch(renderWrong);
   else if (name === "marks") dispatch(renderMarks);
@@ -454,14 +462,16 @@ async function renderSearch() {
         <select id="year">${opts(f.years, searchState.year)}</select>
       </div>
     </div>
-    <div class="result-meta rise rise-2"><span id="rcount"></span><span></span></div>
+    <div class="result-meta rise rise-2"><span id="rcount" aria-live="polite"></span><span id="searchPageMeta"></span></div>
     <div class="doc-list rise rise-2" id="list"></div>
     <div class="pager" id="pager"></div>`;
 
   const doSearch = async (page = 1) => {
     searchState.page = page;
+    $("#rcount").textContent = "正在检索…";
     const res = await api("/api/search", { ...searchState, page, page_size: 20 });
     $("#rcount").textContent = `找到 ${res.total} 条结果`;
+    $("#searchPageMeta").textContent = res.total ? `第 ${page} 页 · 每页 20 条` : "";
     $("#list").innerHTML = res.items.length
       ? res.items.map(it => `
           <div class="doc-item" data-id="${it.id}">
@@ -470,6 +480,7 @@ async function renderSearch() {
               <div class="doc-title">${esc(it.title)}</div>
               <div class="doc-sub">${esc([it.kaodian, it.region + " " + it.year, it.qid].filter(Boolean).join(" · "))}</div>
             </div>
+            <span class="doc-open-hint">查看题目 <span aria-hidden="true">→</span></span>
           </div>`).join("")
       : `<div class="empty">没有符合条件的结果</div>`;
     $$("#list .doc-item").forEach(el =>
@@ -582,7 +593,7 @@ async function renderDoc(id, tabName) {
          </details>`) : "";
     el.innerHTML = `
       ${matHtml}
-      <div class="panel">
+      <div class="panel question-panel">
         <div class="stem">${md(d.stem || "")}</div>
         <div class="options">
           ${(d.options || []).map(o => `
@@ -2014,7 +2025,7 @@ async function runPaper(ids, opt = {}) {
         </table>
       </div>` : "";
     body.innerHTML = `
-      <div class="panel" style="text-align:center">
+      <div class="panel exam-result" style="text-align:center">
         <h3>本卷判分${auto?" · 到时自动交卷":""}</h3>
         <div class="summary-grid">
           ${weights ? `<div class="stat-card" style="--accent:var(--cinnabar)"><div class="v">${gotScore}<small>/${fullScore}分</small></div><div class="k">C类职测得分</div></div>` : ""}
@@ -2032,11 +2043,12 @@ async function runPaper(ids, opt = {}) {
       </div>
       <div class="doc-list">
         ${docs.map((doc, i) => `
-          <div class="doc-item" data-i="${i}">
+          <div class="doc-item exam-review-item" data-i="${i}">
             <div class="doc-main">
               <div class="doc-title">${answers[i] ? (answers[i].correct ? "✔" : "✘") : "○"} ${esc(doc.title)}</div>
               <div class="doc-sub">${esc([doc.kaodian, doc.region + " " + doc.year].filter(Boolean).join(" · "))}</div>
             </div>
+            <span class="doc-open-hint">查看解析 <span aria-hidden="true">→</span></span>
           </div>`).join("")}
       </div>`;
     $("#rePaper").onclick = () => {
@@ -2123,6 +2135,52 @@ async function renderExam() {
 /* =====================================================
    速算训练
 ===================================================== */
+
+/* ---------- 空间折叠训练（折纸盒，懒加载 three.js + 独立模块） ---------- */
+let _cubeAssetsPromise = null;
+function loadCubeAssets() {
+  if (_cubeAssetsPromise) return _cubeAssetsPromise;
+  _cubeAssetsPromise = new Promise((resolve, reject) => {
+    if (!document.querySelector('link[href="/cube/cube.css"]')) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "/cube/cube.css";
+      document.head.appendChild(link);
+    }
+    const afterCube = () => (window.GOSCube ? resolve() : reject(new Error("cube.js 加载失败")));
+    if (window.GOSCube) return resolve();
+    const loadCube = () => {
+      const s = document.createElement("script");
+      s.src = "/cube/cube.js";
+      s.onload = afterCube;
+      s.onerror = () => reject(new Error("/cube/cube.js 加载失败"));
+      document.head.appendChild(s);
+    };
+    if (window.THREE) return loadCube();
+    const t = document.createElement("script");
+    t.src = "/vendor/three.min.js";
+    t.onload = loadCube;
+    t.onerror = () => reject(new Error("three.min.js 加载失败"));
+    document.head.appendChild(t);
+  });
+  return _cubeAssetsPromise;
+}
+async function renderCube() {
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">空间折叠训练</h1>
+      <p class="page-desc">折纸盒专项：11种展开图折叠动画 · 三面共点红点法 · 程序生成无限测验</p>
+    </div>
+    <div id="cubeHost" class="rise rise-1"></div>`;
+  const host = $("#cubeHost");
+  try {
+    await loadCubeAssets();
+    if ((location.hash || "#/home") !== "#/cube") return;  // 加载期间已切走
+    window.GOSCube.mount(host);
+  } catch (e) {
+    if (host) host.innerHTML = `<div class="card" style="padding:20px">模块加载失败：${String(e.message || e)}</div>`;
+  }
+}
 
 function renderSpeed() {
   const cfg = {
@@ -3080,12 +3138,11 @@ async function renderCards() {
 
   function startQuiz(cards, pool) {
     if (!cards.length) { body.innerHTML = `<div class="panel empty">该范围没有卡片</div>`; return; }
-    let idx = 0, okN = 0, noN = 0, timer = null;
+    let idx = 0, okN = 0, noN = 0;
     const poolWords = pool.filter(x => x.stem && x.stem.length >= 2);
     showQ();
 
     function showQ() {
-      if (timer) { clearTimeout(timer); timer = null; }
       if (idx >= cards.length) {
         const rate = Math.round(okN / (okN + noN) * 100);
         body.innerHTML = `
@@ -3147,13 +3204,32 @@ async function renderCards() {
               <button class="btn btn-primary btn-sm" id="qzNext">${idx === cards.length - 1 ? "完成" : "下一题"}</button>
             </div>`;
           $("#qzNext").onclick = () => { idx++; showQ(); };
-          if (correct) timer = setTimeout(() => { idx++; showQ(); }, 1100);
         };
       });
     }
   }
 
   /* ---- 看词写意（借鉴词语辨析自测：看词默写 → 对照原辨析 → 自评）---- */
+  // 自动评判：取释义部分（【例】之前），与用户默写做二元组（bigram）重叠匹配
+  function judgeRecall(userText, refAnalysis) {
+    const def = (refAnalysis || "").split("【例】")[0].trim();
+    if (!def) return { correct: false, ratio: 0 };
+    const norm = s => (s || "").replace(/[\s，。、；：！？""''（）《》【】\[\].,;:!?'"()<>]/g, "");
+    const ref = norm(def), usr = norm(userText);
+    if (!usr) return { correct: false, ratio: 0 };
+    const bg = s => {
+      const set = new Set();
+      for (let i = 0; i < s.length - 1; i++) set.add(s[i] + s[i + 1]);
+      return set;
+    };
+    const rBg = bg(ref), uBg = bg(usr);
+    if (rBg.size === 0) return { correct: usr.includes(ref), ratio: usr.includes(ref) ? 1 : 0 };
+    let shared = 0;
+    rBg.forEach(b => { if (uBg.has(b)) shared++; });
+    const ratio = shared / rBg.size;
+    return { correct: ratio >= 0.25, ratio };
+  }
+
   function startRecall(cards) {
     if (!cards.length) { body.innerHTML = `<div class="panel empty">该范围没有卡片</div>`; return; }
     let idx = 0, known = 0, vague = 0, unknown = 0;
@@ -3192,9 +3268,10 @@ async function renderCards() {
             <button class="btn btn-sm" id="rcSkip" style="color:var(--ink-3)">跳过 →</button>
           </div>
           <div class="rc-answer" id="rcAns" style="display:none">
+            <div id="rcJudge" class="rc-judge"></div>
             ${md(c.analysis || c.answer || "")}
             <div class="answer-bar" style="justify-content:center;margin-top:12px">
-              <span style="color:var(--ink-3);font-size:13px">自评：</span>
+              <span style="color:var(--ink-3);font-size:13px">自评（可覆盖自动判断）：</span>
               <button class="btn btn-sm" style="color:var(--bamboo)" data-lv="2">认识</button>
               <button class="btn btn-sm" style="color:var(--amber)" data-lv="1">模糊</button>
               <button class="btn btn-sm" style="color:var(--cinnabar)" data-lv="0">不会</button>
@@ -3203,6 +3280,15 @@ async function renderCards() {
         </div>`;
       $("#rcShow").onclick = () => {
         $("#rcAns").style.display = "block";
+        const judge = judgeRecall($("#rcArea").value, c.analysis || c.answer || "");
+        const pct = Math.round(judge.ratio * 100);
+        const jd = $("#rcJudge");
+        jd.innerHTML = judge.correct
+          ? `<span style="color:var(--bamboo)">✔ 回答正确</span> <span style="color:var(--ink-3);font-size:13px;font-weight:400">（匹配度 ${pct}%）</span>`
+          : `<span style="color:var(--cinnabar)">✘ 回答错误</span> <span style="color:var(--ink-3);font-size:13px;font-weight:400">（匹配度 ${pct}%）</span>`;
+        $$("[data-lv]", body).forEach(b => b.classList.remove("rc-lv-suggest"));
+        const sb = body.querySelector(`[data-lv="${judge.correct ? 2 : 0}"]`);
+        if (sb) sb.classList.add("rc-lv-suggest");
         $("#rcArea").focus();
       };
       const area = $("#rcArea");
@@ -3303,8 +3389,8 @@ async function renderCards() {
 const EBB_STAGES = ["1 天后", "2 天后", "4 天后", "7 天后", "15 天后", "30 天后"];
 
 async function renderReview() {
-  const [res, dueCards, prog] = await Promise.all([
-    api("/api/reviews"), api("/api/due-cards"), api("/api/cards/progress"),
+  const [res, dueCards, prog, dash] = await Promise.all([
+    api("/api/reviews"), api("/api/due-cards"), api("/api/cards/progress"), api("/api/review/dashboard"),
   ]);
   const items = res.items;
   const dueList = dueCards.items || [];
@@ -3341,6 +3427,16 @@ async function renderReview() {
             <div class="doc-side"><span class="tag">第 ${it.stage} 轮 · ${EBB_STAGES[Math.min(it.stage - 1, 5)]}前到期</span></div>
           </div>`).join("")}
       </div>` : `<div class="empty" style="padding:20px">今天没有到期的真题复习——保持节奏，做新题错题都会自动进入复习计划</div>`}
+    </div>
+    <div class="review-dashboard panel rise rise-2">
+      <div class="review-dashboard-head"><div><h3>错题复习驾驶舱</h3><p>先处理重复错误，再补齐未标注错因的题。</p></div><button class="btn btn-sm" id="dashWrong">打开错题本</button></div>
+      <div class="review-dashboard-stats">
+        <div><b>${dash.due}</b><span>待复习</span></div><div><b>${dash.repeat}</b><span>重复错误</span></div><div><b>${dash.untagged}</b><span>未标错因</span></div><div><b>${dash.wrong_total}</b><span>当前错题</span></div>
+      </div>
+      <div class="review-dashboard-cols">
+        <div><h4>薄弱模块</h4>${(dash.by_module || []).slice(0, 5).map(x => `<div class="review-bar-row"><span>${esc(x.name)}</span><i><em style="width:${dash.wrong_total ? Math.round(x.count / dash.wrong_total * 100) : 0}%"></em></i><small>${x.count}</small></div>`).join("") || `<div class="muted">暂无数据</div>`}</div>
+        <div><h4>错因分布</h4>${(dash.by_reason || []).slice(0, 5).map(x => `<div class="review-bar-row"><span>${esc(x.name)}</span><i><em style="width:${dash.wrong_total ? Math.round(x.count / dash.wrong_total * 100) : 0}%"></em></i><small>${x.count}</small></div>`).join("") || `<div class="muted">暂无数据</div>`}</div>
+      </div>
     </div>`;
 
   const startBtn = $("#startReview");
@@ -3353,6 +3449,7 @@ async function renderReview() {
       setQueue(items.map(i => i.id));
       location.hash = `#/doc/${el.dataset.id}/answer`;
     });
+  $("#dashWrong").onclick = () => { location.hash = "#/wrong"; };
 }
 
 /* =====================================================
@@ -4263,7 +4360,12 @@ async function renderAiAsk() {
       <div id="aiAskChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
         ${chips.map(c => `<button class="btn" data-q="${esc(c)}" style="font-size:12.5px;padding:5px 12px">${esc(c)}</button>`).join("")}
       </div>
+      <div id="aiAskPreviews" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"></div>
       <div style="display:flex;gap:10px;margin-top:12px;align-items:flex-end">
+        <label id="aiAskImgBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--line-soft);border-radius:8px;flex-shrink:0" title="上传图片">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+          <input type="file" accept="image/*" multiple style="display:none" id="aiAskFile">
+        </label>
         <textarea id="aiAskInput" rows="2" placeholder="随便问点什么…（Enter 发送，Shift+Enter 换行）"
           style="flex:1;resize:none;padding:10px;border:1px solid var(--line-soft);border-radius:8px;font-family:inherit;font-size:14px;background:transparent;color:inherit"></textarea>
         <button class="btn btn-primary" id="aiAskGo">发送</button>
@@ -4277,8 +4379,51 @@ async function renderAiAsk() {
   const input = $("#aiAskInput");
   const goBtn = $("#aiAskGo");
   const newBtn = $("#aiAskNew");
+  const fileInput = $("#aiAskFile");
+  const previewBox = $("#aiAskPreviews");
+  let attachedImages = [];
 
-  const bubble = (role, text) => {
+  const compressImage = (file) => new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 1024;
+        let w = img.width, h = img.height;
+        if (w > maxW) { h = h * maxW / w; w = maxW; }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const renderPreviews = () => {
+    previewBox.innerHTML = attachedImages.map((src, i) =>
+      `<div style="position:relative;width:64px;height:64px">
+        <img src="${src}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;border:1px solid var(--line-soft)">
+        <span data-rm="${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;line-height:1">×</span>
+      </div>`).join("");
+    previewBox.querySelectorAll("[data-rm]").forEach(el => {
+      el.onclick = () => { attachedImages.splice(+el.dataset.rm, 1); renderPreviews(); };
+    });
+  };
+
+  fileInput.onchange = async () => {
+    const files = Array.from(fileInput.files).slice(0, 3 - attachedImages.length);
+    for (const f of files) {
+      if (!f.type.startsWith("image/")) continue;
+      const compressed = await compressImage(f);
+      attachedImages.push(compressed);
+    }
+    renderPreviews();
+    fileInput.value = "";
+  };
+
+  const bubble = (role, text, images) => {
     const row = document.createElement("div");
     row.style.cssText = "display:flex;margin:10px 0;justify-content:" +
       (role === "user" ? "flex-end" : "flex-start");
@@ -4287,8 +4432,14 @@ async function renderAiAsk() {
       (role === "user"
         ? ";background:var(--cinnabar);color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap"
         : ";background:rgba(0,0,0,.05);border-bottom-left-radius:4px");
-    if (role === "user") b.textContent = text;
-    else b.innerHTML = md(text || "");
+    if (images && images.length) {
+      const imgHtml = images.map(src => `<img src="${src}" style="max-width:180px;max-height:180px;border-radius:6px;margin-bottom:6px;display:block">`).join("");
+      if (role === "user") b.innerHTML = imgHtml + esc(text);
+      else b.innerHTML = imgHtml + md(text || "");
+    } else {
+      if (role === "user") b.textContent = text;
+      else b.innerHTML = md(text || "");
+    }
     row.appendChild(b);
     list.appendChild(row);
     list.scrollTop = list.scrollHeight;
@@ -4305,13 +4456,26 @@ async function renderAiAsk() {
 
   const send = async () => {
     const ask = input.value.trim();
-    if (!ask || streaming) return;
+    const imgs = attachedImages.slice();
+    if ((!ask && !imgs.length) || streaming) return;
     streaming = true;
     goBtn.disabled = true;
     input.value = "";
-    bubble("user", ask);
+    attachedImages = [];
+    renderPreviews();
+    bubble("user", ask || "(图片)", imgs);
+
+    // 历史消息只发文本（图片 base64 太大不存 localStorage）
     const his = msgs.map(m => ({ role: m.role, content: m.content }));
-    his.push({ role: "user", content: ask });
+    // 当前消息：有图片时用多模态 content 格式
+    if (imgs.length) {
+      const content = [];
+      if (ask) content.push({ type: "text", text: ask });
+      for (const src of imgs) content.push({ type: "image_url", image_url: { url: src } });
+      his.push({ role: "user", content });
+    } else {
+      his.push({ role: "user", content: ask });
+    }
 
     let thinkBox = null, think = "", full = "";
     const b = bubble("ai", "");
@@ -4361,7 +4525,8 @@ async function renderAiAsk() {
     }
     b.classList.remove("cursor-blink");
     list.scrollTop = list.scrollHeight;
-    msgs = [...msgs, { role: "user", content: ask }];
+    const savedContent = imgs.length ? `[图片] ${ask}` : ask;
+    msgs = [...msgs, { role: "user", content: savedContent }];
     if (full.trim()) msgs = [...msgs, { role: "assistant", content: full }];
     aiAskSave(msgs);
     streaming = false;

@@ -688,6 +688,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"items": db.list_marks()})
             elif path == "/api/reviews":
                 self._json({"items": db.due_reviews()})
+            elif path == "/api/review/dashboard":
+                self._json(db.review_dashboard())
             elif path == "/api/wrong-reasons":
                 self._json(db.wrong_reason_map())
             elif path == "/api/cards":

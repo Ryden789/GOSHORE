@@ -14,7 +14,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill, argument, zy_notes
+from . import ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
 from .config import STATIC_DIR, DB_PATH, SETTINGS_PATH, load_settings, save_settings
 
 import html as _html
@@ -276,22 +276,46 @@ class AskIn(BaseModel):
 async def api_ai_ask(b: AskIn):
     """自由提问 AI 答疑：与做题无关，历史存前端 localStorage，服务端不落库。"""
     msgs = []
+    use_vision = False
     for m in b.messages[-12:]:
         role = m.get("role")
         if role not in ("user", "assistant"):
             continue
-        content = str(m.get("content") or "")[:4000]
-        if content:
-            msgs.append({"role": role, "content": content})
+        raw = m.get("content")
+        if isinstance(raw, list):
+            # 多模态消息（含图片），原样传递
+            msgs.append({"role": role, "content": raw})
+            if any(isinstance(p, dict) and p.get("type") == "image_url" for p in raw):
+                use_vision = True
+        else:
+            content = str(raw or "")[:4000]
+            if content:
+                msgs.append({"role": role, "content": content})
     if not msgs or msgs[-1]["role"] != "user":
         raise HTTPException(400, "最后一条必须是用户提问")
     messages = [{"role": "system", "content": ai.ASK_SYSTEM}] + msgs
 
     async def gen():
-        async for kind, payload in ai.stream_chat(messages):
+        async for kind, payload in ai.stream_chat(messages, use_vision=use_vision):
             yield f"data: {json.dumps({'type': kind, 'text': payload}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ---------------- 折纸盒·拍照录题 ----------------
+
+class CubeRecognizeIn(BaseModel):
+    image: str = ""
+
+
+@app.post("/api/cube/recognize")
+async def api_cube_recognize(b: CubeRecognizeIn):
+    try:
+        return await cube_vision.recognize_net(b.image, load_settings())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # 网络/服务端异常兜底
+        raise HTTPException(502, f"识别服务调用失败：{e}")
 
 
 # ---------------- 速算 ----------------
@@ -390,6 +414,11 @@ def api_weekly_report():
 @app.get("/api/wrong-book")
 def api_wrong_book():
     return {"items": db.list_wrong_book()}
+
+
+@app.get("/api/review/dashboard")
+def api_review_dashboard():
+    return db.review_dashboard()
 
 
 @app.get("/api/marks")

@@ -117,9 +117,22 @@ body {
 
 /* ============ 主区域 ============ */
 .view { flex: 1; overflow-y: auto; padding: 34px 42px 60px; }
+.route-skeleton { max-width: 980px; margin: 0 auto; padding-top: 8px; }
+.route-skeleton-head { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+.route-skeleton-title { font: 700 22px var(--serif); color: var(--ink); }
+.route-spinner { width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--cinnabar); border-radius: 50%; animation: route-spin .7s linear infinite; }
+.route-skeleton-line, .route-skeleton-block, .route-skeleton-grid i { background: linear-gradient(90deg, var(--paper-2) 25%, var(--panel) 50%, var(--paper-2) 75%); background-size: 220% 100%; animation: route-shimmer 1.2s ease-in-out infinite; border-radius: var(--radius); }
+.route-skeleton-line { height: 14px; width: 42%; margin-bottom: 12px; }
+.route-skeleton-line.wide { width: 72%; height: 20px; }
+.route-skeleton-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 24px 0 14px; }
+.route-skeleton-grid i { display: block; height: 84px; }
+.route-skeleton-block { height: 180px; width: 100%; }
+@keyframes route-spin { to { transform: rotate(360deg); } }
+@keyframes route-shimmer { to { background-position: -120% 0; } }
+@media (max-width: 760px) { .route-skeleton { padding: 8px 2px 0; } .route-skeleton-title { font-size: 19px; } .route-skeleton-grid { gap: 8px; } .route-skeleton-grid i { height: 70px; } }
 .view::-webkit-scrollbar { width: 10px; }
 .view::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
-.route-loading { opacity: .4; pointer-events: none; transition: opacity .12s ease-out; }
+.route-loading { pointer-events: none; }
 
 .page-head { margin-bottom: 24px; position: relative; }
 .page-title {
@@ -259,6 +272,8 @@ input, select, textarea { font-family: var(--sans); }
   display: flex; align-items: center; gap: 14px;
 }
 .doc-item:hover { border-color: var(--cinnabar); transform: translateX(3px); }
+.doc-open-hint { flex: 0 0 auto; color: var(--indigo); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.doc-open-hint span { padding-left: 3px; }
 .doc-kind {
   flex-shrink: 0; font-size: 12px; font-weight: 700; padding: 3px 10px;
   border-radius: 3px; background: var(--indigo-soft); color: var(--indigo);
@@ -336,6 +351,13 @@ input, select, textarea { font-family: var(--sans); }
 
 .answer-bar { margin-top: 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .mark-btn { margin-left: auto; }
+.question-panel { border-top: 3px solid var(--indigo); }
+.question-panel .stem { font-size: 16px; line-height: 1.9; }
+.question-panel .option { min-height: 44px; align-items: center; }
+.answer-bar { padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.exam-result { max-width: 980px; margin: 0 auto 16px; }
+.exam-result .summary-grid { align-items: stretch; }
+.exam-review-item .doc-title { line-height: 1.55; }
 
 /* AI 区 */
 .ai-mode-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -422,6 +444,21 @@ input, select, textarea { font-family: var(--sans); }
 .wrong-meta { display: flex; gap: 14px; font-size: 12.5px; color: var(--ink-3); font-family: var(--mono); }
 .wrong-meta b { color: var(--cinnabar); }
 
+@media (max-width: 760px) {
+  .doc-item { padding: 12px; gap: 9px; }
+  .doc-open-hint { font-size: 11.5px; }
+  .doc-kind { padding: 3px 7px; }
+  .doc-header { gap: 8px; }
+  .doc-header h2 { font-size: 18px; line-height: 1.45; }
+  .doc-tags { gap: 5px; }
+  .question-panel { padding: 14px; }
+  .question-panel .stem { font-size: 15.5px; }
+  .question-panel .answer-bar .btn { flex: 1 1 auto; }
+  .question-panel .mark-btn { margin-left: 0; }
+  .exam-result .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .exam-result .doc-item { align-items: flex-start; }
+}
+
 /* ============ 组卷 ============ */
 .paper-runner-top {
   display: flex; justify-content: space-between; align-items: center;
@@ -483,6 +520,23 @@ input, select, textarea { font-family: var(--sans); }
 .speed-explain { text-align: center; color: var(--ink-2); margin-top: 14px; min-height: 26px; font-size: 14px; }
 .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 10px 0 18px; }
 
+/* 复习驾驶舱 */
+.review-dashboard { margin-top: 16px; }
+.review-dashboard-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+.review-dashboard-head h3 { margin:0; font-family:var(--serif); }
+.review-dashboard-head p { margin:3px 0 0; color:var(--ink-3); font-size:12.5px; }
+.review-dashboard-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:16px 0; }
+.review-dashboard-stats div { padding:10px 12px; background:var(--paper-2); border-radius:var(--radius); }
+.review-dashboard-stats b { display:block; font:700 24px var(--serif); }
+.review-dashboard-stats span { color:var(--ink-3); font-size:12px; }
+.review-dashboard-cols { display:grid; grid-template-columns:1fr 1fr; gap:28px; }
+.review-dashboard-cols h4 { margin:0 0 8px; font-size:13px; }
+.review-bar-row { display:grid; grid-template-columns:90px 1fr 24px; gap:8px; align-items:center; font-size:12px; margin:7px 0; }
+.review-bar-row i { height:7px; background:var(--paper-2); border-radius:4px; overflow:hidden; }
+.review-bar-row em { display:block; height:100%; background:var(--cinnabar); border-radius:4px; }
+.review-bar-row small { color:var(--ink-3); text-align:right; }
+@media (max-width:760px) { .review-dashboard-stats { grid-template-columns:repeat(2,1fr); } .review-dashboard-cols { grid-template-columns:1fr; gap:16px; } }
+
 /* ============ 设置 ============ */
 .settings-form { display: flex; flex-direction: column; gap: 16px; max-width: 640px; }
 .field label { display: block; font-weight: 700; margin-bottom: 6px; font-family: var(--serif); letter-spacing: 1px; }
@@ -539,6 +593,9 @@ input, select, textarea { font-family: var(--sans); }
   border-left: 3px solid var(--cinnabar); border-radius: 0 8px 8px 0;
   padding: 12px 15px; font-size: 15px; line-height: 1.9; }
 .rc-answer .md-p, .rc-answer p { margin: 0 0 6px; }
+.rc-judge { font-size: 15px; font-weight: 700; margin-bottom: 8px; padding-bottom: 8px;
+  border-bottom: 1px dashed var(--line); }
+.rc-lv-suggest { outline: 2px solid var(--cinnabar); outline-offset: 1px; border-radius: var(--radius); }
 
 /* ---- F9 看义选词 测验 ---- */
 .qz-stem { font-size: 15px; line-height: 1.9; background: rgba(176,58,46,.05);

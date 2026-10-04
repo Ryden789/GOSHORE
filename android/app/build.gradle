@@ -23,6 +23,7 @@ android {
             buildPython "C:/Users/29364/AppData/Local/Programs/Python/Python313/python.exe"
             pip {
                 install "httpx"
+                options "--no-index", "--find-links", "D:/GOSHORE/.trae/wheels"
             }
         }
     }

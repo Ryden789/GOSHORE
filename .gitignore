@@ -25,3 +25,6 @@ android/local.properties
 android/.gradle/
 android/build/
 android/app/build/
+
+# Trae IDE 工作目录（日志、wheels、临时文档等，不分发）
+.trae/
