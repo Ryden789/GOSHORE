@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, knowledge, planner, speedcalc, variant, wordfill, zy_notes
+from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, speedcalc, variant, wordfill, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -690,6 +690,40 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"items": db.kaodian_mastery(q("module"))})
             elif path == "/api/ability/radar":
                 self._json({"items": db.ability_radar()})
+            elif path == "/api/interview/questions":
+                self._json({
+                    "items": db.list_interview_questions(q("category")),
+                    "counts": db.interview_category_counts(),
+                    "categories": interview.CATEGORIES,
+                    "hints": interview.CATEGORY_HINT,
+                    "think_seconds": interview.THINK_SECONDS,
+                    "answer_seconds": interview.ANSWER_SECONDS})
+            elif path == "/api/interview/stats":
+                self._json(db.interview_stats())
+            elif path == "/api/interview/logs":
+                self._json({"items": db.list_interview_logs()})
+            elif path.startswith("/api/interview/log/"):
+                try:
+                    lid = int(path.rsplit("/", 1)[1])
+                except ValueError:
+                    self._err(404)
+                else:
+                    it = db.get_interview_log(lid)
+                    if not it:
+                        self._err(404)
+                    else:
+                        self._json(it)
+            elif path.startswith("/api/interview/question/"):
+                try:
+                    qid = int(path.rsplit("/", 1)[1])
+                except ValueError:
+                    self._err(404)
+                else:
+                    it = db.get_interview_question(qid)
+                    if not it:
+                        self._err(404)
+                    else:
+                        self._json(it)
             elif path == "/api/study-plan":
                 today = _today_str()
                 self._json({"items": db.list_study_plan(),
@@ -1007,6 +1041,8 @@ class _Handler(BaseHTTPRequestHandler):
                     b.get("day", ""), b.get("module", ""), bool(b.get("done", True)))
                 today = _today_str()
                 self._json({"ok": ok, "summary": db.study_plan_summary(today)})
+            elif path == "/api/interview/grade":
+                self._interview_grade(b)
             elif path == "/api/essay/grade":
                 self._essay_grade(b)
             elif path == "/api/essay/self-grade":
@@ -1302,6 +1338,54 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._stream_sse(gen())
 
+    # ---- 面试模块：AI 模拟考官（功能 2.3） ----
+
+    def _interview_grade(self, b):
+        question = (b.get("question") or "").strip()
+        answer = (b.get("answer") or "").strip()
+        if not question or not answer:
+            return self._err(400, "题目与作答均不能为空")
+        category = b.get("category") or "综合分析"
+        try:
+            qid = int(b.get("qid") or 0)
+        except (TypeError, ValueError):
+            qid = 0
+        q = db.get_interview_question(qid) if qid else None
+        messages = interview.build_grade_messages(
+            category, question, answer, (q or {}).get("reference", ""))
+
+        async def gen():
+            yield "phase", "模拟考官正在点评…"
+            buffer = []
+            async for kind, payload in ai.stream_chat_with_temp(messages, 0.3):
+                if kind == "delta":
+                    buffer.append(payload)
+                elif kind == "error":
+                    yield "error", payload
+                    return
+            raw = "".join(buffer).strip()
+            parsed = interview.parse_grade_json(raw)
+            if parsed:
+                md_text = interview.render_grade_markdown(parsed)
+                with _lock:
+                    gid = db.save_interview_log(
+                        qid, category, answer, parsed["content"], parsed["logic"],
+                        parsed["express"], md_text,
+                        int(b.get("think_ms") or 0), int(b.get("answer_ms") or 0))
+                yield "result", {"data": parsed}
+                yield "saved", str(gid)
+            elif raw:
+                with _lock:
+                    gid = db.save_interview_log(
+                        qid, category, answer, 0, 0, 0, raw,
+                        int(b.get("think_ms") or 0), int(b.get("answer_ms") or 0))
+                yield "fallback", raw
+                yield "saved", str(gid)
+            else:
+                yield "error", "点评未返回内容，请重试"
+
+        self._stream_sse(gen())
+
     # ---- 能力雷达 & 学习计划（功能 2.1） ----
 
     def _study_plan_generate(self, b):
@@ -1482,30 +1566,15 @@ class _Handler(BaseHTTPRequestHandler):
         item = db.get_shizheng(period)
         if not item:
             return {"ok": False, "error": "该期时政尚未生成"}
-        prompt = (
-            "基于下面的时政内容，出 10 道单选自测题，直接考察内容中的事实要点。\n"
-            "严格输出 JSON（不要 markdown 代码块），格式：\n"
-            '{"items":[{"q":"题干","options":["A. ...","B. ...","C. ...","D. ..."],'
-            '"answer":"A","note":"一句话考点说明"}]}\n'
-            "要求：答案分布均匀、干扰项似是而非但正确项唯一、note 控制在 30 字内。\n\n"
-            f"【时政内容】\n{item['content'][:6000]}"
-        )
+        prompt = ai.build_shizheng_quiz_prompt(item["content"])
         try:
             out = await ai.chat_once(
                 [{"role": "user", "content": prompt}], temperature=0.4)
         except RuntimeError as e:
             return {"ok": False, "error": str(e)}
-        m = _re.search(r"\{[\s\S]*\}", out)
-        if not m:
-            return {"ok": False, "error": "生成格式异常，请重试"}
-        try:
-            data = _json.loads(m.group(0))
-            items = [q for q in data.get("items", [])
-                     if q.get("q") and len(q.get("options") or []) == 4 and q.get("answer")]
-        except Exception:
-            return {"ok": False, "error": "解析失败，请重试"}
+        items = ai.parse_shizheng_quiz_json(out)
         if not items:
-            return {"ok": False, "error": "未生成有效题目，请重试"}
+            return {"ok": False, "error": "生成格式异常或解析失败，请重试"}
         db.save_shizheng_quiz(period, _json.dumps(items, ensure_ascii=False))
         return {"ok": True, "cached": False, "items": items}
 

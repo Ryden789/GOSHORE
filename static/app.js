@@ -265,6 +265,7 @@ function route() {
   else if (name === "exam") dispatch(renderExam);
   else if (name === "mastery") dispatch(renderMastery);
   else if (name === "plan") dispatch(renderPlan);
+  else if (name === "interview") dispatch(renderInterview);
   else dispatch(renderHome);
 }
 window.addEventListener("hashchange", route);
@@ -3676,9 +3677,14 @@ async function renderShizheng() {
         <details ${it.period === r.current ? "open" : ""}>
           <summary style="cursor:pointer;font-weight:700">${it.period === r.current ? "🔴 当前期：" : ""}${esc(it.period)}<span style="font-weight:400;color:var(--ink-3);font-size:12px;margin-left:8px">${new Date(it.created_at * 1000).toLocaleDateString("zh-CN")} 生成</span></summary>
           <div class="sz-content" style="margin-top:10px">${md(it.content)}</div>
-          <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
-            <button class="btn btn-sm sz-quiz-btn" data-p="${esc(it.period)}">📝 自测 10 题</button>
-            <span style="font-size:12px;color:var(--ink-3);margin-left:8px">看 → 测闭环：先阅读再自测，直接服务常识判断</span>
+          <div class="sz-steps">
+            <span class="sz-step on">① 阅读摘要</span><span class="sz-step-arrow">→</span>
+            <span class="sz-step">② 自测 10 题</span><span class="sz-step-arrow">→</span>
+            <span class="sz-step">③ 错题进错题本</span>
+          </div>
+          <div style="margin-top:8px;padding-top:10px;border-top:1px dashed var(--line)">
+            <button class="btn btn-sm sz-quiz-btn" data-p="${esc(it.period)}">📝 开始自测</button>
+            <span style="font-size:12px;color:var(--ink-3);margin-left:8px">学习模式：先读摘要再做题，答错自动进错题本</span>
           </div>
           <div class="sz-quiz-box" data-p="${esc(it.period)}" style="margin-top:10px"></div>
         </details>
@@ -5257,6 +5263,267 @@ async function renderPlan() {
     } catch (e) { alert("生成失败：" + e.message); }
     btn.disabled = false; btn.textContent = "生成计划";
   };
+}
+
+/* =====================================================
+   面试模拟 · AI 考官（功能 2.3）
+===================================================== */
+
+function ivScoreBar(name, v) {
+  const pct = Math.max(0, Math.min(100, Number(v) || 0));
+  const color = pct >= 80 ? "var(--bamboo)" : pct >= 60 ? "var(--amber)" : "var(--cinnabar)";
+  return `<div class="gr-dim">
+    <span class="gr-dim-name">${esc(name)}</span>
+    <span class="gr-dim-bar"><i style="width:${pct}%;background:${color}"></i></span>
+    <span class="gr-dim-num">${pct}</span>
+  </div>`;
+}
+
+function ivResultHtml(d) {
+  const total = Number(d.total || 0);
+  const color = total >= 80 ? "var(--bamboo)" : total >= 60 ? "var(--amber)" : "var(--cinnabar)";
+  const card = `<div class="gr-score">
+    <div class="gr-ring">
+      <svg width="84" height="84" viewBox="0 0 84 84">
+        <circle cx="42" cy="42" r="34" fill="none" stroke="var(--line)" stroke-width="7"/>
+        <circle cx="42" cy="42" r="34" fill="none" stroke="${color}" stroke-width="7" stroke-linecap="round"
+          stroke-dasharray="${(2 * Math.PI * 34 * Math.max(0, Math.min(1, total / 100))).toFixed(1)} ${(2 * Math.PI * 34).toFixed(1)}"
+          transform="rotate(-90 42 42)"/>
+        <text x="42" y="47" text-anchor="middle" font-size="16" font-weight="700" fill="${color}">${Math.round(total)}</text>
+      </svg>
+    </div>
+    <div style="flex:1;min-width:0">
+      <div class="gr-score-num">${total} <span>/ 100 分</span></div>
+      ${d.summary ? `<div class="gr-summary">${esc(d.summary)}</div>` : ""}
+    </div>
+  </div>
+  <div class="gr-dims">
+    ${ivScoreBar("内容", d.content)}${ivScoreBar("逻辑", d.logic)}${ivScoreBar("表达", d.express)}
+  </div>`;
+
+  const hl = (d.highlights || []).length
+    ? `<div class="gr-sec">✅ 亮点</div><ol class="gr-ol">${d.highlights.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+  const pb = (d.problems || []).length
+    ? `<div class="gr-sec">⚠️ 主要问题</div><ol class="gr-ol">${d.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+  const sg = (d.suggestions || []).length
+    ? `<div class="gr-sec">🔧 改进建议</div><ol class="gr-ol">${d.suggestions.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+  const ma = d.model_answer
+    ? `<div class="gr-sec">📖 高分示范作答</div><div class="iv-model">${esc(d.model_answer)}</div>` : "";
+  return card + hl + pb + sg + ma;
+}
+
+async function renderInterview() {
+  const [qdata, stats] = await Promise.all([
+    api("/api/interview/questions"),
+    api("/api/interview/stats"),
+  ]);
+  let logs = (await api("/api/interview/logs")).items;
+  let curCat = qdata.categories[0];
+  let curQ = null, busy = false;
+  let timerH = null, timerLeft = 0, timerPhase = "", answerTotal = qdata.answer_seconds;
+
+  const fmt = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const stopTimer = () => { if (timerH) { clearInterval(timerH); timerH = null; } };
+  function tickFn() {
+    const box = $("#ivClock");
+    if (!box) { stopTimer(); return; }
+    box.textContent = `${timerPhase} ${fmt(Math.max(0, timerLeft))}`;
+    box.className = "iv-clock" + (timerLeft <= 30 && timerPhase.startsWith("作答") ? " warn" : "");
+    if (timerLeft <= 0) {
+      stopTimer();
+      if (timerPhase.startsWith("作答")) $("#gTipIv") && ($("#gTipIv").textContent = "⏰ 作答时间到，请提交点评");
+      return;
+    }
+    timerLeft--;
+  }
+  function startTimer(secs, phase) {
+    stopTimer(); timerLeft = secs; timerPhase = phase; tickFn();
+    timerH = setInterval(tickFn, 1000);
+  }
+
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">面试模拟 · AI 考官</h1>
+      <p class="page-desc">五类结构化面试真题 · 思考 ${qdata.think_seconds} 秒 + 作答 ${qdata.answer_seconds} 秒 · AI 按内容 / 逻辑 / 表达三维点评</p>
+    </div>
+    <div class="dash-grid rise rise-1">
+      <div class="panel">
+        <h3>练习数据</h3>
+        <div id="ivStats"></div>
+      </div>
+      <div class="panel">
+        <h3>选题 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">五类结构化面试</span></h3>
+        <div class="chips" id="ivCats" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
+        <select id="ivSel" style="width:100%;padding:8px 10px;font-size:13.5px"></select>
+        <div style="margin-top:10px"><button class="btn btn-primary" id="ivStart">开始这道题</button></div>
+      </div>
+    </div>
+    <div class="panel rise rise-2" id="ivQ" style="display:none"></div>
+    <div id="ivOut"></div>
+    <div class="panel rise rise-2" style="margin-top:16px">
+      <h3 style="margin:0 0 8px">练习记录 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">点击查看点评详情</span></h3>
+      <div id="ivLogs"></div>
+    </div>`;
+
+  function drawStats() {
+    const s = stats;
+    const cat = (s.by_category || []);
+    $("#ivStats").innerHTML = s.n ? `
+      <div style="font-size:13px;color:var(--ink-2);line-height:1.9;margin-bottom:8px">
+        共练习 <b>${s.n}</b> 次　内容 <b>${s.avg_content ?? "—"}</b> · 逻辑 <b>${s.avg_logic ?? "—"}</b> · 表达 <b>${s.avg_express ?? "—"}</b>
+      </div>
+      ${cat.map(c => {
+        const pct = Math.round(c.avg || 0);
+        const color = pct >= 80 ? "var(--bamboo)" : pct >= 60 ? "var(--amber)" : "var(--cinnabar)";
+        return `<div class="gr-dim">
+          <span class="gr-dim-name">${esc(c.category)}</span>
+          <span class="gr-dim-bar"><i style="width:${pct}%;background:${color}"></i></span>
+          <span class="gr-dim-num">${pct} (${c.n})</span></div>`;
+      }).join("")}
+      <div style="font-size:12px;color:var(--ink-3);margin-top:6px">均值偏低的题型排前面 = 优先突破</div>`
+      : `<div class="empty" style="padding:16px">还没有练习记录，选一道题开始吧</div>`;
+  }
+
+  function drawCats() {
+    const counts = Object.fromEntries((qdata.counts || []).map(c => [c.category, c.n]));
+    $("#ivCats").innerHTML = qdata.categories.map(c =>
+      `<span class="chip ${c === curCat ? "on" : ""}" data-c="${esc(c)}">${esc(c)} ${counts[c] || 0}</span>`).join("");
+    $$("#ivCats .chip").forEach(el => el.onclick = () => {
+      curCat = el.dataset.c;
+      $$("#ivCats .chip").forEach(x => x.classList.toggle("on", x === el));
+      drawSel();
+    });
+  }
+
+  function drawSel() {
+    const list = qdata.items.filter(q => q.category === curCat);
+    $("#ivSel").innerHTML = list.map(q =>
+      `<option value="${q.id}">${esc(q.question.slice(0, 46))}…</option>`).join("");
+    curQ = list[0] || null;
+  }
+
+  function drawQ() {
+    if (!curQ) { $("#ivQ").style.display = "none"; return; }
+    $("#ivQ").style.display = "";
+    $("#ivQ").innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="tag">${esc(curQ.category)}</span>
+        <span id="ivClock" class="iv-clock">未计时</span>
+      </div>
+      <div style="font-size:15.5px;line-height:1.8;margin:10px 0;font-family:var(--serif)">${esc(curQ.question)}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn btn-sm" id="ivThink">⏱ 开始思考（${qdata.think_seconds}s）</button>
+        <button class="btn btn-sm" id="ivAnswer">✍️ 开始作答（${qdata.answer_seconds}s）</button>
+        <button class="btn btn-sm" id="ivRef">📖 看参考思路</button>
+      </div>
+      <textarea id="ivA" rows="8" placeholder="写下你的作答（一期为文字作答；结构化面试建议分点作答：亮观点 → 分层论证 → 结合岗位表态）" style="width:100%"></textarea>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
+        <button class="btn btn-primary" id="ivGo">请 AI 考官点评</button>
+        <span id="gTipIv" style="font-size:12.5px;color:var(--ink-3)"></span>
+      </div>
+      <div id="ivRefBox" style="display:none;margin-top:12px;padding:10px 13px;background:var(--paper-2);border-radius:8px;font-size:13.5px;line-height:1.8"></div>`;
+
+    $("#ivThink").onclick = () => startTimer(qdata.think_seconds, "思考");
+    $("#ivAnswer").onclick = () => { answerTotal = qdata.answer_seconds; startTimer(qdata.answer_seconds, "作答"); };
+    $("#ivRef").onclick = () => {
+      const box = $("#ivRefBox");
+      box.style.display = box.style.display === "none" ? "" : "none";
+      if (box.style.display === "") {
+        api("/api/interview/question/" + curQ.id).then(q => {
+          box.innerHTML = `<b>参考思路</b><div style="margin-top:6px">${md(q.reference || "（暂无）")}</div>`;
+        });
+      }
+    };
+    $("#ivGo").onclick = submit;
+  }
+
+  function drawLogs() {
+    $("#ivLogs").innerHTML = logs.length ? logs.map(l => {
+      const avg = Math.round(((l.content_score + l.logic_score + l.express_score) / 3) * 10) / 10;
+      const color = avg >= 80 ? "var(--bamboo)" : avg >= 60 ? "var(--amber)" : "var(--cinnabar)";
+      return `<div class="gh-item" data-id="${l.id}" style="padding:8px 4px;border-top:1px solid var(--line);cursor:pointer">
+        <span class="tag">${esc(l.category)}</span>
+        <b style="margin-left:6px;color:${color}">${avg} 分</b>
+        <span style="font-size:12px;color:var(--ink-3);margin-left:8px">内容 ${l.content_score} · 逻辑 ${l.logic_score} · 表达 ${l.express_score}</span>
+        <span style="float:right;color:var(--ink-3);font-size:12px">${new Date(l.created_at * 1000).toLocaleString("zh-CN")}</span>
+        <div style="font-size:12.5px;color:var(--ink-3);margin-top:2px">${esc((l.answer || "").slice(0, 60))}…</div>
+      </div>`;
+    }).join("") : `<div style="color:var(--ink-3);font-size:13px">暂无练习记录</div>`;
+    $$("#ivLogs .gh-item").forEach(el => el.onclick = async () => {
+      const d = await api("/api/interview/log/" + el.dataset.id);
+      $("#ivOut").innerHTML = `<div class="panel" style="border-left:4px solid var(--indigo);margin-top:14px">
+        <div style="font-size:12.5px;color:var(--ink-3);margin-bottom:6px">历史点评 · ${new Date(d.created_at * 1000).toLocaleString("zh-CN")}</div>
+        <div class="sz-content">${md(d.comment)}</div></div>`;
+      window.scrollTo({ top: $("#ivOut").offsetTop - 70, behavior: "smooth" });
+    });
+  }
+
+  async function submit() {
+    if (busy) return;
+    const answer = $("#ivA").value.trim();
+    if (!answer) { $("#gTipIv").textContent = "请先写下作答"; return; }
+    busy = true;
+    stopTimer();
+    const btn = $("#ivGo"); btn.disabled = true;
+    $("#gTipIv").textContent = "点评中，约 30-60 秒…";
+    $("#ivOut").innerHTML = `<div class="panel" style="margin-top:14px;border-left:4px solid var(--cinnabar)"><div id="ivRes"></div></div>`;
+    const box = $("#ivRes");
+    let full = "", lastData = null;
+    const answerMs = timerPhase.startsWith("作答") ? (answerTotal - Math.max(0, timerLeft)) * 1000 : 0;
+    try {
+      const r = await fetch("/api/interview/grade", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          qid: curQ ? curQ.id : 0, category: curQ ? curQ.category : curCat,
+          question: curQ ? curQ.question : "", answer, answer_ms: answerMs,
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const frames = buf.split("\n\n");
+        buf = frames.pop();
+        for (const f of frames) {
+          const line = f.split("\n").find(l => l.startsWith("data:"));
+          if (!line) continue;
+          const ev = JSON.parse(line.slice(5).trim());
+          if (ev.type === "phase") $("#gTipIv").textContent = ev.text;
+          else if (ev.type === "result") { lastData = ev.data; box.innerHTML = ivResultHtml(ev.data); }
+          else if (ev.type === "fallback") { full = ev.text; box.innerHTML = md(full); }
+          else if (ev.type === "delta") { full += ev.text; box.innerHTML = md(full); }
+          else if (ev.type === "error") { full += `\n\n**⚠ ${ev.text}**`; box.innerHTML = md(full); }
+          else if (ev.type === "saved") {
+            logs.unshift({
+              id: +ev.text, category: curQ ? curQ.category : curCat, answer,
+              content_score: lastData ? lastData.content : 0,
+              logic_score: lastData ? lastData.logic : 0,
+              express_score: lastData ? lastData.express : 0,
+              created_at: Date.now() / 1000,
+            });
+            const st = await api("/api/interview/stats");
+            Object.assign(stats, st);
+            drawStats(); drawLogs();
+          }
+        }
+      }
+      $("#gTipIv").textContent = "点评完成，已存入记录";
+    } catch (e) {
+      box.innerHTML = md(full + `\n\n**⚠ 请求失败：${esc(e.message)}**`);
+      $("#gTipIv").textContent = "点评失败，可重试";
+    }
+    busy = false; btn.disabled = false;
+  }
+
+  drawStats(); drawCats(); drawSel(); drawLogs();
+  $("#ivSel").onchange = () => {
+    curQ = (qdata.items.find(q => String(q.id) === $("#ivSel").value)) || null;
+    stopTimer(); drawQ();
+  };
+  $("#ivStart").onclick = () => { stopTimer(); drawQ(); startTimer(qdata.think_seconds, "思考"); };
 }
 
 route();

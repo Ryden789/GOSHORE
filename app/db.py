@@ -2925,6 +2925,40 @@ def get_essay_grade(gid: int) -> dict | None:
     return dict(row) if row else None
 
 
+# ---------------- 时政抓取去重（功能 2.2） ----------------
+
+def _ensure_sz_seen(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS shizheng_seen(
+            url TEXT PRIMARY KEY, period TEXT DEFAULT '',
+            created_at REAL DEFAULT 0)""")
+
+
+def seen_shizheng_urls() -> set[str]:
+    """已抓取过的时政 URL 集合（增量去重用）。"""
+    conn = connect()
+    _ensure_sz_seen(conn)
+    rows = conn.execute("SELECT url FROM shizheng_seen").fetchall()
+    conn.close()
+    return {r["url"] for r in rows}
+
+
+def mark_shizheng_seen(pairs: list[tuple[str, str]]) -> int:
+    """记录已抓取 URL（pairs: [(url, period), ...]），返回新增条数。"""
+    if not pairs:
+        return 0
+    conn = connect()
+    _ensure_sz_seen(conn)
+    before = conn.execute("SELECT COUNT(*) c FROM shizheng_seen").fetchone()["c"]
+    conn.executemany(
+        "INSERT OR IGNORE INTO shizheng_seen(url,period,created_at) VALUES(?,?,?)",
+        [(u, p, time.time()) for u, p in pairs])
+    conn.commit()
+    after = conn.execute("SELECT COUNT(*) c FROM shizheng_seen").fetchone()["c"]
+    conn.close()
+    return after - before
+
+
 # ---------------- 能力雷达 & 学习计划（功能 2.1） ----------------
 
 # 雷达 5 个客观模块（与 MODULE_ORDER 一致），另加「综应」维度
@@ -3046,6 +3080,126 @@ def study_plan_summary(today: str = "") -> dict:
         "rate": round(done / total, 4) if total else 0.0,
         "days": sorted(by_day.values(), key=lambda x: x["day"]),
         "today": today_items,
+    }
+
+
+# ---------------- 面试模块（功能 2.3） ----------------
+
+def _ensure_interview_seed(conn: sqlite3.Connection) -> None:
+    """建表（兜底）并在首次使用时灌入内置五类真题。"""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS interview_questions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT DEFAULT '',
+            question TEXT DEFAULT '', reference TEXT DEFAULT '',
+            source TEXT DEFAULT 'builtin', created_at REAL DEFAULT 0)""")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS interview_logs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, qid INTEGER,
+            category TEXT DEFAULT '', answer TEXT DEFAULT '',
+            content_score REAL DEFAULT 0, logic_score REAL DEFAULT 0,
+            express_score REAL DEFAULT 0, comment TEXT DEFAULT '',
+            think_ms INTEGER DEFAULT 0, answer_ms INTEGER DEFAULT 0,
+            created_at REAL DEFAULT 0)""")
+    n = conn.execute("SELECT COUNT(*) c FROM interview_questions").fetchone()["c"]
+    if n == 0:
+        from . import interview as _iv
+        conn.executemany(
+            "INSERT INTO interview_questions(category,question,reference,source,created_at)"
+            " VALUES(?,?,?,'builtin',?)",
+            [(c, q, r, time.time()) for c, q, r in _iv.BUILTIN_QUESTIONS])
+        conn.commit()
+
+
+def list_interview_questions(category: str = "") -> list[dict]:
+    conn = connect()
+    _ensure_interview_seed(conn)
+    sql = "SELECT id,category,question FROM interview_questions"
+    args: list = []
+    if category:
+        sql += " WHERE category=?"
+        args.append(category)
+    sql += " ORDER BY id"
+    rows = conn.execute(sql, args).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_interview_question(qid: int) -> dict | None:
+    conn = connect()
+    _ensure_interview_seed(conn)
+    row = conn.execute("SELECT * FROM interview_questions WHERE id=?",
+                       (qid,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def interview_category_counts() -> list[dict]:
+    conn = connect()
+    _ensure_interview_seed(conn)
+    rows = conn.execute(
+        "SELECT category, COUNT(*) n FROM interview_questions"
+        " GROUP BY category").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def save_interview_log(qid: int, category: str, answer: str, content_score: float,
+                       logic_score: float, express_score: float, comment: str,
+                       think_ms: int = 0, answer_ms: int = 0) -> int:
+    conn = connect()
+    _ensure_interview_seed(conn)
+    cur = conn.execute(
+        "INSERT INTO interview_logs(qid,category,answer,content_score,logic_score,"
+        "express_score,comment,think_ms,answer_ms,created_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (qid, category, answer[:8000], content_score, logic_score, express_score,
+         comment, think_ms, answer_ms, time.time()))
+    conn.commit()
+    gid = cur.lastrowid
+    conn.close()
+    return gid
+
+
+def list_interview_logs(limit: int = 30) -> list[dict]:
+    conn = connect()
+    _ensure_interview_seed(conn)
+    rows = conn.execute(
+        "SELECT id,category,answer,content_score,logic_score,express_score,"
+        "comment,think_ms,answer_ms,created_at FROM interview_logs"
+        " ORDER BY id DESC LIMIT ?", (max(1, min(200, limit)),)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_interview_log(lid: int) -> dict | None:
+    conn = connect()
+    row = conn.execute("SELECT * FROM interview_logs WHERE id=?", (lid,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def interview_stats() -> dict:
+    """面试练习统计：次数 + 三维均值 + 各题型均值（弱的排前面）。"""
+    conn = connect()
+    _ensure_interview_seed(conn)
+    row = conn.execute(
+        "SELECT COUNT(*) n, AVG(content_score) c, AVG(logic_score) l,"
+        " AVG(express_score) e FROM interview_logs").fetchone()
+    by_cat = conn.execute(
+        "SELECT category, COUNT(*) n,"
+        " AVG((content_score+logic_score+express_score)/3.0) avg"
+        " FROM interview_logs GROUP BY category ORDER BY avg").fetchall()
+    conn.close()
+
+    def _r(v):
+        return round(v, 1) if v is not None else None
+    return {
+        "n": row["n"] or 0,
+        "avg_content": _r(row["c"]),
+        "avg_logic": _r(row["l"]),
+        "avg_express": _r(row["e"]),
+        "by_category": [{"category": r["category"], "n": r["n"], "avg": _r(r["avg"])}
+                        for r in by_cat],
     }
 
 

@@ -15,7 +15,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, essay_rubric, formula_drill, importer, knowledge, planner, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
+from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
 from .config import STATIC_DIR, DB_PATH, SETTINGS_PATH, load_settings, save_settings
 
 import html as _html
@@ -1320,6 +1320,95 @@ async def api_essay_grade(b: EssayGradeIn):
 def api_essay_trend(category: str = "", limit: int = 30):
     """历史提分曲线：按题型（可选）返回历次批改得分率。"""
     return {"items": db.essay_score_trend(category, limit)}
+
+
+# ---------------- 面试模块（功能 2.3） ----------------
+
+class InterviewGradeIn(BaseModel):
+    qid: int = 0
+    category: str = ""
+    question: str
+    answer: str
+    think_ms: int = 0
+    answer_ms: int = 0
+
+
+@app.get("/api/interview/questions")
+def api_interview_questions(category: str = ""):
+    return {
+        "items": db.list_interview_questions(category),
+        "counts": db.interview_category_counts(),
+        "categories": interview.CATEGORIES,
+        "hints": interview.CATEGORY_HINT,
+        "think_seconds": interview.THINK_SECONDS,
+        "answer_seconds": interview.ANSWER_SECONDS,
+    }
+
+
+@app.get("/api/interview/question/{qid}")
+def api_interview_question(qid: int):
+    q = db.get_interview_question(qid)
+    if not q:
+        raise HTTPException(404)
+    return q
+
+
+@app.get("/api/interview/stats")
+def api_interview_stats():
+    return db.interview_stats()
+
+
+@app.get("/api/interview/logs")
+def api_interview_logs():
+    return {"items": db.list_interview_logs()}
+
+
+@app.get("/api/interview/log/{lid}")
+def api_interview_log(lid: int):
+    it = db.get_interview_log(lid)
+    if not it:
+        raise HTTPException(404)
+    return it
+
+
+@app.post("/api/interview/grade")
+async def api_interview_grade(b: InterviewGradeIn):
+    """AI 模拟考官：内容/逻辑/表达三维点评（结构化 JSON，失败降级纯文本）。"""
+    if not b.question.strip() or not b.answer.strip():
+        raise HTTPException(400, "题目与作答均不能为空")
+    category = b.category or "综合分析"
+    q = db.get_interview_question(b.qid) if b.qid else None
+    messages = interview.build_grade_messages(
+        category, b.question, b.answer, (q or {}).get("reference", ""))
+
+    buffer: list[str] = []
+
+    async def gen():
+        yield _sse({"type": "phase", "text": "模拟考官正在点评…"})
+        async for kind, payload in ai.stream_chat_with_temp(messages, 0.3):
+            if kind == "delta":
+                buffer.append(payload)
+            elif kind == "error":
+                yield _sse({"type": "error", "text": payload})
+                return
+        raw = "".join(buffer).strip()
+        parsed = interview.parse_grade_json(raw)
+        if parsed:
+            md_text = interview.render_grade_markdown(parsed)
+            gid = db.save_interview_log(
+                b.qid, category, b.answer, parsed["content"], parsed["logic"],
+                parsed["express"], md_text, b.think_ms, b.answer_ms)
+            yield _sse({"type": "result", "data": parsed})
+            yield _sse({"type": "saved", "text": str(gid)})
+        elif raw:
+            gid = db.save_interview_log(
+                b.qid, category, b.answer, 0, 0, 0, raw, b.think_ms, b.answer_ms)
+            yield _sse({"type": "fallback", "text": raw})
+            yield _sse({"type": "saved", "text": str(gid)})
+        else:
+            yield _sse({"type": "error", "text": "点评未返回内容，请重试"})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.get("/api/essay/history")

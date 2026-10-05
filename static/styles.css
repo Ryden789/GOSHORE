@@ -956,3 +956,14 @@ body.exam-mode .view {
 .pl-kd { flex: 1; color: var(--amber); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pl-go { flex: 0 0 auto; font-size: 12.5px; color: var(--indigo); text-decoration: none; }
 .pl-go:hover { text-decoration: underline; }
+
+/* ===== 时政学习模式步骤条（2.2） ===== */
+.sz-steps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 12px 0 0; font-size: 12.5px; }
+.sz-step { padding: 3px 10px; border-radius: 20px; background: var(--paper-2); color: var(--ink-3); }
+.sz-step.on { background: var(--cinnabar-soft); color: var(--cinnabar); font-weight: 600; }
+.sz-step-arrow { color: var(--line); }
+
+/* ===== 面试模拟（2.3） ===== */
+.iv-clock { font-size: 13px; font-family: var(--mono); color: var(--ink-2); padding: 3px 10px; border: 1px solid var(--line); border-radius: 20px; background: var(--paper-2); }
+.iv-clock.warn { color: var(--cinnabar); border-color: var(--cinnabar); background: var(--cinnabar-soft); }
+.iv-model { padding: 12px 14px; background: var(--bamboo-soft); border-radius: 8px; font-size: 13.5px; line-height: 1.85; color: #2f4a33; white-space: pre-wrap; }
