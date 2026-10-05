@@ -1,6 +1,7 @@
 """GOSHORE 本地 Web 服务入口。"""
 from __future__ import annotations
 
+import datetime
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,7 +15,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
+from . import ai, db, essay_rubric, formula_drill, importer, knowledge, planner, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
 from .config import STATIC_DIR, DB_PATH, SETTINGS_PATH, load_settings, save_settings
 
 import html as _html
@@ -504,6 +505,67 @@ def api_paper_sequential(b: PaperIn):
 def api_mastery(module: str = ""):
     """考点级掌握度图谱（功能 1.4）。"""
     return {"items": db.kaodian_mastery(module)}
+
+
+# ---------------- 能力雷达 & 学习计划（功能 2.1） ----------------
+
+class PlanIn(BaseModel):
+    exam_date: str = ""      # 'YYYY-MM-DD'，空则按通用 14 天计划
+    days: int = 14
+    daily_n: int = 30
+
+
+def _weak_kaodian_pool() -> dict[str, list[str]]:
+    """薄弱考点池：各模块红/黄考点（题量大的优先），供计划轮换。"""
+    pool: dict[str, list[str]] = {}
+    for m in planner.MODULE_WEIGHT:
+        rows = db.kaodian_mastery(m)
+        weak = [r["kaodian"] for r in rows
+                if r.get("level") in ("red", "amber") and r.get("total", 0) >= 3]
+        pool[m] = weak[:8]
+    return pool
+
+
+@app.get("/api/ability/radar")
+def api_ability_radar():
+    return {"items": db.ability_radar()}
+
+
+@app.get("/api/study-plan")
+def api_study_plan():
+    today = datetime.date.today().isoformat()
+    return {
+        "items": db.list_study_plan(),
+        "summary": db.study_plan_summary(today),
+        "today": today,
+    }
+
+
+@app.post("/api/study-plan/generate")
+def api_study_plan_generate(b: PlanIn):
+    """按能力雷达 + 考试日期生成 14 天计划并落库（覆盖同日期旧计划）。"""
+    radar = db.ability_radar()
+    items = planner.build_plan(
+        radar, exam_date=b.exam_date,
+        days=max(1, min(60, b.days)), daily_n=max(10, min(200, b.daily_n)),
+        kaodian_pool=_weak_kaodian_pool())
+    n = db.save_study_plan(items)
+    today = datetime.date.today().isoformat()
+    return {"ok": True, "n": n, "items": db.list_study_plan(),
+            "summary": db.study_plan_summary(today), "today": today}
+
+
+class PlanToggleIn(BaseModel):
+    day: str
+    module: str
+    done: bool = True
+
+
+@app.post("/api/study-plan/toggle")
+def api_study_plan_toggle(b: PlanToggleIn):
+    ok = db.toggle_study_plan(b.day, b.module, b.done)
+    today = datetime.date.today().isoformat()
+    return {"ok": ok, "summary": db.study_plan_summary(today)}
 
 
 # ---------------- 词语填空 ----------------
@@ -1102,28 +1164,14 @@ async def api_shizheng_quiz(b: ShizhengGenIn):
     item = db.get_shizheng(period)
     if not item:
         return {"ok": False, "error": "该期时政尚未生成"}
-    prompt = (
-        "基于下面的时政内容，出 10 道单选自测题，直接考察内容中的事实要点。\n"
-        "严格输出 JSON（不要 markdown 代码块），格式：\n"
-        '{"items":[{"q":"题干","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","note":"一句话考点说明"}]}\n'
-        "要求：答案分布均匀、干扰项似是而非但正确项唯一、note 控制在 30 字内。\n\n"
-        f"【时政内容】\n{item['content'][:6000]}"
-    )
+    prompt = ai.build_shizheng_quiz_prompt(item["content"])
     try:
         out = await ai.chat_once([{"role": "user", "content": prompt}], temperature=0.4)
     except RuntimeError as e:
         return {"ok": False, "error": str(e)}
-    m = _re.search(r"\{[\s\S]*\}", out)
-    if not m:
-        return {"ok": False, "error": "生成格式异常，请重试"}
-    try:
-        data = _json.loads(m.group(0))
-        items = [q for q in data.get("items", [])
-                 if q.get("q") and len(q.get("options") or []) == 4 and q.get("answer")]
-    except Exception:
-        return {"ok": False, "error": "解析失败，请重试"}
+    items = ai.parse_shizheng_quiz_json(out)
     if not items:
-        return {"ok": False, "error": "未生成有效题目，请重试"}
+        return {"ok": False, "error": "生成格式异常或解析失败，请重试"}
     db.save_shizheng_quiz(period, _json.dumps(items, ensure_ascii=False))
     return {"ok": True, "cached": False, "items": items}
 

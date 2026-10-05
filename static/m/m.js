@@ -233,6 +233,7 @@ const TITLES = {
   search: "搜题", doubts: "疑点", import: "导入", settings: "设置",
   mydocs: "我的题库",
   mastery: "掌握度",
+  plan: "学习计划",
 };
 const AUTH_PAGES = ["login", "register"];
 
@@ -262,6 +263,7 @@ const HUB = [
   { group: "复习巩固", items: [
     ["review", "◌", "今日复习", "到期复习列表"],
     ["mastery", "图", "掌握度", "考点掌握图谱"],
+    ["plan", "计", "学习计划", "能力雷达·14天路径"],
     ["wrong", "✗", "错题本", "错题重做"],
     ["marks", "★", "收藏", "收藏题目"],
     ["cards", "▦", "辨析卡", "翻面辨析卡片"],
@@ -325,7 +327,9 @@ function route() {
   inRun = false;
   clearAllTimers();   // 先清旧页面遗留的定时器，再渲染新页面
   const h = location.hash || "#/home";
-  const name = h.replace(/^#\//, "").split("/")[0] || "home";
+  const hParts = h.replace(/^#\//, "").split("/");
+  const name = hParts[0] || "home";
+  const arg = hParts.length > 1 ? decodeURIComponent(hParts.slice(1).join("/")) : "";
   const isAuth = AUTH_PAGES.includes(name);
   $("#tabbar").style.display = isAuth ? "none" : "";
   const tabName = ALIAS[name] || name;
@@ -346,7 +350,7 @@ function route() {
   const go = ROUTES[tabName] || renderHome;
   view.innerHTML = routeLoadingMarkup(name);
   view.classList.add("route-loading");
-  Promise.resolve(go())
+  Promise.resolve(go(arg))
     .then(() => { view.classList.remove("route-loading"); animIn(view); })
     .catch(e => {
       view.classList.remove("route-loading");
@@ -650,6 +654,135 @@ function makeTodo(name) {
   };
 }
 
+/* ---------- 能力雷达 & 学习计划（2.1） ---------- */
+
+function mRadarSvg(items) {
+  const S = 260, cx = S / 2, cy = S / 2, R = 84;
+  const n = items.length || 1;
+  const ang = i => -Math.PI / 2 + i * 2 * Math.PI / n;
+  const pt = (i, r) => [cx + Math.cos(ang(i)) * R * r, cy + Math.sin(ang(i)) * R * r];
+  const rings = [0.25, 0.5, 0.75, 1].map(r =>
+    `<polygon points="${items.map((_, i) => pt(i, r).map(v => v.toFixed(1)).join(",")).join(" ")}"
+      fill="none" stroke="var(--line)" stroke-width="1"/>`).join("");
+  const axes = items.map((_, i) => {
+    const p = pt(i, 1);
+    return `<line x1="${cx}" y1="${cy}" x2="${p[0].toFixed(1)}" y2="${p[1].toFixed(1)}" stroke="var(--line-soft)" stroke-width="1"/>`;
+  }).join("");
+  const vals = items.map(it => (it.rate === null || it.rate === undefined) ? 0.05 : Math.max(0.05, it.rate));
+  const poly = items.map((_, i) => pt(i, vals[i]).map(v => v.toFixed(1)).join(",")).join(" ");
+  const dots = items.map((_, i) => {
+    const p = pt(i, vals[i]);
+    return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6" fill="var(--cinnabar)"/>`;
+  }).join("");
+  const labels = items.map((it, i) => {
+    const p = pt(i, 1.22);
+    const anchor = Math.abs(p[0] - cx) < 8 ? "middle" : (p[0] > cx ? "start" : "end");
+    const pct = (it.rate === null || it.rate === undefined) ? "未练" : Math.round(it.rate * 100) + "%";
+    return `<text x="${p[0].toFixed(1)}" y="${(p[1] + 2).toFixed(1)}" text-anchor="${anchor}" font-size="11" fill="var(--ink-2)">${esc(it.module)}</text>
+      <text x="${p[0].toFixed(1)}" y="${(p[1] + 13).toFixed(1)}" text-anchor="${anchor}" font-size="10" fill="var(--ink-3)">${pct}</text>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${S} ${S}" width="100%" style="max-width:${S}px;display:block;margin:0 auto">
+    ${rings}${axes}
+    <polygon points="${poly}" fill="rgba(140,43,33,.16)" stroke="var(--cinnabar)" stroke-width="2"/>
+    ${dots}${labels}</svg>`;
+}
+
+async function renderPlan() {
+  const rad = (await api("/api/ability/radar")).items;
+  const plan = await api("/api/study-plan");
+  let items = plan.items || [], todayStr = plan.today || "";
+  let summary = plan.summary || { total: 0, done: 0, rate: 0 };
+
+  view.innerHTML = `
+    <div class="page-head">
+      <h2>能力雷达 & 学习计划</h2>
+      <p class="muted">五模块 + 综应一图看水平；按考试日期倒排，弱项自动加权</p>
+    </div>
+    <div class="card">
+      <h3 class="sec">能力雷达</h3>
+      ${mRadarSvg(rad)}
+      <div class="muted" style="font-size:12px;line-height:1.9;margin-top:6px">
+        ${rad.map(r => {
+          const c = r.level === "弱" ? "var(--cinnabar)" : r.level === "强" ? "var(--green)" : r.level === "未练" ? "var(--ink-3)" : "var(--amber)";
+          return `<span style="display:inline-block;min-width:104px">${esc(r.module)}：<b style="color:${c}">${r.level}</b>${r.n ? `（${r.n}）` : ""}</span>`;
+        }).join("")}
+      </div>
+    </div>
+    <div class="card">
+      <h3 class="sec">生成 / 更新计划</h3>
+      <label class="g-total" style="display:block;margin-bottom:8px">考试日期
+        <input type="date" id="plExam" style="width:auto"/></label>
+      <div style="display:flex;gap:10px;margin-bottom:10px">
+        <label class="g-total">天数 <input type="number" id="plDays" value="14" min="1" max="60" style="width:64px"/></label>
+        <label class="g-total">每日题量 <input type="number" id="plDaily" value="30" min="10" max="200" step="5" style="width:72px"/></label>
+      </div>
+      <button class="btn btn-primary btn-block" id="plGen">生成计划</button>
+      <p class="muted" style="font-size:12px;line-height:1.8;margin-top:8px">
+        按「真题模块占比 × 弱项系数」分配题量；考点取掌握度红/黄高频考点轮换。<br/>
+        填考试日期会按剩余天数压缩，并在考前一天安排全真模考。
+      </p>
+      <div id="plStat" class="muted" style="font-size:12.5px;margin-top:8px">
+        当前计划：共 <b>${summary.total}</b> 题 · 已完成 <b>${summary.done}</b> 题（${Math.round((summary.rate || 0) * 100)}%）
+      </div>
+    </div>
+    <div class="card">
+      <h3 class="sec">计划表</h3>
+      <div id="planBody"></div>
+    </div>`;
+
+  function drawStat() {
+    $("#plStat").innerHTML = `当前计划：共 <b>${summary.total}</b> 题 · 已完成 <b>${summary.done}</b> 题（${Math.round((summary.rate || 0) * 100)}%）`;
+  }
+  function draw() {
+    const byDay = {};
+    items.forEach(it => (byDay[it.day] = byDay[it.day] || []).push(it));
+    const days = Object.keys(byDay).sort();
+    $("#planBody").innerHTML = days.length ? days.map(day => {
+      const list = byDay[day];
+      const tot = list.reduce((a, b) => a + b.n, 0);
+      const dn = list.filter(x => x.done).reduce((a, b) => a + b.n, 0);
+      const all = list.every(x => x.done);
+      return `<div class="pl-day ${day === todayStr ? "today" : ""}">
+        <div class="pl-day-head"><b>${day}${day === todayStr ? " · 今天" : ""}</b>
+          <span class="pl-prog">${dn}/${tot} 题 ${all ? "✅" : ""}</span></div>
+        ${list.map(it => `
+          <label class="pl-item ${it.done ? "done" : ""}">
+            <input type="checkbox" data-day="${day}" data-module="${esc(it.module)}" ${it.done ? "checked" : ""}/>
+            <span class="pl-mod">${esc(it.module)}</span>
+            <span class="pl-n">${it.n}题</span>
+            ${it.module === "模考" ? `<span class="pl-kd">全真模考</span>` : (it.kaodian ? `<span class="pl-kd">${esc(it.kaodian)}</span>` : `<span class="pl-kd"></span>`)}
+            ${it.module === "模考" ? "" : `<a class="pl-go" href="#/paper/${encodeURIComponent(it.module)}">去练</a>`}
+          </label>`).join("")}
+      </div>`;
+    }).join("") : `<p class="muted">还没有计划，点上方「生成计划」</p>`;
+    $$("#planBody .pl-item input").forEach(cb => cb.onchange = async () => {
+      const it = items.find(x => x.day === cb.dataset.day && x.module === cb.dataset.module);
+      if (it) it.done = cb.checked ? 1 : 0;
+      const r = await api("/api/study-plan/toggle",
+        { day: cb.dataset.day, module: cb.dataset.module, done: cb.checked });
+      if (r && r.summary) { summary = r.summary; drawStat(); }
+      draw();
+    });
+  }
+  draw();
+
+  $("#plGen").onclick = async () => {
+    const btn = $("#plGen"); btn.disabled = true; btn.textContent = "生成中…";
+    try {
+      const r = await api("/api/study-plan/generate", {
+        exam_date: $("#plExam").value || "",
+        days: +$("#plDays").value || 14,
+        daily_n: +$("#plDaily").value || 30,
+      });
+      items = r.items || [];
+      if (r.summary) summary = r.summary;
+      drawStat(); draw();
+      toast("✅ 计划已生成");
+    } catch (e) { toast("生成失败：" + e.message); }
+    btn.disabled = false; btn.textContent = "生成计划";
+  };
+}
+
 const ROUTES = {
   home: renderHome, practice: renderPractice, review: renderReview, me: renderMe,
   login: renderLogin, register: renderRegister,
@@ -664,6 +797,7 @@ const ROUTES = {
   search: renderSearch, doubts: renderDoubts,
   mydocs: renderMyDocs,
   mastery: renderMastery,
+  plan: renderPlan,
   import: renderImport, settings: renderSettings,
   history: renderHistory,
 };
@@ -687,7 +821,7 @@ const DAILY_LOCKED = new Set([
 ]);
 
 async function renderHome() {
-  const s = await api("/api/stats");
+  const [s, pl] = await Promise.all([api("/api/stats"), api("/api/study-plan")]);
   const rate = s.today_answers ? Math.round(s.today_correct / s.today_answers * 100) : 0;
   const totalRate = s.answers_total ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
   const rank = gameRank(s.answers_total);
@@ -731,6 +865,10 @@ async function renderHome() {
       <span class="et"><b>今日推荐练习</b><small>按掌握度智能组卷 15 题 · 弱项优先</small></span><span class="go">›</span></a>
     <a class="entry" href="#/practice"><span class="ei">✎</span>
       <span class="et"><b>去刷题</b><small>组卷 · 判断专项 · 列式</small></span><span class="go">›</span></a>
+    <a class="entry" href="#/plan"><span class="ei">📋</span>
+      <span class="et"><b>今日学习计划</b><small>${(pl.summary.today || []).length
+        ? pl.summary.today.map(t => `${esc(t.module)} ${t.n}题`).join(" · ")
+        : "按能力雷达生成 14 天弱项加权路径"}</small></span><span class="go">›</span></a>
     <a class="entry" href="#/review"><span class="ei">◌</span>
       <span class="et"><b>复习巩固</b><small>错题 ${s.wrong_count} · 待复习 ${s.review_due}</small></span><span class="go">›</span></a>
     <a class="entry" href="#/ai-ask"><span class="ei">智</span>
@@ -907,7 +1045,7 @@ const FORMULA_TYPES = [
   ["junian", "年均增量"], ["genian", "隔年增速"], ["zengliang_bj", "增量比较"],
 ];
 
-async function renderPractice() {
+async function renderPractice(auto = "") {
   const [facets, stats] = await Promise.all([
     api("/api/facets"),
     api("/api/stats").catch(() => ({}))
@@ -990,6 +1128,11 @@ async function renderPractice() {
     $$("#pMods .chip").forEach(x => x.classList.remove("on"));
     c.classList.add("on"); mod = c.dataset.m;
   });
+  // 从学习计划「去练」进入：预选模块并自动组卷（#/paper/资料分析）
+  if (auto) {
+    const chip = $$("#pMods .chip").find(c => c.dataset.m === auto);
+    if (chip) { chip.click(); setTimeout(() => { const g = $("#pGo"); if (g) g.click(); }, 60); }
+  }
   $$("[data-n]").forEach(c => c.onclick = () => {
     $$("[data-n]").forEach(x => x.classList.remove("on"));
     c.classList.add("on"); n = +c.dataset.n;

@@ -2925,6 +2925,130 @@ def get_essay_grade(gid: int) -> dict | None:
     return dict(row) if row else None
 
 
+# ---------------- 能力雷达 & 学习计划（功能 2.1） ----------------
+
+# 雷达 5 个客观模块（与 MODULE_ORDER 一致），另加「综应」维度
+RADAR_MODULES = ["常识判断", "言语理解", "数量关系", "判断推理", "资料分析"]
+
+
+def _radar_level(rate, n: int) -> str:
+    """三档水平（与掌握度图谱同阈值：≥80% 强 / ≥50% 中 / <50% 弱）。"""
+    if not n or rate is None:
+        return "未练"
+    if rate >= 0.8:
+        return "强"
+    if rate >= 0.5:
+        return "中"
+    return "弱"
+
+
+def ability_radar() -> list[dict]:
+    """能力雷达：5 个客观模块正确率 + 综应（申论/综应批改平均得分率）。
+
+    返回 [{module, n, correct, rate, level}]；rate 为 0~1，未练为 None。
+    """
+    conn = connect()
+    rows = conn.execute(
+        """SELECT d.module m, COUNT(*) n,
+                  SUM(CASE WHEN a.correct=1 THEN 1 ELSE 0 END) ok
+           FROM answers a JOIN documents d ON d.id=a.doc_id
+           WHERE d.module!='' GROUP BY d.module""").fetchall()
+    stat = {r["m"]: (r["n"], r["ok"] or 0) for r in rows}
+    _ensure_grade_score(conn)
+    g = conn.execute(
+        "SELECT AVG(score*1.0/total_score) r, COUNT(*) n"
+        " FROM essay_grades WHERE total_score>0 AND score>0").fetchone()
+    conn.close()
+
+    out = []
+    for m in RADAR_MODULES:
+        n, ok = stat.get(m, (0, 0))
+        rate = (ok / n) if n else None
+        out.append({"module": m, "n": n, "correct": ok,
+                    "rate": round(rate, 4) if rate is not None else None,
+                    "level": _radar_level(rate, n)})
+    gn, gr = (g["n"] or 0), g["r"]
+    out.append({"module": "综应", "n": gn, "correct": 0,
+                "rate": round(gr, 4) if gr is not None else None,
+                "level": _radar_level(gr, gn)})
+    return out
+
+
+def _ensure_study_plan(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS study_plan(
+            day TEXT, module TEXT, n INTEGER DEFAULT 0,
+            done INTEGER DEFAULT 0, kaodian TEXT DEFAULT '',
+            PRIMARY KEY(day, module))""")
+
+
+def save_study_plan(items: list[dict]) -> int:
+    """覆盖式保存计划：先清掉 items 覆盖到的日期，再写入。返回写入条数。"""
+    if not items:
+        return 0
+    conn = connect()
+    _ensure_study_plan(conn)
+    days = sorted({it["day"] for it in items})
+    conn.executemany("DELETE FROM study_plan WHERE day=?", [(d,) for d in days])
+    conn.executemany(
+        "INSERT OR REPLACE INTO study_plan(day,module,n,done,kaodian)"
+        " VALUES(?,?,?,?,?)",
+        [(it["day"], it["module"], int(it.get("n") or 0),
+          int(it.get("done") or 0), it.get("kaodian") or "") for it in items])
+    conn.commit()
+    conn.close()
+    return len(items)
+
+
+def list_study_plan(day_from: str = "") -> list[dict]:
+    conn = connect()
+    _ensure_study_plan(conn)
+    sql = "SELECT day,module,n,done,kaodian FROM study_plan"
+    args: list = []
+    if day_from:
+        sql += " WHERE day>=?"
+        args.append(day_from)
+    sql += " ORDER BY day, module"
+    rows = conn.execute(sql, args).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def toggle_study_plan(day: str, module: str, done: bool) -> bool:
+    conn = connect()
+    _ensure_study_plan(conn)
+    cur = conn.execute("UPDATE study_plan SET done=? WHERE day=? AND module=?",
+                       (1 if done else 0, day, module))
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+
+def study_plan_summary(today: str = "") -> dict:
+    """计划进度：总题量/已完成/按天聚合/今日任务。"""
+    items = list_study_plan()
+    total = sum(int(it["n"] or 0) for it in items)
+    done = sum(int(it["n"] or 0) for it in items if it["done"])
+    by_day: dict[str, dict] = {}
+    for it in items:
+        d = by_day.setdefault(it["day"], {"day": it["day"], "total": 0, "done": 0,
+                                          "modules": 0, "all_done": True})
+        d["total"] += int(it["n"] or 0)
+        d["modules"] += 1
+        if it["done"]:
+            d["done"] += int(it["n"] or 0)
+        else:
+            d["all_done"] = False
+    today_items = [it for it in items if it["day"] == today] if today else []
+    return {
+        "total": total, "done": done,
+        "rate": round(done / total, 4) if total else 0.0,
+        "days": sorted(by_day.values(), key=lambda x: x["day"]),
+        "today": today_items,
+    }
+
+
 # ---------------- 真题套卷 ----------------
 
 def list_exams() -> list[dict]:

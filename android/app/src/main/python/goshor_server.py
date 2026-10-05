@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, knowledge, speedcalc, variant, wordfill, zy_notes
+from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, knowledge, planner, speedcalc, variant, wordfill, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -25,6 +25,12 @@ _WEB_DIR: Path = Path("")
 _USERS_DIR: Path = Path("")
 
 _lock = threading.Lock()  # 串行化写操作，手机单用户场景足够
+
+
+def _today_str() -> str:
+    """本地日期 YYYY-MM-DD（学习计划按本地日切分）。"""
+    import datetime as _dt
+    return _dt.date.today().isoformat()
 
 _MOBILE_SETTINGS_DEFAULTS = {
     "deepseek_base_url": "https://api.deepseek.com",
@@ -682,6 +688,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"items": db.kaodian_tree(q("module", "判断推理"))})
             elif path == "/api/mastery":
                 self._json({"items": db.kaodian_mastery(q("module"))})
+            elif path == "/api/ability/radar":
+                self._json({"items": db.ability_radar()})
+            elif path == "/api/study-plan":
+                today = _today_str()
+                self._json({"items": db.list_study_plan(),
+                            "summary": db.study_plan_summary(today),
+                            "today": today})
             elif path == "/api/zy/notes":
                 self._json({"ok": True, "data": zy_notes.NOTES})
             elif path == "/api/wrong-book":
@@ -987,6 +1000,13 @@ class _Handler(BaseHTTPRequestHandler):
                         int(b["qid"]), b.get("selected", ""),
                         bool(b.get("correct")), int(b.get("ms", 0)))
                 self._json({"ok": True})
+            elif path == "/api/study-plan/generate":
+                self._json(self._study_plan_generate(b))
+            elif path == "/api/study-plan/toggle":
+                ok = db.toggle_study_plan(
+                    b.get("day", ""), b.get("module", ""), bool(b.get("done", True)))
+                today = _today_str()
+                self._json({"ok": ok, "summary": db.study_plan_summary(today)})
             elif path == "/api/essay/grade":
                 self._essay_grade(b)
             elif path == "/api/essay/self-grade":
@@ -1281,6 +1301,34 @@ class _Handler(BaseHTTPRequestHandler):
                 yield kind, payload
 
         self._stream_sse(gen())
+
+    # ---- 能力雷达 & 学习计划（功能 2.1） ----
+
+    def _study_plan_generate(self, b):
+        try:
+            days = int(b.get("days", 14))
+        except (TypeError, ValueError):
+            days = 14
+        try:
+            daily_n = int(b.get("daily_n", 30))
+        except (TypeError, ValueError):
+            daily_n = 30
+        radar = db.ability_radar()
+        pool = {}
+        for m in planner.MODULE_WEIGHT:
+            rows = db.kaodian_mastery(m)
+            pool[m] = [r["kaodian"] for r in rows
+                       if r.get("level") in ("red", "amber")
+                       and r.get("total", 0) >= 3][:8]
+        items = planner.build_plan(
+            radar, exam_date=(b.get("exam_date") or ""),
+            days=max(1, min(60, days)), daily_n=max(10, min(200, daily_n)),
+            kaodian_pool=pool)
+        with _lock:
+            n = db.save_study_plan(items)
+        today = _today_str()
+        return {"ok": True, "n": n, "items": db.list_study_plan(),
+                "summary": db.study_plan_summary(today), "today": today}
 
     # ---- 综应免 Key 对照自评（与 AI 批改同一落库路径） ----
 

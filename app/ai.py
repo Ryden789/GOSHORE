@@ -299,6 +299,58 @@ def parse_wrong_reason_json(raw: str) -> dict | None:
     }
 
 
+# ---------------- 时政自测题生成（功能 2.2） ----------------
+
+SHIZHENG_QUIZ_N = 10
+
+
+def build_shizheng_quiz_prompt(content: str, n: int = SHIZHENG_QUIZ_N) -> str:
+    """时政内容 → 单选自测题（强制 JSON，答案分布均匀）。"""
+    return (
+        f"基于下面的时政内容，出 {n} 道单选自测题，直接考察内容中的事实要点。\n"
+        "严格只输出一个 JSON 对象（不要 markdown 代码块、不要多余文字），格式：\n"
+        '{"items":[{"q":"题干","options":["A. ...","B. ...","C. ...","D. ..."],'
+        '"answer":"A","note":"一句话考点说明"}]}\n'
+        "要求：answer 只能是 A/B/C/D 且四个选项分布尽量均匀；干扰项似是而非但正确项唯一；"
+        "note 控制在 30 字内；题干不得出现「上述材料」「文中」等指代。\n\n"
+        f"【时政内容】\n{(content or '')[:6000]}"
+    )
+
+
+def parse_shizheng_quiz_json(raw: str, n: int = SHIZHENG_QUIZ_N) -> list[dict] | None:
+    """解析时政自测题 JSON，容错代码块与前后杂字。解析失败返回 None。"""
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"```\s*$", "", text).strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    items = []
+    for q in (data.get("items") or [])[:max(1, n)]:
+        if not isinstance(q, dict):
+            continue
+        opts = q.get("options") or []
+        ans = str(q.get("answer", "")).strip().upper()[:1]
+        if not q.get("q") or len(opts) != 4 or ans not in "ABCD":
+            continue
+        items.append({
+            "q": str(q["q"]).strip()[:500],
+            "options": [str(o).strip()[:200] for o in opts],
+            "answer": ans,
+            "note": str(q.get("note", "")).strip()[:80],
+        })
+    return items or None
+
+
 async def stream_chat_with_temp(messages: list[dict], temperature: float):
     """同 stream_chat，但温度可调。"""
     s = load_settings()
