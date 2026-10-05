@@ -138,12 +138,12 @@ def test_random_paper_respects_module(temp_db):
 
 # ---------------- 掌握度 / 自适应推题（1.1）与图谱（1.4） ----------------
 
-def test_schema_version_is_8(temp_db):
+def test_schema_version_is_9(temp_db):
     conn = temp_db.connect()
     row = conn.execute(
         "SELECT value FROM _meta WHERE key='schema_version'").fetchone()
     conn.close()
-    assert int(row["value"]) == 8
+    assert int(row["value"]) == 9
 
 
 def test_mastery_tables_and_columns(temp_db):
@@ -157,6 +157,41 @@ def test_mastery_tables_and_columns(temp_db):
             "interview_logs", "shizheng_seen"} <= tables
     assert {"ai_category", "ai_specific", "ai_kaodian", "ai_advice"} <= cols
     assert {"points_json", "rewrite_json", "dims_json"} <= gcols
+
+
+def test_share_tables_and_index(temp_db):
+    """3.3 分享/PK 表：shared_sets + pk_records，且 pk_records 建有 code 索引。"""
+    conn = temp_db.connect()
+    tables = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    idx = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index'")}
+    conn.close()
+    assert {"shared_sets", "pk_records"} <= tables
+    assert "idx_pk_code" in idx
+
+
+def test_share_db_helpers(temp_db):
+    temp_db.save_shared_set("C1", "题单A", [1, 2, 3], "小明", "")
+    temp_db.bump_shared_set_play("C1")
+    temp_db.bump_shared_set_play("C1")
+    s = temp_db.get_shared_set("C1")
+    assert s["title"] == "题单A" and s["ids"] == [1, 2, 3] and s["plays"] == 2
+    assert [x["code"] for x in temp_db.list_shared_sets()] == ["C1"]
+    # 保存同码即覆盖（幂等）
+    temp_db.save_shared_set("C1", "题单A2", [9], "小明", "")
+    assert temp_db.get_shared_set("C1")["ids"] == [9]
+    assert temp_db.get_shared_set("nope") is None
+
+
+def test_pk_ranking_and_best(temp_db):
+    temp_db.save_pk_record("P", "甲", 4, 1, 1000)
+    temp_db.save_pk_record("P", "乙", 4, 3, 9000)
+    temp_db.save_pk_record("P", "丙", 4, 3, 5000)
+    names = [r["who"] for r in temp_db.list_pk_records("P")]
+    assert names == ["丙", "乙", "甲"]
+    assert temp_db.pk_best("P")["who"] == "丙"
+    assert temp_db.pk_best("none") is None
 
 
 def test_update_mastery_up_down(temp_db):

@@ -234,6 +234,14 @@ def build_all() -> None:
     if os.path.exists(cards_dst):
         shutil.rmtree(cards_dst)
     shutil.copytree(os.path.join(BASE_DIR, "data", "cards"), cards_dst)
+    # PWA 资源（功能 3.1）：Service Worker 需位于根作用域，故放 web/ 顶层
+    for name in ("sw.js", "offline.html", "manifest-desktop.webmanifest"):
+        shutil.copy2(os.path.join(BASE_DIR, "static", name),
+                     os.path.join(web_dst, name))
+    icons_dst = os.path.join(web_dst, "icons")
+    if os.path.exists(icons_dst):
+        shutil.rmtree(icons_dst)
+    shutil.copytree(os.path.join(BASE_DIR, "static", "icons"), icons_dst)
     print("资产目录就绪:", assets)
     for f in sorted(os.listdir(assets)):
         fp = os.path.join(assets, f)

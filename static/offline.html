@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>离线 · GOSHORE 上岸工作台</title>
+  <link rel="icon" href="/icons/favicon-64.png" />
+  <style>
+    :root { --paper:#faf7ef; --ink:#2b2620; --ink-3:#8c8377; --line:#d8d2c4; --cinnabar:#a6342a; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: var(--paper); color: var(--ink); padding: 24px;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    }
+    .card {
+      max-width: 420px; width: 100%; text-align: center;
+      background: #fff; border: 1px solid var(--line); border-radius: 16px;
+      padding: 34px 26px; box-shadow: 0 8px 32px rgba(43,38,32,.08);
+    }
+    .logo {
+      width: 64px; height: 64px; border-radius: 16px; margin: 0 auto 16px;
+      background: var(--cinnabar); color: #fff; display: grid; place-items: center;
+      font-size: 34px; font-weight: 700; font-family: "Microsoft YaHei", serif;
+    }
+    h1 { font-size: 19px; margin: 0 0 8px; letter-spacing: .5px; }
+    p { color: var(--ink-3); font-size: 13.5px; line-height: 1.8; margin: 0 0 6px; }
+    ul { text-align: left; color: var(--ink-3); font-size: 13px; line-height: 1.9; margin: 14px 0 0; padding-left: 20px; }
+    button {
+      margin-top: 22px; width: 100%; padding: 12px; font-size: 15px; cursor: pointer;
+      background: var(--cinnabar); color: #fff; border: 0; border-radius: 10px;
+      font-family: inherit;
+    }
+    button:active { opacity: .85; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">岸</div>
+    <h1>当前处于离线状态</h1>
+    <p>页面外壳已缓存，但题库与作答数据保存在本机服务里，离线时无法读取。</p>
+    <ul>
+      <li>电脑端：确认 <b>start.bat</b> / <b>python run.py</b> 仍在运行</li>
+      <li>手机端：确认与电脑处于同一 Wi-Fi</li>
+      <li>已安装 App：直接打开 App 即可离线刷题</li>
+    </ul>
+    <button onclick="location.reload()">重新连接</button>
+  </div>
+</body>
+</html>

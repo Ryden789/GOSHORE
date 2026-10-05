@@ -283,6 +283,7 @@ function route() {
   else if (name === "mastery") dispatch(renderMastery);
   else if (name === "plan") dispatch(renderPlan);
   else if (name === "interview") dispatch(renderInterview);
+  else if (name === "share") dispatch(() => renderShare(decodeURIComponent(parts.slice(1).join("/")) || ""));
   else dispatch(renderHome);
 }
 window.addEventListener("hashchange", route);
@@ -2541,6 +2542,15 @@ async function runPaper(ids, opt = {}) {
       document.body.classList.remove("exam-mode");
       location.hash = `#/doc/${doc.id}/ai`;
     });
+    // 3.3 分享/PK：记录本卷结果，供「分享这组题」与 onFinish 回调使用
+    LAST_PAPER = {
+      ids: docs.map(d => d.id), title: opt.title || "本次练习",
+      total: answers.length, ok, ms: totalMs,
+    };
+    if (opt.onFinish) {
+      try { opt.onFinish({ ...LAST_PAPER }); }
+      catch (e) { /* 回调异常不影响结算展示 */ }
+    }
   }
 
   show(0);
@@ -2611,6 +2621,245 @@ async function renderExam() {
     }
   }
   await startPaper();
+}
+
+/* =====================================================
+   题单分享与好友 PK（功能 3.3）
+   分享码自包含题目 id 列表（见 app/share.py）：跨设备可用、零后端、不传题库。
+   路由：#/share（生成 / 打开 / 我的分享）  #/share/<code>（打开指定题单）
+===================================================== */
+
+let LAST_PAPER = null;   // 最近一卷结果 { ids, title, total, ok, ms }，供「分享这组题」
+
+function _nick() {
+  try { return (localStorage.getItem("goshore_nick") || "").trim(); } catch (e) { return ""; }
+}
+function _setNick(v) {
+  try { localStorage.setItem("goshore_nick", String(v || "").trim().slice(0, 16)); } catch (e) {}
+}
+
+async function _copyText(txt, btn) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(txt);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = txt;
+      ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    toast("已复制到剪贴板");
+    if (btn) { const old = btn.textContent; btn.textContent = "已复制"; setTimeout(() => { btn.textContent = old; }, 1200); }
+  } catch (e) { toast("复制失败，请手动选中复制"); }
+}
+
+function pkTable(records, myId) {
+  if (!records || !records.length) {
+    return `<div class="empty" style="padding:14px">还没有人提交成绩，做第一个上榜的人。</div>`;
+  }
+  return `<table class="pk-table">
+    <tr><th>#</th><th>昵称</th><th>成绩</th><th>用时</th></tr>
+    ${records.map((r, i) => {
+      const rate = r.total ? Math.round(r.ok / r.total * 100) : 0;
+      const sec = Math.round((r.ms || 0) / 1000);
+      return `<tr class="${myId && r.id === myId ? "me" : ""}">
+        <td>${i + 1}</td><td>${esc(r.who || "匿名")}</td>
+        <td>${r.ok}/${r.total} · ${rate}%</td>
+        <td>${Math.floor(sec / 60)} 分 ${sec % 60} 秒</td></tr>`;
+    }).join("")}
+  </table>`;
+}
+
+async function renderShareOpen(code) {
+  let r;
+  try {
+    r = await api("/api/share/open", { code });
+  } catch (e) {
+    view.innerHTML = `<div class="page-head"><h1 class="page-title">分享题单</h1></div>
+      <div class="panel"><p style="color:var(--cinnabar);font-weight:600">分享码无效或已损坏</p>
+      <p style="color:var(--ink-3);font-size:13px">${esc(String(e.message || e))}</p>
+      <button class="btn btn-primary" onclick="location.hash='#/share'">返回分享页</button></div>`;
+    return;
+  }
+  let pk = { records: [], best: null };
+  try { pk = await api(`/api/pk/${encodeURIComponent(code)}`); } catch (e) { /* 忽略 */ }
+
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">${esc(r.title || "分享题单")}</h1>
+      <p class="page-desc">${r.author ? `来自 ${esc(r.author)} · ` : ""}共 ${r.total} 题${
+        r.missing ? `（本机题库缺少 ${r.missing} 题，已自动跳过）` : ""}</p>
+    </div>
+    <div class="panel rise rise-1">
+      ${r.result ? `<div class="pk-vs">
+        <div class="pk-side">
+          <div class="pk-k">对方成绩</div>
+          <div class="pk-v">${r.result.ok}/${r.result.total} · ${r.result.total ? Math.round(r.result.ok / r.result.total * 100) : 0}%</div>
+          <div class="pk-s">用时 ${Math.floor((r.result.ms || 0) / 60000)} 分 ${Math.round((r.result.ms || 0) % 60000 / 1000)} 秒</div>
+        </div>
+        <div class="pk-x">VS</div>
+        <div class="pk-side">
+          <div class="pk-k">你的成绩</div>
+          <div class="pk-v" id="myScore">未挑战</div>
+          <div class="pk-s" id="mySub">点右侧开始计时作答</div>
+        </div>
+      </div>` : ""}
+      <div class="cfg-inline" style="margin-top:12px;align-items:center">
+        <span>昵称 <input id="pkNick" style="width:130px" maxlength="16" value="${esc(_nick())}" placeholder="用于 PK 榜"/></span>
+        <button class="btn btn-primary" id="shareGo" ${r.ids.length ? "" : "disabled"}>开始挑战（考场模式）</button>
+        <button class="btn" id="shareCopy">复制分享链接</button>
+        <button class="btn" id="shareBack">返回</button>
+      </div>
+      <div style="font-size:12.5px;color:var(--ink-3);margin-top:8px">
+        挑战按考场模式进行：全屏作答 + 答题卡，交卷后统一判分，成绩自动上榜。
+      </div>
+      <div id="pkBox" style="margin-top:16px">
+        <h4 style="margin:0 0 8px;font-size:14px">PK 榜</h4>
+        ${pkTable(pk.records, null)}
+      </div>
+    </div>
+    <div id="shareBody"></div>`;
+
+  const nickEl = $("#pkNick");
+  if (nickEl) nickEl.oninput = () => _setNick(nickEl.value);
+  $("#shareCopy").onclick = () => _copyText(`${location.origin}/#/share/${code}`, $("#shareCopy"));
+  $("#shareBack").onclick = () => (location.hash = "#/share");
+  $("#shareGo").onclick = () => {
+    if (!r.ids.length) return;
+    _setNick($("#pkNick").value);
+    runPaper(r.ids, {
+      title: r.title || "分享题单",
+      examMode: true,
+      fullscreen: true,
+      minutes: Math.max(5, Math.round(r.ids.length * 1.2)),
+      container: $("#shareBody"),
+      exitHash: "#/share",
+      onRestart: () => renderShareOpen(code),
+      onFinish: async (res) => {
+        try {
+          const out = await api("/api/pk/submit", {
+            code, who: _nick(), total: res.total, ok: res.ok, ms: res.ms,
+          });
+          const box = $("#pkBox");
+          if (box) {
+            box.innerHTML = `<h4 style="margin:0 0 8px;font-size:14px">PK 榜（你已上榜）</h4>${pkTable(out.records, out.id)}`;
+          }
+          const ms = $("#myScore"), msub = $("#mySub");
+          if (ms) ms.textContent = `${res.ok}/${res.total} · ${res.total ? Math.round(res.ok / res.total * 100) : 0}%`;
+          if (msub) msub.textContent = `用时 ${Math.floor(res.ms / 60000)} 分 ${Math.round(res.ms % 60000 / 1000)} 秒`;
+        } catch (e) { toast("成绩提交失败：" + e.message); }
+      },
+    });
+  };
+}
+
+async function renderShare(code = "") {
+  if (code) return renderShareOpen(code);
+
+  const [wrongRes, markRes, mineRes] = await Promise.all([
+    api("/api/wrong-book").catch(() => ({ items: [] })),
+    api("/api/marks").catch(() => ({ items: [] })),
+    api("/api/share/list").catch(() => ({ items: [] })),
+  ]);
+  const wrongIds = (wrongRes.items || []).slice(0, 20).map(w => w.id);
+  const markIds = (markRes.items || []).slice(0, 20).map(m => m.id);
+  const mine = mineRes.items || [];
+
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">题单分享 · 好友 PK</h1>
+      <p class="page-desc">把一组题打包成分享码发给同学，对方打开即练；做完自动对比成绩（异步 PK，无需服务器）</p>
+    </div>
+
+    <div class="panel rise rise-1">
+      <div class="sec-title">打开别人的题单</div>
+      <div class="cfg-inline" style="margin-top:8px">
+        <input id="shareCode" style="flex:1;min-width:240px" placeholder="粘贴分享码或分享链接，如 http://…/#/share/xxxx"/>
+        <button class="btn btn-primary" id="shareOpen">打开题单</button>
+      </div>
+    </div>
+
+    <div class="panel rise rise-2">
+      <div class="sec-title">生成分享码</div>
+      <div class="cfg-inline" style="margin-top:8px">
+        <span>来源
+          <select id="shareSrc">
+            <option value="last">最近一卷${LAST_PAPER ? `（${LAST_PAPER.ids.length} 题）` : "（暂无）"}</option>
+            <option value="wrong">我的错题（${wrongIds.length} 题）</option>
+            <option value="marks">我的收藏（${markIds.length} 题）</option>
+          </select>
+        </span>
+        <span>标题 <input id="shareTitle" style="width:200px" maxlength="40" placeholder="如：增长量高频 20 题"/></span>
+        <span>昵称 <input id="shareAuthor" style="width:120px" maxlength="16" value="${esc(_nick())}"/></span>
+        <button class="btn btn-primary" id="shareGen">生成</button>
+      </div>
+      <div id="shareOut" style="margin-top:12px"></div>
+    </div>
+
+    <div class="panel rise rise-3">
+      <div class="sec-title">我分享过的题单</div>
+      ${mine.length ? `<div style="margin-top:8px">${mine.map(s => `
+        <div class="share-row">
+          <div>
+            <div style="font-weight:600">${esc(s.title || "未命名题单")} <span style="color:var(--ink-3);font-size:12.5px">· ${(s.ids || []).length} 题 · 被打开 ${s.plays || 0} 次</span></div>
+            <div class="share-code">${esc(s.code)}</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-shrink:0">
+            <button class="btn btn-sm" data-open="${esc(s.code)}">打开</button>
+            <button class="btn btn-sm" data-copy="${esc(s.code)}">复制链接</button>
+          </div>
+        </div>`).join("")}</div>`
+      : `<div class="empty" style="padding:14px">还没有分享过题单</div>`}
+    </div>`;
+
+  $("#shareOpen").onclick = () => {
+    const v = $("#shareCode").value.trim();
+    if (!v) return toast("请先粘贴分享码");
+    const code = v.includes("#") ? v.split("#").pop() : v.split("/").pop();
+    location.hash = `#/share/${code}`;
+  };
+  $("#shareCode").addEventListener("keydown", e => { if (e.key === "Enter") $("#shareOpen").click(); });
+
+  $("#shareGen").onclick = async () => {
+    const src = $("#shareSrc").value;
+    let ids = [];
+    if (src === "last") ids = LAST_PAPER ? LAST_PAPER.ids : [];
+    else if (src === "wrong") ids = wrongIds;
+    else ids = markIds;
+    if (!ids.length) return toast(src === "last" ? "还没有做过卷子，先去组一卷" : "这一组是空的");
+    const title = $("#shareTitle").value.trim() || $("#shareSrc").selectedOptions[0].textContent;
+    const author = $("#shareAuthor").value.trim();
+    _setNick(author);
+    const btn = $("#shareGen");
+    btn.disabled = true;
+    try {
+      const out = await api("/api/share/create", {
+        ids, title, author,
+        result: src === "last" && LAST_PAPER
+          ? { total: LAST_PAPER.total, ok: LAST_PAPER.ok, ms: LAST_PAPER.ms } : null,
+      });
+      const url = `${location.origin}/#/share/${out.code}`;
+      $("#shareOut").innerHTML = `
+        <div class="share-out">
+          <div style="font-size:13px;color:var(--ink-2)">已生成 · ${out.count} 题${out.result ? " · 已附带你的成绩（对方可 PK）" : ""}</div>
+          <textarea class="share-code-box" readonly rows="3">${esc(url)}</textarea>
+          <div class="cfg-inline" style="margin-top:8px">
+            <button class="btn btn-primary btn-sm" id="copyUrl">复制分享链接</button>
+            <button class="btn btn-sm" id="copyCode">只复制分享码</button>
+          </div>
+        </div>`;
+      $("#copyUrl").onclick = () => _copyText(url, $("#copyUrl"));
+      $("#copyCode").onclick = () => _copyText(out.code, $("#copyCode"));
+    } catch (e) { toast("生成失败：" + e.message); }
+    btn.disabled = false;
+  };
+
+  $$("[data-open]").forEach(b => b.onclick = () => (location.hash = `#/share/${b.dataset.open}`));
+  $$("[data-copy]").forEach(b => b.onclick = () =>
+    _copyText(`${location.origin}/#/share/${b.dataset.copy}`, b));
 }
 
 /* =====================================================

@@ -1,0 +1,18 @@
+{
+  "name": "GOSHORE 上岸工作台",
+  "short_name": "上岸",
+  "description": "事业单位C类备考工作台：真题刷题、错题复习、AI 讲题、模考与学习计划",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "id": "/",
+  "display": "standalone",
+  "background_color": "#faf7ef",
+  "theme_color": "#a6342a",
+  "categories": ["education", "productivity"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

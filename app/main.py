@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import datetime
 import json
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# PWA（功能 3.1）：.webmanifest 需专用 MIME，否则浏览器拒绝安装
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import (
@@ -15,7 +19,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
+from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
 from .config import STATIC_DIR, DB_PATH, SETTINGS_PATH, load_settings, save_settings
 
 import html as _html
@@ -1730,6 +1734,95 @@ def api_export_print(
 </div></body></html>"""
     from fastapi.responses import HTMLResponse
     return HTMLResponse(html)
+
+
+# ---------------- 题单分享与好友 PK（功能 3.3） ----------------
+
+class ShareCreateIn(BaseModel):
+    ids: list[int] = []
+    title: str = ""
+    author: str = ""
+    note: str = ""
+    result: dict | None = None
+
+
+@app.post("/api/share/create")
+def api_share_create(b: ShareCreateIn, request: Request):
+    """把一组题编码成自包含分享码（只含题号，不含题目内容与个人数据）。"""
+    code = share.encode_set(b.ids, b.title, b.author, b.result)
+    if not code:
+        raise HTTPException(400, "题目列表为空，无法生成分享码")
+    title = (b.title or "").strip()[:40]
+    author = (b.author or "").strip()[:16]
+    db.save_shared_set(code, title, b.ids[:200], author, (b.note or "").strip()[:80])
+    base = str(request.base_url).rstrip("/")
+    return {
+        "ok": True, "code": code, "title": title,
+        "count": len(b.ids), "author": author,
+        "url": share.share_url(base, code),
+        "url_mobile": share.share_url(base, code, mobile=True),
+    }
+
+
+class ShareOpenIn(BaseModel):
+    code: str = ""
+
+
+@app.post("/api/share/open")
+def api_share_open(b: ShareOpenIn):
+    """解析分享码；只保留本地题库中真实存在的题，并回报缺失数量。"""
+    code = (b.code or "").strip()
+    data = share.decode_set(code)
+    if not data:
+        raise HTTPException(400, "分享码无效或已损坏")
+    items = db.get_docs_batch(data["ids"])
+    found = [d["id"] for d in items]
+    try:
+        db.bump_shared_set_play(code)
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "title": data["title"],
+        "author": data.get("author", ""),
+        "result": data.get("result"),
+        "ids": found,
+        "missing": len(data["ids"]) - len(found),
+        "total": len(data["ids"]),
+    }
+
+
+@app.get("/api/share/list")
+def api_share_list():
+    """本机创建过的分享题单（便于二次分发）。"""
+    return {"items": db.list_shared_sets()}
+
+
+class PkSubmitIn(BaseModel):
+    code: str = ""
+    who: str = ""
+    total: int = 0
+    ok: int = 0
+    ms: int = 0
+
+
+@app.post("/api/pk/submit")
+def api_pk_submit(b: PkSubmitIn):
+    """提交本次成绩并返回该题单 PK 榜（正确率优先、用时次之）。"""
+    code = (b.code or "").strip()
+    if not code:
+        raise HTTPException(400, "缺少题单分享码")
+    rid = db.save_pk_record(code, (b.who or "").strip()[:16], b.total, b.ok, b.ms)
+    return {
+        "ok": True, "id": rid,
+        "best": db.pk_best(code),
+        "records": db.list_pk_records(code, limit=20),
+    }
+
+
+@app.get("/api/pk/{code}")
+def api_pk_list(code: str):
+    return {"records": db.list_pk_records(code, limit=50), "best": db.pk_best(code)}
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

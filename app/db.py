@@ -248,7 +248,7 @@ CREATE TABLE IF NOT EXISTS _meta (
 SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
 
 # 当前 schema 版本号（每次新增迁移步骤时 +1）
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
 EBBINGHAUS_DAYS = [1, 2, 4, 7, 15, 30]
@@ -363,6 +363,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     v6：study_plan 学习计划表（能力雷达与路径规划 2.1）。
     v7：interview_questions / interview_logs 面试模块表（2.3）。
     v8：shizheng_seen URL 去重表（时政流水线 2.2）。
+    v9：shared_sets / pk_records 题单分享与好友 PK 表（3.3）。
     """
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -478,6 +479,38 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         conn.execute(
             "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','8')"
+        )
+        conn.commit()
+
+    if v < 9:
+        # v9: 题单分享与好友 PK（功能 3.3）
+        # 分享码本身自包含题目 id 列表；此表只用于「我分享过的」本地留存与热度统计。
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS shared_sets(
+                code TEXT PRIMARY KEY,
+                title TEXT DEFAULT '',
+                ids_json TEXT DEFAULT '',
+                author TEXT DEFAULT '',
+                note TEXT DEFAULT '',
+                plays INTEGER DEFAULT 0,
+                created_at REAL DEFAULT 0)"""
+        )
+        # 异步 PK：同一条分享码下的成绩记录（比正确率、再用时）
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS pk_records(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT DEFAULT '',
+                who TEXT DEFAULT '',
+                total INTEGER DEFAULT 0,
+                ok INTEGER DEFAULT 0,
+                ms INTEGER DEFAULT 0,
+                created_at REAL DEFAULT 0)"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pk_code ON pk_records(code)"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','9')"
         )
         conn.commit()
 
@@ -3294,3 +3327,89 @@ def cards_progress() -> dict:
         """SELECT COUNT(*) c FROM card_plan WHERE stage>=4""").fetchone()["c"]
     conn.close()
     return {"total": total, "learned": learned, "due": due, "mastered": mastered}
+
+
+# ---------------- 题单分享与好友 PK（功能 3.3） ----------------
+# 分享码本身自包含题目 id 列表（见 app/share.py），以下表仅用于本地留存与 PK 记录。
+
+def save_shared_set(code: str, title: str, ids: list[int],
+                    author: str = "", note: str = "") -> None:
+    conn = connect()
+    conn.execute(
+        """INSERT INTO shared_sets(code,title,ids_json,author,note,created_at)
+           VALUES(?,?,?,?,?,?)
+           ON CONFLICT(code) DO UPDATE SET
+             title=excluded.title, ids_json=excluded.ids_json,
+             author=excluded.author, note=excluded.note""",
+        (code, title, json.dumps(ids), author, note, time.time()))
+    conn.commit()
+    conn.close()
+
+
+def list_shared_sets(limit: int = 50) -> list[dict]:
+    conn = connect()
+    rows = conn.execute(
+        "SELECT * FROM shared_sets ORDER BY created_at DESC LIMIT ?",
+        (int(limit),)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["ids"] = json.loads(d.pop("ids_json") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["ids"] = []
+            d.pop("ids_json", None)
+        out.append(d)
+    return out
+
+
+def get_shared_set(code: str) -> dict | None:
+    conn = connect()
+    r = conn.execute("SELECT * FROM shared_sets WHERE code=?", (code,)).fetchone()
+    conn.close()
+    if not r:
+        return None
+    d = dict(r)
+    try:
+        d["ids"] = json.loads(d.pop("ids_json") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        d["ids"] = []
+        d.pop("ids_json", None)
+    return d
+
+
+def bump_shared_set_play(code: str) -> None:
+    conn = connect()
+    conn.execute("UPDATE shared_sets SET plays=plays+1 WHERE code=?", (code,))
+    conn.commit()
+    conn.close()
+
+
+def save_pk_record(code: str, who: str, total: int, ok: int, ms: int) -> int:
+    conn = connect()
+    cur = conn.execute(
+        """INSERT INTO pk_records(code,who,total,ok,ms,created_at)
+           VALUES(?,?,?,?,?,?)""",
+        (code, who, int(total), int(ok), int(ms), time.time()))
+    rid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return int(rid or 0)
+
+
+def list_pk_records(code: str, limit: int = 50) -> list[dict]:
+    """按正确率降序、用时升序返回该题单的 PK 榜。"""
+    conn = connect()
+    rows = conn.execute(
+        """SELECT * FROM pk_records WHERE code=?
+           ORDER BY (CAST(ok AS REAL)/MAX(total,1)) DESC, ms ASC
+           LIMIT ?""",
+        (code, int(limit))).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def pk_best(code: str) -> dict | None:
+    rows = list_pk_records(code, limit=1)
+    return rows[0] if rows else None

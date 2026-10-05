@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, speedcalc, variant, wordfill, zy_notes
+from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -1065,6 +1065,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._ai_ask(b)
             elif path == "/api/ai/guide":
                 self._ai_guide(b)
+            elif path == "/api/share/create":
+                self._json(self._share_create(b))
+            elif path == "/api/share/open":
+                self._json(self._share_open(b))
+            elif path == "/api/share/list":
+                self._json({"items": db.list_shared_sets()})
+            elif path == "/api/pk/submit":
+                self._json(self._pk_submit(b))
+            elif path.startswith("/api/pk/"):
+                code = urllib.parse.unquote(path[len("/api/pk/"):])
+                self._json({"records": db.list_pk_records(code, limit=50),
+                            "best": db.pk_best(code)})
             elif path == "/api/shizheng/generate":
                 self._json(_run_async(self._shizheng_generate(b)))
             elif path == "/api/shizheng/quiz":
@@ -1429,6 +1441,56 @@ class _Handler(BaseHTTPRequestHandler):
 
         self._stream_sse(gen())
 
+    # ---- 题单分享与好友 PK（功能 3.3） ----
+
+    def _share_create(self, b):
+        ids = []
+        for x in (b.get("ids") or []):
+            try:
+                v = int(x)
+            except (TypeError, ValueError):
+                continue
+            if v > 0:
+                ids.append(v)
+        code = share.encode_set(ids, b.get("title", ""), b.get("author", ""),
+                                b.get("result"))
+        if not code:
+            return self._err(400, "题目列表为空，无法生成分享码")
+        title = (b.get("title") or "").strip()[:40]
+        author = (b.get("author") or "").strip()[:16]
+        with _lock:
+            db.save_shared_set(code, title, ids[:200], author,
+                               (b.get("note") or "").strip()[:80])
+        return {"ok": True, "code": code, "title": title,
+                "count": len(ids), "author": author}
+
+    def _share_open(self, b):
+        code = (b.get("code") or "").strip()
+        data = share.decode_set(code)
+        if not data:
+            return self._err(400, "分享码无效或已损坏")
+        items = db.get_docs_batch(data["ids"])
+        found = [d["id"] for d in items]
+        try:
+            with _lock:
+                db.bump_shared_set_play(code)
+        except Exception:
+            pass
+        return {"ok": True, "title": data["title"], "author": data.get("author", ""),
+                "result": data.get("result"), "ids": found,
+                "missing": len(data["ids"]) - len(found), "total": len(data["ids"])}
+
+    def _pk_submit(self, b):
+        code = (b.get("code") or "").strip()
+        if not code:
+            return self._err(400, "缺少题单分享码")
+        with _lock:
+            rid = db.save_pk_record(code, (b.get("who") or "").strip()[:16],
+                                    int(b.get("total") or 0), int(b.get("ok") or 0),
+                                    int(b.get("ms") or 0))
+        return {"ok": True, "id": rid, "best": db.pk_best(code),
+                "records": db.list_pk_records(code, limit=20)}
+
     # ---- 能力雷达 & 学习计划（功能 2.1） ----
 
     def _study_plan_generate(self, b):
@@ -1671,7 +1733,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send_file(self, fp: Path):
         ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
-        if ctype.startswith("text/") or fp.suffix in (".js", ".json", ".svg"):
+        # Web App Manifest 需专用 MIME，否则浏览器拒绝安装（功能 3.1 PWA）
+        if fp.suffix == ".webmanifest":
+            ctype = "application/manifest+json"
+        elif ctype.startswith("text/") or fp.suffix in (".js", ".json", ".svg"):
             ctype += "; charset=utf-8"
         data = fp.read_bytes()
         self.send_response(200)

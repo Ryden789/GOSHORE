@@ -1,13 +1,26 @@
 {
-  "name": "上岸自习室",
-  "short_name": "上岸自习室",
-  "description": "事业单位联考C类备考 · 手机刷题",
+  "name": "GOSHORE 上岸工作台",
+  "short_name": "上岸",
+  "description": "事业单位联考C类备考 · 手机刷题 / 错题复习 / AI 讲题",
+  "lang": "zh-CN",
   "start_url": "/m/",
-  "scope": "/m/",
+  "scope": "/",
+  "id": "/m/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#f4efe6",
   "theme_color": "#8c2b21",
+  "categories": ["education", "productivity"],
   "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
     { "src": "/m/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "开始刷题", "short_name": "刷题", "url": "/m/#/practice" },
+    { "name": "今日复习", "short_name": "复习", "url": "/m/#/review" },
+    { "name": "错题本", "short_name": "错题", "url": "/m/#/wrong" },
+    { "name": "AI 答疑", "short_name": "答疑", "url": "/m/#/ai-ask" }
   ]
 }
