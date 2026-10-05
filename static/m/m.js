@@ -235,6 +235,7 @@ const TITLES = {
   mastery: "掌握度",
   plan: "学习计划",
   interview: "面试模拟",
+  guide: "引导讲题",
 };
 const AUTH_PAGES = ["login", "register"];
 
@@ -1031,6 +1032,7 @@ const ROUTES = {
   mastery: renderMastery,
   plan: renderPlan,
   interview: renderInterview,
+  guide: renderGuide,
   import: renderImport, settings: renderSettings,
   history: renderHistory,
 };
@@ -1729,6 +1731,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
             <b>${esc(docs[i].title || "")}</b>
             <div class="meta">${esc(docs[i].kaodian || "")} · 你选 ${answers[i].sel}，正确 ${(docs[i].data.options.find(o => o.correct) || {}).label}</div>
             <button class="btn btn-sm run-review" data-i="${i}">查看解析</button>
+            <button class="btn btn-sm run-guide" data-doc="${docs[i].id}">引导我想</button>
           </div>`).join("") : ""}
       ${exam && blankIdx.length ? `<h2 class="sec">未作答（${blankIdx.length}）</h2>` +
         blankIdx.map(i => `
@@ -1736,12 +1739,14 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
             <b>${esc(docs[i].title || "")}</b>
             <div class="meta">${esc(docs[i].kaodian || "")} · 正确 ${(docs[i].data.options.find(o => o.correct) || {}).label}</div>
             <button class="btn btn-sm run-review" data-i="${i}">查看解析</button>
+            <button class="btn btn-sm run-guide" data-doc="${docs[i].id}">引导我想</button>
           </div>`).join("") : ""}
       <div class="run-result-actions">
         <button class="btn btn-block" onclick="location.hash='#/practice'">返回刷题</button>
         ${wrongIdx.length ? `<button class="btn btn-primary btn-block" id="redoBtn">只练错题（${wrongIdx.length}）</button>` : ""}
       </div>`;
     $$(".run-review").forEach(b => b.onclick = () => runPaper([docs[+b.dataset.i].id], { title: "错题解析" }));
+    $$(".run-guide").forEach(b => b.onclick = () => (location.hash = `#/guide/${b.dataset.doc}`));
     const rb = $("#redoBtn");
     if (rb) rb.onclick = () => runPaper(wrongIdx.map(i => docs[i].id), { title: "错题重练" });
   }
@@ -1977,6 +1982,7 @@ async function drawWrong(box, tok) {
         </div>` : ""}
         <div class="row">
           <button class="btn w-ai" data-id="${w.id}">AI 预归因</button>
+          <button class="btn w-guide" data-id="${w.id}">引导我想</button>
           <button class="btn w-one" data-id="${w.id}">重做此题</button>
           <button class="btn w-out" data-id="${w.id}">移出</button>
         </div>
@@ -2008,6 +2014,8 @@ async function drawWrong(box, tok) {
   });
   $$(".w-one").forEach(b => b.onclick = () =>
     runPaper([+b.dataset.id], { title: "错题重做" }));
+  $$(".w-guide").forEach(b => b.onclick = () =>
+    (location.hash = `#/guide/${b.dataset.id}`));
   // 移出错题本：两步确认（不依赖 WebView 的 confirm 对话框）
   $$(".w-out").forEach(b => b.onclick = async () => {
     if (!b.dataset.armed) {
@@ -5096,6 +5104,124 @@ async function renderAiAsk() {
     aiAskSave(msgs);
     drawAll();
   };
+}
+
+/* ---------- AI 多轮追问式讲题（功能 2.5 · 苏格拉底式） ---------- */
+
+async function renderGuide(arg) {
+  const docId = parseInt(arg, 10) || 0;
+  if (!docId) { view.innerHTML = `<div class="empty">题目不存在</div>`; return; }
+  let doc = null;
+  try { doc = await api(`/api/doc/${docId}`); } catch (e) { /* 下面统一处理 */ }
+  if (!doc) { view.innerHTML = `<div class="empty">题目不存在或已删除</div>`; return; }
+  const d = doc.data || {};
+  const st = { history: [], streaming: false, done: false };
+
+  view.innerHTML = `
+    <div class="card">
+      <div class="guide-head">
+        <span class="guide-round" id="gRound">第 1 / 6 轮</span>
+        <span class="guide-hint">AI 不直接报答案，会一步步反问你</span>
+      </div>
+      <div class="muted" style="font-size:12.5px;margin:4px 0 8px">${esc([doc.kaodian, doc.module].filter(Boolean).join(" · "))}</div>
+      <details class="material" style="margin-bottom:10px">
+        <summary>题目原文（可折叠）</summary>
+        <div class="mat-body">${d.material || ""}<div class="stem" style="margin-top:8px">${normalizeStem(d.stem || "")}</div></div>
+      </details>
+      <div class="guide-log" id="gLog"></div>
+      <div class="guide-input">
+        <textarea id="gInput" rows="2" placeholder="说说你的思路或答案…"></textarea>
+        <button class="btn btn-primary" id="gSend">回答</button>
+      </div>
+      <button class="btn btn-block" id="gReveal" style="margin-top:8px">直接看完整解析</button>
+    </div>`;
+
+  const log = $("#gLog");
+  const push = (role, text) => {
+    const el = document.createElement("div");
+    el.className = `guide-msg ${role}`;
+    el.innerHTML = role === "me" ? esc(text) : md(text || "");
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  };
+
+  async function turn(answer) {
+    if (st.streaming || st.done) return;
+    st.streaming = true;
+    $("#gSend").disabled = true;
+    if (answer) push("me", answer);
+    const bubble = push("ai", "…");
+    let shown = "", raw = "", parsed = null;
+    try {
+      const r = await fetch("/api/ai/guide", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc_id: docId, answer, history: st.history }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const frames = buf.split("\n\n");
+        buf = frames.pop();
+        for (const f of frames) {
+          const line = f.split("\n").find(l => l.startsWith("data:"));
+          if (!line) continue;
+          const ev = JSON.parse(line.slice(5).trim());
+          if (ev.type === "delta") {
+            raw += ev.text;
+            shown = raw.split("@@")[0];   // 流式阶段隐藏 @@PHASE 标记
+            bubble.innerHTML = md(shown);
+            log.scrollTop = log.scrollHeight;
+          } else if (ev.type === "result") {
+            parsed = ev.data;
+          } else if (ev.type === "error") {
+            bubble.innerHTML = md(shown + `\n\n⚠ ${ev.text}`);
+          }
+        }
+      }
+    } catch (e) {
+      bubble.innerHTML = md(shown + `\n\n⚠ 请求失败：${esc(e.message)}`);
+    }
+    const reply = (parsed && parsed.reply) ? parsed.reply : (shown || "…");
+    bubble.innerHTML = md(reply);
+    if (parsed) {
+      st.history.push({ role: "assistant", content: reply });
+      const maxR = parsed.max_rounds || 6;
+      const gr = $("#gRound");
+      if (gr) gr.textContent = `第 ${Math.min(parsed.round || 1, maxR)} / ${maxR} 轮`;
+      if (parsed.phase === "answer") {
+        st.done = true;
+        push("ai", "✅ 已给出解析。可点下方「直接看完整解析」查看题目官方解析。");
+        const gi = $("#gInput"); if (gi) gi.disabled = true;
+      }
+    }
+    st.streaming = false;
+    const gs = $("#gSend"); if (gs) gs.disabled = st.done;
+    const gi = $("#gInput");
+    if (gi && !st.done) gi.focus();
+    log.scrollTop = log.scrollHeight;
+  }
+
+  $("#gSend").onclick = () => {
+    const v = $("#gInput").value.trim();
+    if (!v || st.streaming || st.done) return;
+    $("#gInput").value = "";
+    turn(v);
+  };
+  $("#gReveal").onclick = () => {
+    const el = document.createElement("div");
+    el.className = "guide-msg ai";
+    el.innerHTML = `<b>完整解析</b><div style="margin-top:6px">${
+      d.official ? rawHtml(String(d.official).slice(0, 6000)) : "（暂无官方解析）"}</div>`;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  turn("");
 }
 
 /* ---------- 综应考点 ---------- */

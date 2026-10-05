@@ -351,6 +351,75 @@ def parse_shizheng_quiz_json(raw: str, n: int = SHIZHENG_QUIZ_N) -> list[dict] |
     return items or None
 
 
+# ---------------- AI 多轮追问式讲题（功能 2.5 · 苏格拉底式） ----------------
+
+GUIDE_MAX_ROUNDS = 6
+
+GUIDE_SYSTEM = """你是一名事业单位C类教研老师，正在用【苏格拉底式追问】引导一名考生自己把题想通。
+
+铁律：
+1. **绝不直接说出正确答案，也绝不直接给出完整解题步骤**（除非系统在末尾标注【必须给答案】）。
+2. 每轮只做一件事：先用一句话肯定学生答对/想到的部分，再抛出一个**具体、可回答**的追问，把他往下一步推。
+   追问要针对"他还没想到的那个关键点"，而不是泛泛地问"你再想想"。
+3. 如果学生上一轮答错或答不上来，不要重复同一个问题，要**降低台阶**：给一个更小的提示
+   （如"先看单位"、"先判断问的是增长量还是增长率"），再用新问题引导。
+4. 语气像面对面辅导，口语、简短，每轮 60~140 字，不用 Markdown 标题、不列长清单。
+5. 只依据下面给出的题库底稿提问与提示，不得引入底稿之外的数据与结论；底稿缺失的部分不要编造。
+
+输出格式（必须严格遵守）：
+- 从第一行开始直接输出你的追问/提示正文（纯文本，可含简单换行）。
+- 正文输出完后，另起一行输出阶段标记：@@PHASE:probe@@ 或 @@PHASE:hint@@ 或 @@PHASE:answer@@
+  - probe：学生在正常推进，你在追问引导；
+  - hint：学生卡住了，你给了更强的提示；
+  - answer：你已给出答案与完整解析（仅在系统标注【必须给答案】时使用）。
+- 除正文与这一行阶段标记外，不要输出任何其他内容（不要解释格式、不要加引号）。"""
+
+
+def build_guide_messages(doc: dict, history: list[dict], answer: str,
+                         round_no: int, force_answer: bool = False) -> list[dict]:
+    """构造引导式讲题的多轮上下文：底稿只给 AI 看，学生只看追问。"""
+    context = _build_context(doc)
+    sys_prompt = GUIDE_SYSTEM
+    if force_answer:
+        sys_prompt += (
+            f"\n\n【必须给答案】这是第 {round_no} 轮，也是最后一轮。"
+            "请停止追问，直接给出正确答案与完整解析（含关键算式），并输出 @@PHASE:answer@@。"
+        )
+    else:
+        sys_prompt += f"\n\n【当前轮次】第 {round_no} / {GUIDE_MAX_ROUNDS} 轮。"
+    msgs = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": "以下是本题的题库底稿（学生看不到，供你提问与判断对错）：\n\n" + context},
+    ]
+    for m in history or []:
+        role = m.get("role")
+        if role in ("user", "assistant"):
+            content = str(m.get("content") or "")[:4000]
+            if content:
+                msgs.append({"role": role, "content": content})
+    if answer:
+        msgs.append({"role": "user", "content": answer})
+    return msgs
+
+
+def parse_guide_output(raw: str, round_no: int, force_answer: bool = False) -> dict:
+    """解析引导输出：正文 + @@PHASE:xxx@@。解析失败降级 probe，正文原样返回。"""
+    text = (raw or "").strip()
+    phase = "probe"
+    m = re.search(r"@@PHASE:\s*(probe|hint|answer)\s*@@", text)
+    if m:
+        phase = m.group(1)
+        text = text[:m.start()].rstrip()
+    else:
+        # 容错：去掉可能残留的 @@ 片段
+        text = re.sub(r"@@[^@]*@@", "", text).rstrip()
+    if force_answer:
+        phase = "answer"
+    if not text:
+        text = "（AI 没有返回内容，请重试，或直接查看完整解析）"
+    return {"reply": text, "phase": phase, "round": round_no, "max_rounds": GUIDE_MAX_ROUNDS}
+
+
 async def stream_chat_with_temp(messages: list[dict], temperature: float):
     """同 stream_chat，但温度可调。"""
     s = load_settings()

@@ -321,6 +321,34 @@ async def api_ai_ask(b: AskIn):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+class GuideIn(BaseModel):
+    doc_id: int
+    answer: str = ""
+    history: list[dict] = []
+
+
+@app.post("/api/ai/guide")
+async def api_ai_guide(b: GuideIn):
+    """2.5 苏格拉底式引导讲题：连续追问，最多 GUIDE_MAX_ROUNDS 轮后必给解析。"""
+    doc = db.get_doc(b.doc_id)
+    if not doc:
+        raise HTTPException(404)
+    round_no = sum(1 for m in b.history if m.get("role") == "assistant") + 1
+    force = round_no >= ai.GUIDE_MAX_ROUNDS
+    messages = ai.build_guide_messages(doc, b.history, b.answer, round_no, force)
+    buffer: list[str] = []
+
+    async def gen():
+        async for kind, payload in ai.stream_chat(messages):
+            if kind == "delta":
+                buffer.append(payload)
+            yield _sse({"type": kind, "text": payload})
+        parsed = ai.parse_guide_output("".join(buffer), round_no, force)
+        yield _sse({"type": "result", "data": parsed})
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
+
+
 # ---------------- 折纸盒·拍照录题 ----------------
 
 class CubeRecognizeIn(BaseModel):

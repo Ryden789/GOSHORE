@@ -1063,6 +1063,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(self._essay_self_grade(b))
             elif path == "/api/ai/ask":
                 self._ai_ask(b)
+            elif path == "/api/ai/guide":
+                self._ai_guide(b)
             elif path == "/api/shizheng/generate":
                 self._json(_run_async(self._shizheng_generate(b)))
             elif path == "/api/shizheng/quiz":
@@ -1349,6 +1351,33 @@ class _Handler(BaseHTTPRequestHandler):
         async def gen():
             async for kind, payload in ai.stream_chat(messages):
                 yield kind, payload
+
+        self._stream_sse(gen())
+
+    # ---- AI 多轮追问式讲题（功能 2.5 · 苏格拉底式） ----
+
+    def _ai_guide(self, b):
+        try:
+            doc_id = int(b.get("doc_id") or 0)
+        except (TypeError, ValueError):
+            doc_id = 0
+        doc = db.get_doc(doc_id) if doc_id else None
+        if not doc:
+            return self._err(404, "题目不存在")
+        history = b.get("history") or []
+        answer = (b.get("answer") or "").strip()
+        round_no = sum(1 for m in history if m.get("role") == "assistant") + 1
+        force = round_no >= ai.GUIDE_MAX_ROUNDS
+        messages = ai.build_guide_messages(doc, history, answer, round_no, force)
+
+        async def gen():
+            buffer = []
+            async for kind, payload in ai.stream_chat(messages):
+                if kind == "delta":
+                    buffer.append(payload)
+                yield kind, payload
+            parsed = ai.parse_guide_output("".join(buffer), round_no, force)
+            yield "result", {"data": parsed}
 
         self._stream_sse(gen())
 

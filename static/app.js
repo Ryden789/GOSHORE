@@ -831,12 +831,14 @@ async function renderDoc(id, tabName) {
   /* -- AI 讲题 -- */
   function renderAI(el) {
     const aiState = { mode: "deep", messages: [], streaming: false, stuckSel: "", stuckStep: "" };
+    const guideState = { history: [], streaming: false, done: false };
     el.innerHTML = `
       <div class="panel">
         <div class="ai-mode-row">
           <button class="mode-chip ${aiState.mode === "quick" ? "active" : ""}" data-mode="quick">速讲</button>
           <button class="mode-chip ${aiState.mode === "deep" ? "active" : ""}" data-mode="deep">精读</button>
           <button class="mode-chip ${aiState.mode === "stuck" ? "active" : ""}" data-mode="stuck">卡点讲</button>
+          <button class="mode-chip" data-mode="guide" title="AI 不直接给答案，连续反问引导你自己想通">引导我想</button>
         </div>
         <div id="stuckForm"></div>
         <div class="ai-chat" id="chat">
@@ -849,6 +851,18 @@ async function renderDoc(id, tabName) {
         <div class="quick-asks">
           ${["干扰项都怎么设的坑？", "换个更简单的说法", "常规方法 vs 最快方法对比", "同类题还会怎么考？"].map(q =>
             `<span class="quick-ask" data-q="${esc(q)}">${esc(q)}</span>`).join("")}
+        </div>
+        <div id="guidePanel" style="display:none">
+          <div class="guide-head">
+            <span class="guide-round" id="guideRound">第 1 / 6 轮</span>
+            <span class="guide-hint">AI 不会直接报答案，会一步步反问你；最多 6 轮后给出完整解析</span>
+            <button class="btn btn-sm" id="guideReveal" style="margin-left:auto">直接看完整解析</button>
+          </div>
+          <div class="guide-log" id="guideLog"></div>
+          <div class="guide-input">
+            <textarea id="guideInput" rows="2" placeholder="说说你的思路或答案，如：我觉得这题在考增长率，先求现期…（Ctrl+Enter 提交）"></textarea>
+            <button class="btn btn-primary" id="guideSend">回答</button>
+          </div>
         </div>
       </div>`;
 
@@ -874,19 +888,139 @@ async function renderDoc(id, tabName) {
       if (si) si.oninput = e => (aiState.stuckStep = e.target.value);
     }
 
-    const MODE_NAMES = { quick: "速讲", deep: "精读", stuck: "卡点讲" };
+    const MODE_NAMES = { quick: "速讲", deep: "精读", stuck: "卡点讲", guide: "引导我想" };
+
+    // 切换讲解 / 引导两种版式
+    function setMode(mode) {
+      aiState.mode = mode;
+      $$(".mode-chip").forEach(x => x.classList.toggle("active", x.dataset.mode === mode));
+      const isGuide = mode === "guide";
+      $("#guidePanel").style.display = isGuide ? "" : "none";
+      chat.style.display = isGuide ? "none" : "";
+      $(".ai-input-row").style.display = isGuide ? "none" : "";
+      $(".quick-asks").style.display = isGuide ? "none" : "";
+      drawStuck();
+    }
+
+    /* -- 2.5 引导式讲题：多轮追问 -- */
+    async function guideTurn(answer) {
+      if (guideState.streaming || guideState.done) return;
+      guideState.streaming = true;
+      const log = $("#guideLog");
+      if (answer) log.insertAdjacentHTML("beforeend", `<div class="guide-msg me">${esc(answer)}</div>`);
+      const bubble = document.createElement("div");
+      bubble.className = "guide-msg ai cursor-blink";
+      bubble.textContent = "…";
+      log.appendChild(bubble);
+      log.scrollTop = log.scrollHeight;
+      let shown = "", raw = "", parsed = null;
+      try {
+        const r = await fetch("/api/ai/guide", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ doc_id: id, answer, history: guideState.history }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const reader = r.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const frames = buf.split("\n\n");
+          buf = frames.pop();
+          for (const f of frames) {
+            const line = f.split("\n").find(l => l.startsWith("data:"));
+            if (!line) continue;
+            const ev = JSON.parse(line.slice(5).trim());
+            if (ev.type === "delta") {
+              raw += ev.text;
+              shown = raw.split("@@")[0];      // 流式阶段隐藏 @@PHASE 标记
+              bubble.innerHTML = md(shown);
+            } else if (ev.type === "result") {
+              parsed = ev.data;
+            } else if (ev.type === "error") {
+              bubble.innerHTML = md(shown + `\n\n**⚠ ${ev.text}**`);
+            }
+          }
+        }
+      } catch (e) {
+        bubble.innerHTML = md(shown + `\n\n**⚠ 请求失败：${esc(e.message)}**`);
+      }
+      bubble.classList.remove("cursor-blink");
+      const reply = (parsed && parsed.reply) ? parsed.reply : (shown || "…");
+      bubble.innerHTML = md(reply);
+      if (parsed) {
+        guideState.history.push({ role: "assistant", content: reply });
+        const maxR = parsed.max_rounds || 6;
+        $("#guideRound").textContent = `第 ${Math.min(parsed.round || 1, maxR)} / ${maxR} 轮`;
+        if (parsed.phase === "answer") {
+          guideState.done = true;
+          bubble.insertAdjacentHTML("afterend",
+            `<div class="guide-final">✅ 已给出解析。想更系统地过一遍？
+              <button class="btn btn-sm btn-primary" id="guideMore">再深入精读一遍</button></div>`);
+          const gm = $("#guideMore");
+          if (gm) gm.onclick = async () => {
+            aiState.messages = [];
+            chat.innerHTML = "";
+            setMode("deep");
+            await callStream({ first: true });
+          };
+        }
+      }
+      guideState.streaming = false;
+      const gi = $("#guideInput"), gs = $("#guideSend");
+      if (gi) { gi.disabled = guideState.done; if (!guideState.done) gi.focus(); }
+      if (gs) gs.disabled = guideState.done;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function startGuide() {
+      $("#guideLog").innerHTML = "";
+      $("#guideRound").textContent = "第 1 / 6 轮";
+      const gi = $("#guideInput"); if (gi) { gi.disabled = false; gi.value = ""; }
+      const gs = $("#guideSend"); if (gs) gs.disabled = false;
+      guideState.history = [];
+      guideState.done = false;
+      guideTurn("");
+    }
+
+    $("#guideSend").onclick = () => {
+      const v = $("#guideInput").value.trim();
+      if (!v || guideState.streaming || guideState.done) return;
+      $("#guideInput").value = "";
+      guideTurn(v);
+    };
+    $("#guideInput").addEventListener("keydown", e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); $("#guideSend").click(); }
+    });
+    $("#guideReveal").onclick = async () => {
+      if (guideState.streaming) return;
+      aiState.messages = [];
+      chat.innerHTML = "";
+      setMode("deep");
+      await callStream({ first: true });
+    };
 
     $$(".mode-chip").forEach(c => c.onclick = async () => {
-      if (aiState.streaming || c.dataset.mode === aiState.mode) return;
       const mode = c.dataset.mode;
-      if (aiState.messages.length) {
-        if (!(await confirmBox(`将按【${MODE_NAMES[mode]}】重新讲一次，当前对话会被清空。`))) return;
+      if (aiState.streaming || guideState.streaming || mode === aiState.mode) return;
+      if (mode === "guide") {
+        if (aiState.messages.length &&
+            !(await confirmBox("切换到「引导我想」会开始一段新的追问对话，当前讲解记录会被清空。"))) return;
         aiState.messages = [];
         chat.innerHTML = "";
+        setMode("guide");
+        startGuide();
+        return;
       }
-      aiState.mode = mode;
-      $$(".mode-chip").forEach(x => x.classList.toggle("active", x === c));
-      drawStuck();
+      if (guideState.history.length &&
+          !(await confirmBox(`将按【${MODE_NAMES[mode]}】重新讲一次，当前引导对话会被清空。`))) return;
+      if (guideState.history.length) { guideState.history = []; guideState.done = false; $("#guideLog").innerHTML = ""; }
+      if (aiState.messages.length &&
+          !(await confirmBox(`将按【${MODE_NAMES[mode]}】重新讲一次，当前对话会被清空。`))) return;
+      if (aiState.messages.length) { aiState.messages = []; chat.innerHTML = ""; }
+      setMode(mode);
       if (mode === "stuck") {
         // 展开卡点表单，由学生填完后点击「开始卡点讲」发起
         chat.innerHTML = `<div class="empty">选填错选选项与卡住步骤后，点击「开始卡点讲」</div>`;
