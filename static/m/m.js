@@ -231,6 +231,8 @@ const TITLES = {
   argument: "论证评价", "argument-quiz": "辨析快练", "ai-ask": "AI 答疑",
   wrong: "错题本", marks: "收藏", cards: "辨析卡",
   search: "搜题", doubts: "疑点", import: "导入", settings: "设置",
+  mydocs: "我的题库",
+  mastery: "掌握度",
 };
 const AUTH_PAGES = ["login", "register"];
 
@@ -259,12 +261,14 @@ const HUB = [
   ]},
   { group: "复习巩固", items: [
     ["review", "◌", "今日复习", "到期复习列表"],
+    ["mastery", "图", "掌握度", "考点掌握图谱"],
     ["wrong", "✗", "错题本", "错题重做"],
     ["marks", "★", "收藏", "收藏题目"],
     ["cards", "▦", "辨析卡", "翻面辨析卡片"],
   ]},
   { group: "题库管理", items: [
     ["search", "▤", "搜题", "关键词搜题"],
+    ["mydocs", "☰", "我的题库", "导入的私有题目"],
     ["doubts", "⌚", "疑点", "存疑题目复核"],
     ["import", "⇩", "导入", "导入新题"],
     ["settings", "⚙", "设置", "Key 与数据设置"],
@@ -295,8 +299,31 @@ function routeLoadingMarkup(name) {
   return `<div class="route-skeleton" aria-live="polite" aria-label="正在加载${esc(label)}"><div class="route-skeleton-head"><span class="route-skeleton-title">${esc(label)}</span><span class="route-spinner" aria-hidden="true"></span></div><div class="route-skeleton-line wide"></div><div class="route-skeleton-line"></div><div class="route-skeleton-block"></div></div>`;
 }
 
+/* 页面级定时器登记：切页时统一清理，避免旧页面回调操作已移除的 DOM。
+   注意：番茄钟（Pomo）是跨页计时器，不登记于此。 */
+const activeTimers = [];
+function safeTimeout(fn, delay) {
+  const id = setTimeout(() => {
+    const idx = activeTimers.indexOf(id);
+    if (idx > -1) activeTimers.splice(idx, 1);
+    fn();
+  }, delay);
+  activeTimers.push(id);
+  return id;
+}
+function safeInterval(fn, delay) {
+  const id = setInterval(fn, delay);
+  activeTimers.push(id);
+  return id;
+}
+function clearAllTimers() {
+  activeTimers.forEach(id => { clearTimeout(id); clearInterval(id); });
+  activeTimers.length = 0;
+}
+
 function route() {
   inRun = false;
+  clearAllTimers();   // 先清旧页面遗留的定时器，再渲染新页面
   const h = location.hash || "#/home";
   const name = h.replace(/^#\//, "").split("/")[0] || "home";
   const isAuth = AUTH_PAGES.includes(name);
@@ -594,6 +621,15 @@ async function renderReport() {
                 ${m.d_rate >= 0 ? "↑" : "↓"}${Math.abs(m.d_rate)}</span>` : ""}</span>
           </div>`).join("")}</div>` : ""}
     </div>
+    ${(rep.reason_top || []).length ? `
+    <div class="card">
+      <h3>高频错因 TOP${rep.reason_top.length}</h3>
+      ${rep.reason_top.map((r, i) => `
+        <div class="kd-row" style="padding:6px 0;border-top:1px solid var(--line-soft)">
+          <span class="kn">#${i + 1} ${esc(r.reason)}</span>
+          <span style="color:var(--cinnabar)">${r.c} 题</span>
+        </div>`).join("")}
+    </div>` : ""}
     <div class="card">
       <h3>本周建议</h3>
       ${(rep.advice || []).length
@@ -601,7 +637,6 @@ async function renderReport() {
         : `<p class="muted" style="margin:0">本周数据不足，先做一套题吧。</p>`}
     </div>`;
 }
-
 /* ---------- 占位页（移植中） ---------- */
 
 function makeTodo(name) {
@@ -627,6 +662,8 @@ const ROUTES = {
   shizheng: renderShizheng, grade: renderGrade,
   cards: renderCards,
   search: renderSearch, doubts: renderDoubts,
+  mydocs: renderMyDocs,
+  mastery: renderMastery,
   import: renderImport, settings: renderSettings,
   history: renderHistory,
 };
@@ -690,6 +727,8 @@ async function renderHome() {
       <div class="stat"><b>${s.today_guessed || 0}</b><span>今日蒙题</span></div>
     </div>
     <h2 class="sec">开始学习</h2>
+    <a class="entry" id="recGo" style="cursor:pointer"><span class="ei">🎯</span>
+      <span class="et"><b>今日推荐练习</b><small>按掌握度智能组卷 15 题 · 弱项优先</small></span><span class="go">›</span></a>
     <a class="entry" href="#/practice"><span class="ei">✎</span>
       <span class="et"><b>去刷题</b><small>组卷 · 判断专项 · 列式</small></span><span class="go">›</span></a>
     <a class="entry" href="#/review"><span class="ei">◌</span>
@@ -711,6 +750,13 @@ async function renderHome() {
     } finally { dg.disabled = false; dg.textContent = "抽今日一题"; }
   };
   $("#exportToday").onclick = () => showReportPreview(s);
+  $("#recGo").onclick = async () => {
+    try {
+      const r = await api("/api/paper/adaptive", { n: 15 });
+      if (!r.ids.length) return toast("题库暂无可用真题");
+      runPaper(r.ids, { title: "今日推荐练习" });
+    } catch (e) { toast("组卷失败：" + e.message); }
+  };
   maybeBackupGuide(s);
 }
 
@@ -873,6 +919,14 @@ async function renderPractice() {
   view.innerHTML = `
     <div class="card">
       <h3>随机组卷</h3>
+      <div class="cfg-label" style="margin-bottom:6px">模式</div>
+      <div class="chips" id="pModes">
+        <span class="chip on" data-mode="adaptive">智能推题</span>
+        <span class="chip" data-mode="random">随机</span>
+        <span class="chip" data-mode="sequential">顺序</span>
+      </div>
+      <div class="muted" style="font-size:12px;margin:8px 0 0">智能模式按掌握度加权：错得多、久没练的题优先出现</div>
+      <div class="cfg-label" style="margin:12px 0 6px">模块</div>
       <div class="chips" id="pMods">
         <span class="chip on" data-m="">全部</span>
         ${mods.map(m => {
@@ -927,7 +981,11 @@ async function renderPractice() {
       <div style="margin-top:14px"><button class="btn btn-primary btn-block" id="fGo">开始列式（5题）</button></div>
     </div>`;
 
-  let mod = "", n = 10, ftype = "";
+  let mod = "", n = 10, ftype = "", pmode = "adaptive";
+  $$("#pModes .chip").forEach(c => c.onclick = () => {
+    $$("#pModes .chip").forEach(x => x.classList.remove("on"));
+    c.classList.add("on"); pmode = c.dataset.mode;
+  });
   $$("#pMods .chip").forEach(c => c.onclick = () => {
     $$("#pMods .chip").forEach(x => x.classList.remove("on"));
     c.classList.add("on"); mod = c.dataset.m;
@@ -945,9 +1003,12 @@ async function renderPractice() {
     const btn = $("#pGo");
     btn.disabled = true; btn.textContent = "抽题中…";
     try {
-      const r = await api("/api/paper", { module: mod, n });
+      const path = pmode === "adaptive" ? "/api/paper/adaptive"
+        : pmode === "sequential" ? "/api/paper/sequential" : "/api/paper";
+      const r = await api(path, { module: mod, n });
       if (!r.ids.length) return toast("该范围暂无真题");
-      runPaper(r.ids, { title: mod ? `${mod} · ${n}题` : `随机 ${n} 题` });
+      const label = pmode === "adaptive" ? "智能推题" : pmode === "sequential" ? "顺序练习" : "随机";
+      runPaper(r.ids, { title: mod ? `${mod} · ${label} ${n}题` : `${label} ${n} 题` });
     } finally {
       btn.disabled = false; btn.textContent = "开始组卷";
     }
@@ -1047,7 +1108,7 @@ async function runPaper(ids, opt = {}) {
   function startTimer() {
     if (!deadline) return;
     clearInterval(timerH);
-    timerH = setInterval(() => {
+    timerH = safeInterval(() => {
       const el = $("#paperTimer");
       if (!el) { clearInterval(timerH); return; }
       if (Date.now() >= deadline) {
@@ -1316,12 +1377,64 @@ async function drawDue(box, tok) {
 }
 
 /* 错题本：错因标注 + AI 预归因 + 重做 */
+/* 错因分布圆环（纯内联 SVG，不引图表库） */
+const M_DONUT_COLORS = ["#b3402f", "#c98a2e", "#5e7a5a", "#43546b", "#8a6fa8", "#9a9a9a"];
+
+function mReasonDonut(items) {
+  const data = (items || []).filter(x => x.c > 0);
+  const total = data.reduce((a, b) => a + b.c, 0);
+  if (!total) return "";
+  const R = 46, r = 27, C = 60;
+  let acc = 0;
+  const arcs = data.map((d, i) => {
+    const frac = d.c / total;
+    const a0 = acc * 2 * Math.PI - Math.PI / 2;
+    acc += frac;
+    const a1 = acc * 2 * Math.PI - Math.PI / 2;
+    const col = M_DONUT_COLORS[i % M_DONUT_COLORS.length];
+    if (frac >= 0.999) {
+      return `<circle cx="${C}" cy="${C}" r="${(R + r) / 2}" fill="none"
+                stroke="${col}" stroke-width="${R - r}"/>`;
+    }
+    const pt = (rad, ang) => [C + rad * Math.cos(ang), C + rad * Math.sin(ang)];
+    const [x0, y0] = pt(R, a0), [x1, y1] = pt(R, a1);
+    const [x2, y2] = pt(r, a1), [x3, y3] = pt(r, a0);
+    const large = frac > 0.5 ? 1 : 0;
+    return `<path d="M${x0.toFixed(2)} ${y0.toFixed(2)}
+      A${R} ${R} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}
+      L${x2.toFixed(2)} ${y2.toFixed(2)}
+      A${r} ${r} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)} Z" fill="${col}"/>`;
+  }).join("");
+  const legend = data.map((d, i) => `
+    <div style="display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 0">
+      <span style="width:10px;height:10px;border-radius:2px;background:${M_DONUT_COLORS[i % M_DONUT_COLORS.length]}"></span>
+      <span style="flex:1">${esc(d.reason)}</span>
+      <b>${d.c}</b>
+      <span class="muted" style="font-size:12px">${Math.round(d.c / total * 100)}%</span>
+    </div>`).join("");
+  return `<div class="card">
+    <h3>错因分布</h3>
+    <div style="display:flex;gap:18px;align-items:center">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="错因分布圆环">
+        ${arcs}
+        <text x="${C}" y="${C - 1}" text-anchor="middle" font-size="19" font-weight="700" fill="var(--ink-1)">${total}</text>
+        <text x="${C}" y="${C + 14}" text-anchor="middle" font-size="10" fill="var(--ink-3)">道错题</text>
+      </svg>
+      <div style="flex:1;min-width:0">${legend}</div>
+    </div>
+  </div>`;
+}
+
 async function drawWrong(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
-  const [wr, rmap] = await Promise.all([
-    api("/api/wrong-book"), api("/api/wrong-reasons")]);
+  const [wr, rmap, dist, aiMap] = await Promise.all([
+    api("/api/wrong-book"), api("/api/wrong-reasons"),
+    api("/api/wrong-reason/distribution").catch(() => ({ items: [] })),
+    api("/api/wrong-reason/ai-map").catch(() => ({ items: {} })),
+  ]);
   if (tok !== reviewToken) return;
   const wrongs = wr.items || [];
+  const ai = aiMap.items || {};
   if (!wrongs.length) {
     box.innerHTML = `<div class="empty">暂无错题，继续保持</div>`;
     return;
@@ -1336,6 +1449,7 @@ async function drawWrong(box, tok) {
 
   box.innerHTML = `
     <button class="btn btn-primary btn-block" id="wAll">错题全部重练（${wrongs.length}）</button>
+    ${mReasonDonut(dist.items)}
     ${wrongs.map(w => `
       <div class="item">
         <b>${esc(w.title)}${w.annihilated ? ' <span class="anni-flag" title="变式歼灭已通过">💥</span>' : ""}</b>
@@ -1344,9 +1458,14 @@ async function drawWrong(box, tok) {
           placeholder="一句话记下坑因，如：把基期当现期（失焦即存）"
           value="${esc(rmap[w.id] || "")}">
         ${reasonChips(w)}
+        ${ai[w.id] ? `<div class="muted" style="font-size:12px;margin-top:6px">
+          <b>AI 归因：${esc(ai[w.id].category)}</b>${ai[w.id].specific ? ` · ${esc(ai[w.id].specific)}` : ""}
+          ${ai[w.id].advice ? `<div>建议：${esc(ai[w.id].advice)}</div>` : ""}
+        </div>` : ""}
         <div class="row">
           <button class="btn w-ai" data-id="${w.id}">AI 预归因</button>
           <button class="btn w-one" data-id="${w.id}">重做此题</button>
+          <button class="btn w-out" data-id="${w.id}">移出</button>
         </div>
         <div class="row"><button class="btn btn-primary btn-block w-anni" data-id="${w.id}">${w.annihilated ? "💥 再歼灭一轮" : "⚔ 变式歼灭（AI 出 3 题）"}</button></div>
       </div>`).join("")}`;
@@ -1367,7 +1486,8 @@ async function drawWrong(box, tok) {
     b.disabled = true; b.textContent = "分析中…";
     try {
       const r = await api("/api/wrong-reason/ai-suggest", { doc_id: +b.dataset.id });
-      if (r.ok) { rmap[b.dataset.id] = r.reason; drawWrong(box, tok); }
+      // 结构化归因落库后重渲染（AI 分类不写入手填输入框）
+      if (r.ok) { toast(`AI 归因：${r.category || r.reason}`); drawWrong(box, tok); }
       else toast(r.error || "未能判定，请手动标注");
     } finally {
       b.disabled = false; b.textContent = "AI 预归因";
@@ -1375,6 +1495,21 @@ async function drawWrong(box, tok) {
   });
   $$(".w-one").forEach(b => b.onclick = () =>
     runPaper([+b.dataset.id], { title: "错题重做" }));
+  // 移出错题本：两步确认（不依赖 WebView 的 confirm 对话框）
+  $$(".w-out").forEach(b => b.onclick = async () => {
+    if (!b.dataset.armed) {
+      b.dataset.armed = "1"; b.textContent = "确认移出";
+      safeTimeout(() => {
+        if (b.isConnected) { delete b.dataset.armed; b.textContent = "移出"; }
+      }, 3000);
+      return;
+    }
+    try {
+      await api("/api/wrong-book/dismiss", { doc_id: +b.dataset.id });
+      toast("已移出错题本");
+      drawWrong(box, tok);
+    } catch (e) { toast("操作失败：" + e.message); }
+  });
   $$(".w-anni").forEach(b => b.onclick = () =>
     annihilateFlow(+b.dataset.id, box, tok));
   $$(".wn-note").forEach(inp => {
@@ -1429,7 +1564,7 @@ function annihilateFlow(docId, wrongBox, wrongTok) {
 
   Promise.race([
     api("/api/annihilate/start", { doc_id: docId }),
-    new Promise((_, rej) => setTimeout(() => rej(new Error("生成超时（120 秒），请稍后重试")), 120000)),
+    new Promise((_, rej) => safeTimeout(() => rej(new Error("生成超时（120 秒），请稍后重试")), 120000)),
   ]).then(r => {
     if (closed) return;
     if (!r.ok) { failView(r.error || "生成失败，请重试"); return; }
@@ -2111,6 +2246,156 @@ async function renderSearch() {
   await doSearch(1);
 }
 
+/* ---------- 我的题库（本账号导入的私有题目） ---------- */
+
+async function renderMyDocs() {
+  let all = [];
+  try {
+    all = (await api("/api/my-documents")).items || [];
+  } catch (e) {
+    view.innerHTML = `<div class="card">加载失败：${esc(e.message)}</div>`;
+    return;
+  }
+  view.innerHTML = `
+    <div class="card">
+      <input id="mdQ" class="m-input" placeholder="搜题干 / 考点，如：增长量"/>
+      <div class="sr-count muted" id="mdCount"></div>
+      <p class="muted" style="margin:8px 0 0">这里是你导入的私有题目，只存在本机本账号；共享题库不受影响。</p>
+    </div>
+    <div id="mdList"></div>`;
+
+  const render = () => {
+    const kw = ($("#mdQ").value || "").trim();
+    const items = kw
+      ? all.filter(it => `${it.stem}${it.kaodian}${it.module}`.includes(kw))
+      : all;
+    $("#mdCount").textContent =
+      `共 ${all.length} 道导入题${kw ? ` · 命中 ${items.length}` : ""}`;
+    $("#mdList").innerHTML = items.length
+      ? items.map(it => `
+        <div class="sr-item" data-id="${it.id}">
+          <span class="sr-kind">${esc(it.module || "导入")}</span>
+          <div class="sr-main">
+            <div class="sr-title">${esc((it.stem || it.title || "").slice(0, 60))}</div>
+            <div class="sr-sub">${esc([it.kaodian, it.region + " " + it.year, it.qid]
+              .filter(Boolean).join(" · "))} · ${it.options} 个选项</div>
+          </div>
+          <button class="btn btn-sm" data-del="${it.id}">删除</button>
+        </div>`).join("")
+      : `<div class="card"><div class="empty">${all.length
+          ? "没有匹配的题目" : "还没有导入过题目，去「导入」添加吧"}</div></div>`;
+
+    // 点击题目 → 进入练习
+    $$("#mdList .sr-item").forEach(el => {
+      el.onclick = e => {
+        if (e.target.dataset.del) return;
+        runPaper([+el.dataset.id]);
+      };
+    });
+    // 删除：两步确认（不依赖 WebView 的 confirm 对话框）
+    $$("#mdList [data-del]").forEach(btn => {
+      btn.onclick = async e => {
+        e.stopPropagation();
+        const id = +btn.dataset.del;
+        if (!btn.dataset.armed) {
+          btn.dataset.armed = "1";
+          btn.textContent = "确认删除";
+          safeTimeout(() => {
+            if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = "删除"; }
+          }, 3000);
+          return;
+        }
+        try {
+          const r = await fetch(`/api/my-documents/${id}`, { method: "DELETE" });
+          if (!r.ok) {
+            let msg = String(r.status);
+            try { msg = (await r.json()).detail || msg; } catch (e2) {}
+            throw new Error(msg);
+          }
+          all = all.filter(x => x.id !== id);
+          toast("已删除");
+          render();
+        } catch (e2) {
+          toast("删除失败：" + e2.message);
+        }
+      };
+    });
+  };
+
+  let t = null;
+  $("#mdQ").oninput = () => {
+    clearTimeout(t);
+    t = safeTimeout(render, 200);
+  };
+  render();
+}
+
+/* ---------- 知识掌握度图谱（功能 1.4） ---------- */
+
+const M_LEVEL_COLOR = { green: "var(--green)", amber: "var(--amber)", red: "var(--cinnabar)" };
+const M_LEVEL_LABEL = { green: "已掌握", amber: "待巩固", red: "薄弱/未练" };
+
+async function renderMastery() {
+  let module = "";
+  let items = [];
+  let mods = [];
+  try {
+    const f = await api("/api/facets");
+    mods = (f.modules || []).filter(m => m && m !== "未分类");
+    items = (await api("/api/mastery")).items || [];
+  } catch (e) {
+    view.innerHTML = `<div class="card">加载失败：${esc(e.message)}</div>`;
+    return;
+  }
+
+  const draw = () => {
+    const list = module ? items.filter(it => it.module === module) : items;
+    const cnt = { green: 0, amber: 0, red: 0 };
+    for (const it of list) cnt[it.level] = (cnt[it.level] || 0) + 1;
+    $("#mstBody").innerHTML = `
+      <div class="card">
+        <div class="chips" id="mstMods">
+          <span class="chip ${module === "" ? "on" : ""}" data-m="">全部</span>
+          ${mods.map(m => `<span class="chip ${module === m ? "on" : ""}" data-m="${esc(m)}">${esc(m)}</span>`).join("")}
+        </div>
+        <div style="display:flex;gap:14px;margin-top:10px;font-size:12.5px;flex-wrap:wrap">
+          <span><b style="color:${M_LEVEL_COLOR.green}">●</b> 已掌握 ${cnt.green || 0}</span>
+          <span><b style="color:${M_LEVEL_COLOR.amber}">●</b> 待巩固 ${cnt.amber || 0}</span>
+          <span><b style="color:${M_LEVEL_COLOR.red}">●</b> 薄弱/未练 ${cnt.red || 0}</span>
+        </div>
+      </div>
+      ${list.length ? list.map(it => `
+        <div class="kd-row mst-row" data-module="${esc(it.module)}" data-kaodian="${esc(it.kaodian)}"
+             style="cursor:pointer;align-items:center">
+          <span class="kn" style="flex:1;min-width:0">
+            <span style="color:${M_LEVEL_COLOR[it.level]}">●</span>
+            ${esc(it.kaodian)}
+            <span class="muted" style="font-size:11.5px;display:block">${esc(it.module)} · 题库 ${it.total} 题</span>
+          </span>
+          <span style="text-align:right;font-size:12.5px">
+            ${it.rate === null ? '<span class="muted">未练</span>' : `<b>${it.rate}%</b>`}
+            <span class="muted" style="display:block">${M_LEVEL_LABEL[it.level]} · 掌握 ${it.mastery.toFixed(2)}</span>
+          </span>
+        </div>`).join("") : `<div class="card"><div class="empty">暂无考点数据，先去题库做几道题吧</div></div>`}`;
+    $$("#mstMods .chip").forEach(c => c.onclick = () => { module = c.dataset.m; draw(); });
+    $$(".mst-row").forEach(row => row.onclick = async () => {
+      const r = await api("/api/paper", {
+        module: row.dataset.module, kaodian: row.dataset.kaodian, n: 10,
+      });
+      if (!r.ids.length) return toast("该考点暂无可用真题");
+      runPaper(r.ids, { title: `${row.dataset.kaodian} 专项` });
+    });
+  };
+
+  view.innerHTML = `
+    <div class="page-head">
+      <h2>掌握度图谱</h2>
+      <p class="muted">按考点聚合 · 共 ${items.length} 个考点 · 点任一行直接开练</p>
+    </div>
+    <div id="mstBody"></div>`;
+  draw();
+}
+
 /* ---------- 导入题库 ---------- */
 
 async function renderImport() {
@@ -2145,6 +2430,8 @@ async function renderImport() {
       </div>
       <div id="tabWeb" hidden>
         <p class="muted">粘贴真题网页地址，或直接粘贴网页文字，由 AI 抽取结构化题目</p>
+        <p class="muted" style="color:var(--amber)">💡 手机网络受限时，网址可能抓取失败——此时请直接在浏览器里打开该网页，
+          长按全选复制正文，粘贴到下面的文本框再抽取，效果相同。</p>
         <input id="webUrl" class="m-input" placeholder="https://…（留空则用粘贴文本）"/>
         <textarea id="webText" class="m-area" rows="7" style="margin-top:8px"
           placeholder="或直接粘贴网页文字（含题干、选项、答案）……"></textarea>
@@ -2272,7 +2559,12 @@ async function renderImport() {
     try {
       showPreview(await api("/api/import/web/preview", { url, text }));
     } catch (e) {
-      toast("抽取失败：" + e.message);
+      // 降级提示：网址抓取失败时引导用户改用「粘贴正文」
+      if (url && !text) {
+        toast("网址抓取失败：" + e.message + "。请在浏览器打开该网页，复制正文后粘贴到下方文本框再试");
+      } else {
+        toast("抽取失败：" + e.message);
+      }
     } finally {
       btn.disabled = false;
       btn.textContent = "AI 抽取预览";
@@ -2682,15 +2974,21 @@ async function renderSpeed() {
     body.innerHTML = `
       <div class="card">
         <div class="cfg-label">选择题型</div>
-        <div class="type-checks">
+        <div class="type-checks types">
           ${Object.entries(SPEED_TYPES).map(([k, v]) =>
             `<div class="type-check ${cfg.types.includes(k) ? "on" : ""}" data-t="${k}">${v}</div>`).join("")}
         </div>
         <label class="check"><input type="checkbox" id="challenge"> 60 秒限时挑战</label>
         <div id="normalCfg">
+          <div class="cfg-label">难度</div>
+          <div class="type-checks lv">
+            ${[["easy", "入门", 2], ["mid", "中等", 3], ["hard", "困难", 4]].map(([k, v, d]) =>
+              `<div class="type-check ${cfg.digits === d ? "on" : ""}" data-lv="${k}" data-d="${d}">${v}</div>`).join("")}
+          </div>
           <div class="cfg-line">
             <span>数字位数
-              <select id="digits"><option>2</option><option selected>3</option><option>4</option></select></span>
+              <select id="digits">${[2, 3, 4].map(n =>
+                `<option ${cfg.digits === n ? "selected" : ""}>${n}</option>`).join("")}</select></span>
             <span>题量 <input type="number" id="n" value="10" min="5" max="50" style="width:72px"></span>
           </div>
         </div>
@@ -2714,18 +3012,27 @@ async function renderSpeed() {
       } catch (e) {}
     })();
 
-    $$(".type-check", body).forEach(t => t.onclick = () => {
+    $$(".type-checks.types .type-check", body).forEach(t => t.onclick = () => {
       const k = t.dataset.t;
       cfg.types = cfg.types.includes(k)
         ? cfg.types.filter(x => x !== k) : [...cfg.types, k];
       t.classList.toggle("on");
+    });
+    // 难度 → 数字位数（入门 2 位 / 中等 3 位 / 困难 4 位）
+    const syncLv = () => $$(".type-checks.lv .type-check", body).forEach(x =>
+      x.classList.toggle("on", +x.dataset.d === cfg.digits));
+    $$(".type-checks.lv .type-check", body).forEach(t => t.onclick = () => {
+      cfg.digits = +t.dataset.d;
+      syncLv();
+      const sel = $("#digits");
+      if (sel) sel.value = String(cfg.digits);
     });
     $("#challenge").onchange = e => {
       cfg.challenge = e.target.checked;
       $("#normalCfg").style.opacity = cfg.challenge ? .45 : 1;
       $("#normalCfg").style.pointerEvents = cfg.challenge ? "none" : "auto";
     };
-    $("#digits").onchange = e => (cfg.digits = +e.target.value);
+    $("#digits").onchange = e => { cfg.digits = +e.target.value; syncLv(); };
     $("#n").oninput = e => (cfg.n = Math.max(5, Math.min(50, +e.target.value || 10)));
     $("#start").onclick = start;
     loadHistory();
@@ -2753,7 +3060,7 @@ async function renderSpeed() {
     run.roundStart = Date.now();
     if (cfg.challenge) {
       run.deadline = Date.now() + 60000;
-      run.timerH = setInterval(() => {
+      run.timerH = safeInterval(() => {
         const t = $("#timer");
         if (t) {
           const left = Math.max(0, run.deadline - Date.now());
@@ -2814,7 +3121,7 @@ async function renderSpeed() {
                    : '<span class="right-no">✘ 错误　</span>')
         + esc(p.explain);
       const advance = () => { run.idx++; next(); };
-      if (isCorrect || cfg.challenge) setTimeout(advance, cfg.challenge ? 450 : 600);
+      if (isCorrect || cfg.challenge) safeTimeout(advance, cfg.challenge ? 450 : 600);
       else {
         const btn = document.createElement("button");
         btn.className = "btn btn-primary btn-sm";
@@ -3195,7 +3502,7 @@ async function renderMe() {
 
 /* ---------- 综应C·论证评价训练器 ---------- */
 const ARG_TAX = ["以偏概全", "偷换概念", "强加因果", "因果倒置", "类比不当", "数据误用",
-  "样本偏差", "预设结论", "忽略他因", "绝对化表述", "诉诸权威", "诉诸无知"];
+  "绝对化表述", "诉诸权威", "非黑即白", "论据不充分"];
 
 async function renderArgument() {
   const seg = location.hash.replace(/^#\//, "").split("/");
@@ -3346,29 +3653,51 @@ async function renderArgumentDo(mid) {
 async function renderArgumentQuiz() {
   let stats = [];
   try { stats = (await api("/api/argument/overview")).quiz_type_stats || []; } catch (e) {}
-  view.innerHTML = `
-    <div class="card">
-      <div class="meta">点类型专练：自动混入易混类型对比，练的正是区分 · 或全部混合（共 ${stats.reduce((a, b) => a + b.count, 0)} 题）</div>
-      <div class="arg-type-chips">
-        <button class="btn arg-type-chip arg-type-all" data-type="">全部混合</button>
-        ${stats.map(t => {
-          const acc = t.done ? Math.round(t.right / t.done * 100) + "%" : "未练";
-          return `<button class="btn arg-type-chip" data-type="${esc(t.type)}">${esc(t.type)}<small>${t.count}题 · ${acc}</small></button>`;
-        }).join("")}
-      </div>
-    </div>
-    <div id="argQuizBox"><div class="card"><div class="meta">选好类型开始抽题…</div></div></div>`;
-  const qbox = $("#argQuizBox");
+  let perBatch = 10;
+  let mode = "choice";
+
+  const renderPicker = () => {
+    view.innerHTML = `
+      <div class="card" style="padding:14px">
+        <div style="font-weight:600;margin-bottom:8px">① 题量</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+          ${[5,10,15,20].map(n => `<button class="btn ${perBatch===n?'btn-primary':''}" data-n="${n}">${n}题</button>`).join("")}
+        </div>
+        <div style="font-weight:600;margin-bottom:8px">② 答题模式</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+          <button class="btn ${mode==='choice'?'btn-primary':''}" data-mode="choice">选择（四选一）</button>
+          <button class="btn ${mode==='recall'?'btn-primary':''}" data-mode="recall">默写（写类型名）</button>
+        </div>
+        <div style="font-weight:600;margin-bottom:8px">③ 类型</div>
+        <div class="arg-type-chips">
+          <button class="btn arg-type-chip arg-type-all active" data-type="">全部混合</button>
+          ${stats.map(t => {
+            const acc = t.done ? Math.round(t.right / t.done * 100) + "%" : "未练";
+            return `<button class="btn arg-type-chip" data-type="${esc(t.type)}">${esc(t.type)}<small>${t.count}题</small></button>`;
+          }).join("")}
+        </div>
+        <div style="color:var(--ink-3);font-size:12px;margin-top:10px">共 ${stats.reduce((a,b)=>a+b.count,0)} 题</div>
+      </div>`;
+    $$("[data-n]").forEach(b => b.onclick = () => { perBatch = +b.dataset.n; renderPicker(); });
+    $$("[data-mode]").forEach(b => b.onclick = () => { mode = b.dataset.mode; renderPicker(); });
+    $$(".arg-type-chip").forEach(ch => ch.onclick = () => {
+      $$(".arg-type-chip").forEach(x => x.classList.remove("active"));
+      ch.classList.add("active");
+      start(ch.dataset.type || null);
+    });
+  };
+
   const start = async (types) => {
-    qbox.innerHTML = `<div class="card"><div class="meta">抽题中…</div></div>`;
-    const draw = await api("/api/argument/quiz/draw", { n: 5, types: types || undefined });
+    view.innerHTML = `<div class="card"><div class="meta">抽题中…</div></div>`;
+    const draw = await api("/api/argument/quiz/draw", { n: perBatch, types: types || undefined });
     let idx = 0, right = 0;
+
     const showQ = () => {
       if (idx >= draw.items.length) {
-        qbox.innerHTML = `
+        view.innerHTML = `
           <div class="card" style="text-align:center">
             <div class="arg-score-num">${right}<small>/${draw.items.length}</small></div>
-            <div class="meta">${draw.note ? esc(draw.note) + "<br>" : ""}${right >= 4 ? "语感很准，继续保持" : "把 12 类错误的典型例句再过一遍"}</div>
+            <div class="meta">${draw.note ? esc(draw.note) + "<br>" : ""}${right >= draw.items.length * 0.8 ? "语感很准，继续保持" : "把 10 类错误的典型例句再过一遍"}</div>
             <button class="btn btn-primary btn-block" id="argAgain">再来一组</button>
             <button class="btn btn-block" id="argChange">换类型</button>
             <button class="btn btn-block" onclick="location.hash='#/argument'">返回</button>
@@ -3378,39 +3707,57 @@ async function renderArgumentQuiz() {
         return;
       }
       const q = draw.items[idx];
-      qbox.innerHTML = `
+      view.innerHTML = `
         <div class="card">
-          <div class="meta">第 ${idx + 1}/${draw.items.length} 题 · ${esc(q.src)}${idx === 0 && draw.note ? ` · ${esc(draw.note)}` : ""}</div>
+          <div class="meta">第 ${idx + 1}/${draw.items.length} 题 · ${esc(q.src)}${idx === 0 && draw.note ? ` · ${esc(draw.note)}` : ""} <span style="float:right;color:var(--ink-3)">${mode === "choice" ? "选择模式" : "默写模式"}</span></div>
           <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
-          <div class="arg-quiz-opts">
-            ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
-          </div>
+          ${mode === "choice" ? `
+            <div class="arg-quiz-opts">
+              ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
+            </div>` : `
+            <div style="display:flex;gap:8px">
+              <input type="text" id="argRecall" placeholder="输入错误类型，如：以偏概全" style="flex:1;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:15px" autocomplete="off" />
+              <button class="btn btn-primary" id="argRecallSub">提交</button>
+            </div>
+            <div style="font-size:12px;color:var(--ink-3);margin-top:6px">10类：${ARG_TAX.join("、")}</div>
+          `}
           <div class="arg-quiz-exp" style="display:none"></div>
         </div>`;
-      $$(".arg-opt").forEach(b => b.onclick = () => {
-        $$(".arg-opt").forEach(x => (x.disabled = true));
-        api("/api/argument/quiz/check", { answers: [{ qid: q.qid, pick: b.dataset.o }] }).then(r => {
+
+      const submit = (pick) => {
+        $$(".arg-opt,#argRecall,#argRecallSub").forEach(x => x.disabled = true);
+        api("/api/argument/quiz/check", { answers: [{ qid: q.qid, pick }] }).then(r => {
           const res = r.results[0];
           if (res.correct) { right++; Snd.pop(); }
-          b.classList.add(res.correct ? "opt-ok" : "opt-no");
-          $$(".arg-opt").forEach(x => { if (x.dataset.o === res.answer) x.classList.add("opt-answer"); });
-          const exp = qbox.querySelector(".arg-quiz-exp");
+          if (mode === "choice") {
+            $$(".arg-opt").forEach(x => {
+              if (x.dataset.o === res.pick) x.classList.add(res.correct ? "opt-ok" : "opt-no");
+              if (x.dataset.o === res.answer) x.classList.add("opt-answer");
+            });
+          } else {
+            const inp = $("#argRecall");
+            inp.style.borderColor = res.correct ? "var(--bamboo,green)" : "var(--cinnabar,red)";
+          }
+          const exp = view.querySelector(".arg-quiz-exp");
           exp.style.display = "";
           exp.innerHTML = `
-            <div class="${res.correct ? "arg-ok" : "arg-no"}">${res.correct ? "✓ 判断正确" : "✗ 正确答案：" + esc(res.answer)}</div>
+            <div class="${res.correct ? "arg-ok" : "arg-no"}">${res.correct ? "✓ 判断正确" : "✗ 你的答案：" + esc(res.pick || "（空）") + "　正确答案：" + esc(res.answer)}</div>
             <div class="arg-why">${esc(res.why)}</div>
             <button class="btn btn-primary btn-block" id="argQNext">${idx + 1 < draw.items.length ? "下一题" : "看结果"}</button>`;
           $("#argQNext").onclick = () => { idx++; showQ(); };
         });
-      });
+      };
+      if (mode === "choice") {
+        $$(".arg-opt").forEach(b => b.onclick = () => submit(b.dataset.o));
+      } else {
+        const inp = $("#argRecall"); inp.focus();
+        $("#argRecallSub").onclick = () => { const v = inp.value.trim(); if (v) submit(v); };
+        inp.onkeydown = (e) => { if (e.key === "Enter") { const v = inp.value.trim(); if (v) submit(v); } };
+      }
     };
     showQ();
   };
-  $$(".arg-type-chip").forEach(ch => ch.onclick = () => {
-    $$(".arg-type-chip").forEach(x => x.classList.remove("active"));
-    ch.classList.add("active");
-    start(ch.dataset.type || null);
-  });
+  renderPicker();
 }
 
 /* ---------- 申论综应方法论 ---------- */

@@ -66,7 +66,7 @@ try:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["null", "http://127.0.0.1:8765", "http://localhost:8765"],
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
 except Exception:
@@ -416,6 +416,24 @@ def api_wrong_book():
     return {"items": db.list_wrong_book()}
 
 
+class DocIdIn(BaseModel):
+    doc_id: int
+
+
+@app.post("/api/wrong-book/dismiss")
+def api_wrong_book_dismiss(b: DocIdIn):
+    """把一道题移出错题本。"""
+    db.dismiss_wrong_book(b.doc_id)
+    return {"ok": True}
+
+
+@app.post("/api/wrong-book/restore")
+def api_wrong_book_restore(b: DocIdIn):
+    """把一道题重新放回错题本。"""
+    db.restore_wrong_book(b.doc_id)
+    return {"ok": True}
+
+
 @app.get("/api/review/dashboard")
 def api_review_dashboard():
     return db.review_dashboard()
@@ -424,6 +442,20 @@ def api_review_dashboard():
 @app.get("/api/marks")
 def api_marks():
     return {"items": db.list_marks()}
+
+
+@app.get("/api/my-documents")
+def api_my_documents():
+    """我的题库：当前账号导入的私有题目。"""
+    return {"items": db.list_my_documents()}
+
+
+@app.delete("/api/my-documents/{doc_id}")
+def api_my_document_delete(doc_id: int):
+    """从我的题库删除一条私有题目。"""
+    if not db.delete_my_document(doc_id):
+        raise HTTPException(404, "题目不存在")
+    return {"ok": True}
 
 
 @app.get("/api/kaodian-list")
@@ -454,6 +486,24 @@ class PaperIn(BaseModel):
 def api_paper(b: PaperIn):
     ids = db.random_paper(b.module, b.kaodian, max(1, min(30, b.n)), trap=b.trap)
     return {"ids": ids}
+
+
+@app.post("/api/paper/adaptive")
+def api_paper_adaptive(b: PaperIn):
+    """自适应组卷：按掌握度加权抽题，弱项优先（功能 1.1）。"""
+    return {"ids": db.adaptive_paper(b.module, max(1, min(30, b.n)), b.kaodian)}
+
+
+@app.post("/api/paper/sequential")
+def api_paper_sequential(b: PaperIn):
+    """顺序组卷（功能 1.1 顺序模式）：按题目 id 升序。"""
+    return {"ids": db.sequential_paper(b.module, b.kaodian, max(1, min(50, b.n)))}
+
+
+@app.get("/api/mastery")
+def api_mastery(module: str = ""):
+    """考点级掌握度图谱（功能 1.4）。"""
+    return {"items": db.kaodian_mastery(module)}
 
 
 # ---------------- 词语填空 ----------------
@@ -848,7 +898,7 @@ class WrongReasonAiIn(BaseModel):
 
 @app.post("/api/wrong-reason/ai-suggest")
 async def api_wrong_reason_ai(b: WrongReasonAiIn):
-    """AI 预归因：根据题目与学生错选，从五类错因中判定一个并落库。"""
+    """AI 结构化归因（错因 2.0）：返回五类错因 + 具体错点 + 考点 + 建议，落库不覆盖手填。"""
     doc = db.get_doc(b.doc_id)
     if not doc:
         raise HTTPException(404)
@@ -856,31 +906,36 @@ async def api_wrong_reason_ai(b: WrongReasonAiIn):
     hist = db.get_user_history(b.doc_id)
     correct = next((o["label"] for o in d.get("options") or [] if o.get("correct")), "")
     opts = "\n".join(f"{o['label']}. {o['text']}" for o in d.get("options") or [])
-    prompt = (
-        "你是事业单位C类教研老师。学生做错了一道选择题，请从以下五个错因中判定最可能的一个：\n"
-        "知识盲区 / 审题失误 / 计算错误 / 时间不够 / 蒙猜\n"
-        "判定标准：\n"
-        "- 学生错选的考点与题目考点完全陌生、需要知识补充才能做对 → 知识盲区\n"
-        "- 题目本身会做，但错选源于看错问法/理解偏差/忽略限定词 → 审题失误\n"
-        "- 涉及数值计算且错选项常为过程错误值 → 计算错误\n"
-        "- 结合作答历史：作答次数多、耗时短、反复更换答案、无明显思路 → 时间不够\n"
-        "- 错选项与任何考点无关联、随机乱选 → 蒙猜\n"
-        "若题干/选项包含图片（图形推理等），你无法读图，禁止根据图片内容臆断错因；若错因依赖图片才能判断，优先判定为'审题失误'。\n"
-        "只输出一个错因标签，不要输出任何其他内容。\n\n"
-        f"【题目】{str(d.get('stem', ''))[:800]}\n"
-        f"【选项】\n{opts[:700]}\n"
-        f"【正确答案】{correct}\n"
-        f"【学生最近错选】{hist.get('last_selected') or '未知'}\n"
-        f"【作答历史】共 {hist.get('tries', 0)} 次错 {hist.get('wrongs', 0)} 次"
-    )
+    prompt = ai.build_wrong_reason_prompt(
+        str(d.get("stem", "")), opts, correct,
+        str(hist.get("last_selected") or ""), hist.get("tries", 0), hist.get("wrongs", 0))
     try:
-        out = await ai.chat_once([{"role": "user", "content": prompt}], temperature=0)
+        raw = await ai.chat_once([{"role": "user", "content": prompt}], temperature=0)
     except RuntimeError as e:
         return {"ok": False, "error": str(e)}
-    reason = next((r for r in ["知识盲区", "审题失误", "计算错误", "时间不够", "蒙猜"] if r in out), "")
-    if reason:
-        db.set_wrong_reason(b.doc_id, reason)
-    return {"ok": bool(reason), "reason": reason}
+    data = ai.parse_wrong_reason_json(raw)
+    if not data:
+        # 兜底：AI 未按 JSON 返回时，退化为关键词匹配
+        reason = next((r for r in ai.WRONG_CATEGORIES if r in raw), "")
+        if reason:
+            db.set_wrong_ai(b.doc_id, reason)
+        return {"ok": bool(reason), "reason": reason, "category": reason,
+                "specific": "", "kaodian": "", "advice": ""}
+    db.set_wrong_ai(b.doc_id, data["category"], data["specific"],
+                    data["kaodian"], data["advice"])
+    return {"ok": True, "reason": data["category"], **data}
+
+
+@app.get("/api/wrong-reason/ai-map")
+def api_wrong_reason_ai_map():
+    """AI 结构化归因映射（错因 2.0）。"""
+    return {"items": db.wrong_reason_ai_map()}
+
+
+@app.get("/api/wrong-reason/distribution")
+def api_wrong_reason_distribution():
+    """错因分布（错因 2.0）。"""
+    return {"items": db.wrong_reason_distribution()}
 
 
 @app.get("/api/reviews")

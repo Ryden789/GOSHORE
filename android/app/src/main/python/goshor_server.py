@@ -680,18 +680,26 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"items": db.list_exams()})
             elif path == "/api/kaodian-tree":
                 self._json({"items": db.kaodian_tree(q("module", "判断推理"))})
+            elif path == "/api/mastery":
+                self._json({"items": db.kaodian_mastery(q("module"))})
             elif path == "/api/zy/notes":
                 self._json({"ok": True, "data": zy_notes.NOTES})
             elif path == "/api/wrong-book":
                 self._json({"items": db.list_wrong_book()})
             elif path == "/api/marks":
                 self._json({"items": db.list_marks()})
+            elif path == "/api/my-documents":
+                self._json({"items": db.list_my_documents()})
             elif path == "/api/reviews":
                 self._json({"items": db.due_reviews()})
             elif path == "/api/review/dashboard":
                 self._json(db.review_dashboard())
             elif path == "/api/wrong-reasons":
                 self._json(db.wrong_reason_map())
+            elif path == "/api/wrong-reason/ai-map":
+                self._json({"items": db.wrong_reason_ai_map()})
+            elif path == "/api/wrong-reason/distribution":
+                self._json({"items": db.wrong_reason_distribution()})
             elif path == "/api/cards":
                 self._json({"items": db.list_cards(
                     q("card_type"), q("category"), q("module"))})
@@ -809,6 +817,32 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    # ---- DELETE ----
+
+    def do_DELETE(self):
+        path = urllib.parse.urlparse(self.path).path
+        db.set_user(accounts.get_session())
+        try:
+            if path.startswith("/api/my-documents/"):
+                try:
+                    doc_id = int(path.rsplit("/", 1)[1])
+                except ValueError:
+                    self._err(404, "题目不存在")
+                else:
+                    if db.delete_my_document(doc_id):
+                        self._json({"ok": True})
+                    else:
+                        self._err(404, "题目不存在")
+            else:
+                self._err(404, "not found")
+        except BrokenPipeError:
+            pass
+        except Exception as e:
+            try:
+                self._err(500, str(e))
+            except Exception:
+                pass
+
     # ---- POST ----
 
     def do_POST(self):
@@ -828,6 +862,16 @@ class _Handler(BaseHTTPRequestHandler):
                 ids = db.random_paper(
                     b.get("module", ""), b.get("kaodian", ""),
                     max(1, min(30, int(b.get("n", 10)))))
+                self._json({"ids": ids})
+            elif path == "/api/paper/adaptive":
+                ids = db.adaptive_paper(
+                    b.get("module", ""), max(1, min(30, int(b.get("n", 15)))),
+                    b.get("kaodian", ""))
+                self._json({"ids": ids})
+            elif path == "/api/paper/sequential":
+                ids = db.sequential_paper(
+                    b.get("module", ""), b.get("kaodian", ""),
+                    max(1, min(50, int(b.get("n", 10)))))
                 self._json({"ids": ids})
             elif path == "/api/exam-paper":
                 exam = str(b.get("exam", ""))
@@ -850,6 +894,12 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/wrong-reason":
                 with _lock:
                     db.set_wrong_reason(int(b["doc_id"]), b.get("reason", ""))
+                self._json({"ok": True})
+            elif path == "/api/wrong-book/dismiss":
+                db.dismiss_wrong_book(int(b["doc_id"]))
+                self._json({"ok": True})
+            elif path == "/api/wrong-book/restore":
+                db.restore_wrong_book(int(b["doc_id"]))
                 self._json({"ok": True})
             elif path == "/api/wrong-reason/ai-suggest":
                 self._json(_run_async(self._wrong_reason_ai(b)))
@@ -1037,32 +1087,26 @@ class _Handler(BaseHTTPRequestHandler):
                         if o.get("correct")), "")
         opts = "\n".join(f"{o['label']}. {o['text']}"
                          for o in d.get("options") or [])
-        prompt = (
-            "你是行测教研老师。学生做错了一道选择题，请从以下五个错因中判定最可能的一个：\n"
-            "知识盲区 / 审题失误 / 计算错误 / 时间不够 / 蒙猜\n"
-            "判定标准：\n"
-            "- 学生错选的考点与题目考点完全陌生、需要知识补充才能做对 → 知识盲区\n"
-            "- 题目本身会做，但错选源于看错问法/理解偏差/忽略限定词 → 审题失误\n"
-            "- 涉及数值计算且错选项常为过程错误值 → 计算错误\n"
-            "- 学生作答次数多、反复更换答案、无明显思路 → 时间不够\n"
-            "- 错选项与任何考点无关联、随机乱选 → 蒙猜\n"
-            "只输出一个错因标签，不要输出任何其他内容。\n\n"
-            f"【题目】{str(d.get('stem', ''))[:800]}\n"
-            f"【选项】\n{opts[:700]}\n"
-            f"【正确答案】{correct}\n"
-            f"【学生最近错选】{hist.get('last_selected') or '未知'}\n"
-            f"【作答历史】共 {hist.get('tries', 0)} 次错 {hist.get('wrongs', 0)} 次"
-        )
+        prompt = ai.build_wrong_reason_prompt(
+            str(d.get("stem", "")), opts, correct,
+            str(hist.get("last_selected") or ""), hist.get("tries", 0),
+            hist.get("wrongs", 0))
         try:
-            out = await ai.chat_once(
+            raw = await ai.chat_once(
                 [{"role": "user", "content": prompt}], temperature=0)
         except RuntimeError as e:
             return {"ok": False, "error": str(e)}
-        reason = next((r for r in ["知识盲区", "审题失误", "计算错误", "时间不够", "蒙猜"]
-                       if r in out), "")
-        if reason:
-            db.set_wrong_reason(doc_id, reason)
-        return {"ok": bool(reason), "reason": reason}
+        data = ai.parse_wrong_reason_json(raw)
+        if not data:
+            # 兜底：AI 未按 JSON 返回时退化为关键词匹配
+            reason = next((r for r in ai.WRONG_CATEGORIES if r in raw), "")
+            if reason:
+                db.set_wrong_ai(doc_id, reason)
+            return {"ok": bool(reason), "reason": reason, "category": reason,
+                    "specific": "", "kaodian": "", "advice": ""}
+        db.set_wrong_ai(doc_id, data["category"], data["specific"],
+                        data["kaodian"], data["advice"])
+        return {"ok": True, "reason": data["category"], **data}
 
     # ---- 疑点 AI 独立复核（与桌面规则一致） ----
 

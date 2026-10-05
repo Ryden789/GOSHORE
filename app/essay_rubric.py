@@ -7,6 +7,9 @@
 - 综应C：文献阅读50 / 论证评价40 / 材料作文60，均有公开赋分结构
 """
 
+import json
+import re
+
 RUBRICS = {
     # ---------------- 申论 ----------------
     "sl_guina": {
@@ -160,3 +163,292 @@ OUTPUT_SPEC = """【输出格式】严格按以下 Markdown 结构输出：
 
 ## 修改示范
 （对失分最重的一部分，直接给出修改后的示范文字；小题示范1-2个要点的规范写法，作文示范开头段或一个分论点段）"""
+
+
+# ============================================================
+# 批改 2.0：结构化输出（要点命中表 + 四维评分 + 改写示范）
+# ============================================================
+
+# 四维评分默认预设：名称 / 说明 / 权重(%，之和为 100)
+DEFAULT_DIMS = [
+    ("要点完整性", "是否覆盖参考答案/材料中的核心得分点", 45),
+    ("逻辑结构", "层次是否清晰，有无分条、总括句", 20),
+    ("语言规范", "表述是否准确、简洁、书面化，有无口语与语病", 20),
+    ("字数与格式", "字数是否达标，格式（标题/称谓/落款）是否规范", 15),
+]
+
+# 各题型专属维度（未列出的题型走 DEFAULT_DIMS）
+DIM_PRESETS = {
+    "sl_fenxi": [
+        ("要点完整性", "是否覆盖词句含义、原因、影响等多角度要点", 35),
+        ("逻辑结构", "是否按「是什么—为什么—怎么办」展开，层次分明", 30),
+        ("语言规范", "分析表述是否准确、简洁", 20),
+        ("字数与格式", "字数是否达标、分条是否规范", 15),
+    ],
+    "sl_duice": [
+        ("要点完整性", "对策是否与材料问题一一对应，是否漏用材料现成对策", 50),
+        ("逻辑结构", "对策是否分类清晰、主体+手段+内容完整", 20),
+        ("语言规范", "是否具体可操作，有无空泛表述", 15),
+        ("字数与格式", "字数是否达标、分条是否规范", 15),
+    ],
+    "sl_yingyongwen": [
+        ("要点完整性", "开头背景、主体要点、结尾呼吁三部分是否齐全", 45),
+        ("逻辑结构", "正文组织是否符合文种逻辑", 15),
+        ("语言规范", "语气是否与文种相符、表达是否流畅", 15),
+        ("字数与格式", "标题/称谓/落款/日期是否规范，字数是否达标", 25),
+    ],
+    "sl_dazuowen": [
+        ("立意与论据", "立意是否紧扣题意，论据是否充分且联系材料实际", 40),
+        ("逻辑结构", "总论点与分论点是否形成支撑，结构是否完整", 25),
+        ("语言表达", "语言是否流畅、准确，有无模板化", 20),
+        ("字数与格式", "字数是否达标，有无标题，卷面是否规范", 15),
+    ],
+    "zy_zuowen": [
+        ("立意与论据", "中心论点是否从材料推出，论据是否结合科研实际", 40),
+        ("逻辑结构", "思路是否清晰，结构是否完整", 25),
+        ("语言表达", "语言是否通顺准确，术语是否规范", 20),
+        ("字数与格式", "字数是否达标，标题是否规范", 15),
+    ],
+    "zy_lunzheng": [
+        ("要点完整性", "是否准确找出 4 处逻辑错误并归类", 50),
+        ("逻辑结构", "错误描述与理由是否一一对应、条理清晰", 20),
+        ("语言规范", "错误类型术语是否准确、表述是否简明", 15),
+        ("字数与格式", "A/B 两处是否各不超 50 字", 15),
+    ],
+    "zy_wenxian": [
+        ("要点完整性", "是否涵盖研究对象、主要发现、意义三层", 45),
+        ("逻辑结构", "摘要是否为连贯段落、概括是否分条", 20),
+        ("语言规范", "数据结论是否与文献原文一致", 20),
+        ("字数与格式", "字数是否达标、条理是否清楚", 15),
+    ],
+    "zy_shiwu": [
+        ("要点完整性", "数据分析/图表要点/对策建议三类任务点是否齐全", 45),
+        ("逻辑结构", "分析是否层层递进、对策是否基于数据结论", 20),
+        ("语言规范", "数据引用是否准确、术语是否规范", 20),
+        ("字数与格式", "字数是否达标、条理是否清楚", 15),
+    ],
+}
+
+
+def dims_for(category: str) -> list[dict]:
+    """返回题型的四维评分维度（含权重与说明），权重之和为 100。"""
+    preset = DIM_PRESETS.get(category, DEFAULT_DIMS)
+    return [{"name": n, "desc": d, "weight": w} for n, d, w in preset]
+
+
+POINT_STATUSES = ["命中", "部分命中", "缺失"]
+
+_STATUS_ICON = {"命中": "✅", "部分命中": "🟡", "缺失": "❌"}
+
+
+def normalize_status(raw) -> str:
+    """把 AI 返回的各种状态说法归一到 命中 / 部分命中 / 缺失。"""
+    s = str(raw or "").strip()
+    if not s:
+        return "缺失"
+    if "部分" in s or "半" in s or "🟡" in s:
+        return "部分命中"
+    if any(k in s for k in ("未", "缺", "漏", "无", "错", "否", "❌", "✗", "×")):
+        return "缺失"
+    if any(k in s for k in ("命中", "覆盖", "符合", "有", "是", "✅", "✓", "√")):
+        return "命中"
+    return "缺失"
+
+
+SYSTEM_PROMPT_JSON = SYSTEM_PROMPT + """
+5. 你必须只输出一个 JSON 对象，不输出任何 JSON 之外的文字、解释或 markdown 代码块。
+6. 每一个得分点都要有明确判定依据；无参考答案时，先自拟得分点再逐点判定，并在总评中注明「要点为 AI 自拟，仅供参考」。
+"""
+
+GRADE_JSON_SPEC = """【输出格式】严格只输出一个 JSON 对象（不要 markdown 代码块、不要任何多余文字），字段如下：
+{
+  "score": 12.5,
+  "level": "二类",
+  "summary": "一句话总评，含所处档次与最大短板",
+  "points": [
+    {"name": "得分点名称", "status": "命中", "score": 2, "full": 3,
+     "evidence": "作答中对应的原句（缺失时写应来自材料/答案的哪一点）", "comment": "简短评语"}
+  ],
+  "dims": [
+    {"name": "要点完整性", "score": 13, "comment": "评语"}
+  ],
+  "problems": ["主要问题1（先说问题再说后果）", "主要问题2"],
+  "suggestions": ["可操作建议1", "可操作建议2"],
+  "rewrite": {"original": "作答中最需改进的一段原文", "revised": "改写后的示范文字",
+              "note": "改写说明：新增了什么、删改了什么"}
+}
+字段要求：
+- score 为实际得分（数字，保留 0.5 精度，不得超过满分）；level 为档次（一类/二类/三类/四类，小题可写「踩点」）。
+- points：5~10 条得分点，逐条判定；status 只能取「命中 / 部分命中 / 缺失」三者之一；full 为该点满分，score 为实际得分。
+- dims：四维评分，name 必须与下面给出的维度名称完全一致，score 为该维度得分。
+- problems / suggestions 各 2~4 条；rewrite 必填（若整体已很好，选一段可润色的原文给出示范）。
+- 所有字段都必须出现；无内容时用空字符串或空数组占位。"""
+
+
+def build_grade_messages(category: str, total: int, question: str, material: str,
+                         answer: str, reference: str = "") -> list[dict]:
+    """构造批改 2.0 的 messages（强制 JSON 输出）。
+
+    reference 为空时走「AI 自拟要点」兜底。
+    """
+    r = RUBRICS.get(category)
+    if not r:
+        raise KeyError(category)
+    dims = dims_for(category)
+    dim_lines = "\n".join(
+        f'  - {d["name"]}（权重 {d["weight"]}%）：{d["desc"]}' for d in dims)
+    if (reference or "").strip():
+        ref_block = f"【参考答案 / 赋分标准】\n{reference.strip()[:4000]}\n\n"
+    else:
+        ref_block = (
+            "【参考答案】（考生未提供）\n"
+            "请先根据题目与材料自行拟定 5~8 个得分点（AI 自拟要点），再逐点判断考生作答是否命中；"
+            "并在 summary 中注明「要点为 AI 自拟，仅供参考」。\n\n")
+
+    user = (
+        f"请批改下面这份作答。题型：{r['name']}，满分 {total} 分。\n\n"
+        f"【评分细则】\n{r['rubric']}\n\n"
+        f"{GRADE_JSON_SPEC}\n\n"
+        f"【本题四维评分维度（dims 的 name 须原样使用）】\n{dim_lines}\n"
+        f"（四维得分之和应等于总分，允许 ±1 分误差。）\n\n"
+        f"{ref_block}"
+        f"【题目】\n{question.strip()[:3000]}\n\n"
+    )
+    if (material or "").strip():
+        user += f"【给定材料】\n{material.strip()[:8000]}\n\n"
+    else:
+        user += ("【给定材料】（考生未提供，请基于题目与作答本身批改，"
+                 "并在总评中注明缺材料可能影响要点判定）\n\n")
+    user += f"【考生作答】\n{answer.strip()[:8000]}"
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT_JSON},
+        {"role": "user", "content": user},
+    ]
+
+
+def _num(v, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_grade_json(raw: str) -> dict | None:
+    """解析 AI 结构化批改 JSON，容错 markdown 代码块与前后杂字。
+
+    解析失败返回 None（调用方走「纯文本批改」降级路径）。
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"```\s*$", "", text).strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    points: list[dict] = []
+    for p in (data.get("points") or [])[:30]:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name", "")).strip()[:60]
+        if not name:
+            continue
+        points.append({
+            "name": name,
+            "status": normalize_status(p.get("status")),
+            "score": round(_num(p.get("score")), 1),
+            "full": round(_num(p.get("full")), 1),
+            "evidence": str(p.get("evidence", "")).strip()[:200],
+            "comment": str(p.get("comment", "")).strip()[:200],
+        })
+
+    dims: list[dict] = []
+    for d in (data.get("dims") or [])[:8]:
+        if not isinstance(d, dict):
+            continue
+        name = str(d.get("name", "")).strip()[:30]
+        if not name:
+            continue
+        dims.append({
+            "name": name,
+            "score": round(_num(d.get("score")), 1),
+            "comment": str(d.get("comment", "")).strip()[:200],
+        })
+
+    rw = data.get("rewrite")
+    if not isinstance(rw, dict):
+        rw = {}
+    rewrite = {
+        "original": str(rw.get("original", "")).strip()[:1200],
+        "revised": str(rw.get("revised", "")).strip()[:2000],
+        "note": str(rw.get("note", "")).strip()[:300],
+    }
+
+    problems = [str(x).strip()[:300] for x in (data.get("problems") or [])[:6]
+                if str(x).strip()]
+    suggestions = [str(x).strip()[:300] for x in (data.get("suggestions") or [])[:6]
+                   if str(x).strip()]
+
+    score = _num(data.get("score"), -1.0)
+    if score < 0 and not points and not dims:
+        return None
+
+    return {
+        "score": round(score, 1) if score >= 0 else 0.0,
+        "level": str(data.get("level", "")).strip()[:20],
+        "summary": str(data.get("summary", "")).strip()[:500],
+        "points": points,
+        "dims": dims,
+        "problems": problems,
+        "suggestions": suggestions,
+        "rewrite": rewrite,
+    }
+
+
+def render_grade_markdown(p: dict, total: int) -> str:
+    """把结构化批改结果渲染成 Markdown（用于历史记录展示 / 降级兜底）。"""
+    out = [f"## 总分：{_num(p.get('score')):g} / {total}分"]
+    lv = (p.get("level") or "").strip()
+    sm = (p.get("summary") or "").strip()
+    if lv or sm:
+        out.append(f"（{lv + ' · ' if lv else ''}{sm}）")
+
+    if p.get("points"):
+        out += ["", "## 要点命中表",
+                "| 得分点 | 状态 | 得分 | 满分 | 评语 |", "|---|---|---|---|---|"]
+        for pt in p["points"]:
+            note = (pt.get("comment") or pt.get("evidence") or "").replace("|", "｜")
+            out.append("| {} | {} {} | {} | {} | {} |".format(
+                (pt.get("name") or "").replace("|", "｜"),
+                _STATUS_ICON.get(pt.get("status"), ""), pt.get("status", ""),
+                f"{_num(pt.get('score')):g}", f"{_num(pt.get('full')):g}",
+                note.replace("\n", " ")))
+
+    if p.get("dims"):
+        out += ["", "## 四维评分", "| 维度 | 得分 | 评语 |", "|---|---|---|"]
+        for d in p["dims"]:
+            out.append("| {} | {} | {} |".format(
+                (d.get("name") or "").replace("|", "｜"),
+                f"{_num(d.get('score')):g}",
+                (d.get("comment") or "").replace("|", "｜").replace("\n", " ")))
+
+    if p.get("problems"):
+        out += ["", "## 主要问题"] + [f"{i}. {x}" for i, x in enumerate(p["problems"], 1)]
+    if p.get("suggestions"):
+        out += ["", "## 修改建议"] + [f"{i}. {x}" for i, x in enumerate(p["suggestions"], 1)]
+
+    rw = p.get("rewrite") or {}
+    if rw.get("revised"):
+        out += ["", "## 修改示范", f"**原文**：{rw.get('original', '')}", "",
+                f"**改写**：{rw.get('revised', '')}"]
+        if rw.get("note"):
+            out.append(f"> {rw['note']}")
+    return "\n".join(out)

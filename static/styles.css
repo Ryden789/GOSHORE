@@ -821,6 +821,16 @@ body.exam-mode .view {
   font-size: 15px; line-height: 1.9; font-family: var(--serif);
 }
 .arg-quiz-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.arg-recall-box { display: flex; gap: 10px; align-items: center; }
+.arg-recall-input {
+  flex: 1; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px;
+  font-size: 15px; background: var(--paper-2); color: var(--ink); outline: none;
+  transition: border-color .15s;
+}
+.arg-recall-input:focus { border-color: var(--cinnabar); }
+.arg-recall-input:disabled { opacity: .85; }
+.arg-recall-hint { margin-top: 8px; font-size: 12.5px; color: var(--ink-3); line-height: 1.7; }
+.arg-mode { border: 1px dashed var(--line); background: transparent; }
 .arg-opt { justify-content: center; }
 .arg-opt.opt-ok { border-color: var(--bamboo); color: var(--bamboo); }
 .arg-opt.opt-no { border-color: var(--cinnabar); color: var(--cinnabar); }

@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+import random
 import re as _re
 import sqlite3
 import time
@@ -38,6 +39,10 @@ CREATE INDEX IF NOT EXISTS idx_docs_kind ON documents(kind);
 CREATE INDEX IF NOT EXISTS idx_docs_mod ON documents(module, daclass);
 CREATE INDEX IF NOT EXISTS idx_docs_qid ON documents(qid);
 CREATE INDEX IF NOT EXISTS idx_docs_fp ON documents(material_fp);
+-- v2：高频筛选/搜索字段索引（module 已由 idx_docs_mod 前缀覆盖）
+CREATE INDEX IF NOT EXISTS idx_docs_difficulty ON documents(difficulty);
+CREATE INDEX IF NOT EXISTS idx_docs_year ON documents(year);
+CREATE INDEX IF NOT EXISTS idx_docs_search_text ON documents(search_text);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
     title, content, tokenize='trigram'
@@ -243,7 +248,7 @@ CREATE TABLE IF NOT EXISTS _meta (
 SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
 
 # 当前 schema 版本号（每次新增迁移步骤时 +1）
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 8
 
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
 EBBINGHAUS_DAYS = [1, 2, 4, 7, 15, 30]
@@ -324,12 +329,40 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_doc_indexes(conn: sqlite3.Connection) -> None:
+    """为 documents 的常用筛选/搜索字段建索引（幂等）。
+
+    仅当当前连接里 documents 是真实表时才建：
+    - 桌面端：documents 是主库真实表 → 建索引。
+    - 手机端：documents 在 connect() 后段才被建为 TEMP VIEW，真实表是只读 ATTACH
+      的 shared.documents（索引已在桌面端构建题库时建好）→ 跳过，避免对只读库写入。
+    """
+    row = conn.execute(
+        "SELECT type FROM sqlite_master WHERE name='documents'"
+    ).fetchone()
+    if not row or row["type"] != "table":
+        return
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_docs_difficulty ON documents(difficulty)",
+        "CREATE INDEX IF NOT EXISTS idx_docs_year ON documents(year)",
+        "CREATE INDEX IF NOT EXISTS idx_docs_search_text ON documents(search_text)",
+    ):
+        conn.execute(stmt)
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """版本化迁移：按 schema_version 依次执行，幂等。
 
-    v1（当前）：标记位——已有的散装 ALTER（difficulty/material_fp/guessed/
+    v1：标记位——已有的散装 ALTER（difficulty/material_fp/guessed/
     verified/quiz）在 init_db 和 connect 中继续保留以确保旧库兼容，
-    此版本仅写入 _meta.schema_version=1，后续新增列统一走此函数。
+    此版本仅写入 _meta.schema_version=1。
+    v2：为 documents 的 difficulty / year / search_text 补建索引，加速筛选与搜索。
+    v3：mastery 掌握度表（自适应推题 1.1 / 知识图谱 1.4 的共同基础）。
+    v4：wrong_reasons 增加 AI 结构化归因字段（错因 2.0）。
+    v5：essay_grades 增加结构化批改字段 points_json / rewrite_json（综应批改 2.0）。
+    v6：study_plan 学习计划表（能力雷达与路径规划 2.1）。
+    v7：interview_questions / interview_logs 面试模块表（2.3）。
+    v8：shizheng_seen URL 去重表（时政流水线 2.2）。
     """
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -346,14 +379,107 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         conn.commit()
 
-    # ---- 后续迁移示例（新增列时取消注释并递增 SCHEMA_VERSION） ----
-    # if v < 2:
-    #     cols = [r["name"] for r in conn.execute("PRAGMA table_info(xxx)")]
-    #     if "new_col" not in cols:
-    #         conn.execute("ALTER TABLE xxx ADD COLUMN new_col TEXT DEFAULT ''")
-    #     conn.execute(
-    #         "UPDATE _meta SET value='2' WHERE key='schema_version'")
-    #     conn.commit()
+    if v < 2:
+        # v2: 常用查询字段索引（真实表才建，见 _ensure_doc_indexes）
+        _ensure_doc_indexes(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','2')"
+        )
+        conn.commit()
+
+    if v < 3:
+        # v3: 掌握度表（题目级，0~1）
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS mastery(
+                doc_id INTEGER PRIMARY KEY,
+                score REAL DEFAULT 0.5,
+                updated_at REAL DEFAULT 0,
+                correct_streak INTEGER DEFAULT 0)"""
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','3')"
+        )
+        conn.commit()
+
+    if v < 4:
+        # v4: 错因 AI 结构化归因（不覆盖用户手填 reason）
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(wrong_reasons)")]
+        for col in ("ai_category", "ai_specific", "ai_kaodian", "ai_advice"):
+            if col not in cols:
+                conn.execute(
+                    f"ALTER TABLE wrong_reasons ADD COLUMN {col} TEXT DEFAULT ''")
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','4')"
+        )
+        conn.commit()
+
+    if v < 5:
+        # v5: 综应批改 2.0 结构化结果
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(essay_grades)")]
+        for col in ("points_json", "rewrite_json", "dims_json"):
+            if col not in cols:
+                conn.execute(
+                    f"ALTER TABLE essay_grades ADD COLUMN {col} TEXT DEFAULT ''")
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','5')"
+        )
+        conn.commit()
+
+    if v < 6:
+        # v6: 14 天学习计划
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS study_plan(
+                day TEXT, module TEXT, n INTEGER DEFAULT 0,
+                done INTEGER DEFAULT 0, kaodian TEXT DEFAULT '',
+                PRIMARY KEY(day, module))"""
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','6')"
+        )
+        conn.commit()
+
+    if v < 7:
+        # v7: 面试模块
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS interview_questions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT DEFAULT '',
+                question TEXT DEFAULT '',
+                reference TEXT DEFAULT '',
+                source TEXT DEFAULT 'builtin',
+                created_at REAL DEFAULT 0)"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS interview_logs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                qid INTEGER,
+                category TEXT DEFAULT '',
+                answer TEXT DEFAULT '',
+                content_score REAL DEFAULT 0,
+                logic_score REAL DEFAULT 0,
+                express_score REAL DEFAULT 0,
+                comment TEXT DEFAULT '',
+                think_ms INTEGER DEFAULT 0,
+                answer_ms INTEGER DEFAULT 0,
+                created_at REAL DEFAULT 0)"""
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','7')"
+        )
+        conn.commit()
+
+    if v < 8:
+        # v8: 时政抓取去重（URL 唯一）
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS shizheng_seen(
+                url TEXT PRIMARY KEY,
+                period TEXT DEFAULT '',
+                created_at REAL DEFAULT 0)"""
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','8')"
+        )
+        conn.commit()
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -865,6 +991,8 @@ def add_answer(doc_id: int, selected: str, correct: bool, ms: int,
     conn.close()
     # 蒙对也按"未掌握"处理：回第 1 档复习
     _schedule_review(doc_id, bool(correct) and not bool(guessed))
+    # 自适应推题：更新该题掌握度（蒙对按答错处理，与复习档位口径一致）
+    update_mastery(doc_id, bool(correct) and not bool(guessed))
     return {"annihilated": annihilated}
 
 
@@ -907,14 +1035,40 @@ def due_reviews() -> list[dict]:
 
 
 def set_wrong_reason(doc_id: int, reason: str) -> None:
+    """写入/清空用户手填错因（不覆盖 AI 结构化归因字段）。"""
     conn = connect()
     if reason:
         conn.execute(
-            "INSERT OR REPLACE INTO wrong_reasons(doc_id,reason,updated_at) VALUES(?,?,?)",
+            """INSERT INTO wrong_reasons(doc_id, reason, updated_at) VALUES(?,?,?)
+               ON CONFLICT(doc_id) DO UPDATE SET
+                   reason=excluded.reason, updated_at=excluded.updated_at""",
             (doc_id, reason, time.time()),
         )
     else:
-        conn.execute("DELETE FROM wrong_reasons WHERE doc_id=?", (doc_id,))
+        conn.execute(
+            "UPDATE wrong_reasons SET reason='', updated_at=? WHERE doc_id=?",
+            (time.time(), doc_id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def set_wrong_ai(doc_id: int, category: str, specific: str = "",
+                 kaodian: str = "", advice: str = "") -> None:
+    """写入 AI 结构化归因（错因 2.0），不覆盖用户手填 reason。"""
+    conn = connect()
+    conn.execute(
+        """INSERT INTO wrong_reasons(doc_id, reason, updated_at,
+                                     ai_category, ai_specific, ai_kaodian, ai_advice)
+           VALUES(?, '', ?, ?, ?, ?, ?)
+           ON CONFLICT(doc_id) DO UPDATE SET
+               ai_category=excluded.ai_category,
+               ai_specific=excluded.ai_specific,
+               ai_kaodian=excluded.ai_kaodian,
+               ai_advice=excluded.ai_advice,
+               updated_at=excluded.updated_at""",
+        (doc_id, time.time(), category, specific, kaodian, advice),
+    )
     conn.commit()
     conn.close()
 
@@ -924,6 +1078,36 @@ def wrong_reason_map() -> dict:
     rows = conn.execute("SELECT doc_id, reason FROM wrong_reasons").fetchall()
     conn.close()
     return {r["doc_id"]: r["reason"] for r in rows}
+
+
+def wrong_reason_ai_map() -> dict:
+    """doc_id -> AI 结构化归因（仅返回有 AI 分类的记录）。"""
+    conn = connect()
+    rows = conn.execute(
+        """SELECT doc_id, ai_category, ai_specific, ai_kaodian, ai_advice
+           FROM wrong_reasons WHERE COALESCE(ai_category,'') != ''"""
+    ).fetchall()
+    conn.close()
+    return {r["doc_id"]: {
+        "category": r["ai_category"], "specific": r["ai_specific"],
+        "kaodian": r["ai_kaodian"], "advice": r["ai_advice"]} for r in rows}
+
+
+def wrong_reason_distribution() -> list[dict]:
+    """错因分布（错因 2.0）：优先用户手填 reason，其次 AI 分类，最后「未标注」。"""
+    conn = connect()
+    rows = conn.execute(
+        """SELECT CASE
+                    WHEN COALESCE(w.reason,'') != '' THEN w.reason
+                    WHEN COALESCE(w.ai_category,'') != '' THEN w.ai_category
+                    ELSE '未标注' END AS r,
+                  COUNT(*) c
+           FROM (SELECT doc_id, MAX(id) mid FROM answers GROUP BY doc_id) s
+           JOIN answers a ON a.id = s.mid AND a.correct = 0
+           LEFT JOIN wrong_reasons w ON w.doc_id = s.doc_id
+           GROUP BY r ORDER BY c DESC""").fetchall()
+    conn.close()
+    return [{"reason": r["r"], "c": r["c"]} for r in rows]
 
 
 def get_material_profile(material_fp: str) -> dict | None:
@@ -1157,9 +1341,22 @@ def list_marks() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _ensure_wrong_dismissed(conn: sqlite3.Connection) -> None:
+    """惰性创建「移出错题本」表（doc_id 为本人库内题目 id）。"""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS wrong_dismissed(
+            doc_id INTEGER PRIMARY KEY,
+            created_at REAL DEFAULT 0)"""
+    )
+
+
 def list_wrong_book() -> list[dict]:
-    """错题本：最近答过且最后一次答错的题（含次数统计）。"""
+    """错题本：最近答过且最后一次答错的题（含次数统计）。
+
+    已被用户「移出错题本」的题不计入（wrong_dismissed 表）。
+    """
     conn = connect()
+    _ensure_wrong_dismissed(conn)
     rows = conn.execute(
         f"""SELECT d.*, a.selected AS last_selected, a.ms AS last_ms,
                    a.created_at AS last_at, s.tries, s.wrongs
@@ -1169,6 +1366,7 @@ def list_wrong_book() -> list[dict]:
                   FROM answers GROUP BY doc_id) s
               ON s.doc_id = d.id AND a.id = s.max_id
             WHERE a.correct = 0 AND d.kind = '真题'
+              AND d.id NOT IN (SELECT doc_id FROM wrong_dismissed)
             ORDER BY a.created_at DESC"""
     ).fetchall()
     # 变式歼灭标记（annihilations 表由 variant.finish_annihilation 惰性创建）
@@ -1191,6 +1389,236 @@ def list_wrong_book() -> list[dict]:
         d["answer"] = corr
         out.append(d)
     conn.close()
+    return out
+
+
+def dismiss_wrong_book(doc_id: int) -> bool:
+    """把一道题移出错题本（仅影响错题本展示，不动答题记录）。"""
+    conn = connect()
+    _ensure_wrong_dismissed(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO wrong_dismissed(doc_id, created_at) VALUES(?, ?)",
+        (int(doc_id), time.time()),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def restore_wrong_book(doc_id: int) -> bool:
+    """把一道题重新放回错题本。"""
+    conn = connect()
+    _ensure_wrong_dismissed(conn)
+    cur = conn.execute("DELETE FROM wrong_dismissed WHERE doc_id=?", (int(doc_id),))
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
+def list_wrong_dismissed() -> list[int]:
+    """已移出错题本的 doc_id 列表。"""
+    conn = connect()
+    _ensure_wrong_dismissed(conn)
+    rows = conn.execute("SELECT doc_id FROM wrong_dismissed ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [r["doc_id"] for r in rows]
+
+
+# ---------------- 掌握度（自适应推题 1.1 / 知识图谱 1.4） ----------------
+
+MASTERY_DEFAULT = 0.5          # 初始掌握度
+MASTERY_UP = 0.15              # 答对加分
+MASTERY_DOWN = 0.25            # 答错扣分
+MASTERY_DECAY_PER_DAY = 0.02   # 未复习衰减速度
+MASTERY_DECAY_AFTER_DAYS = 7   # 超过 N 天未复习才开始衰减
+
+
+def _ensure_mastery(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS mastery(
+            doc_id INTEGER PRIMARY KEY,
+            score REAL DEFAULT 0.5,
+            updated_at REAL DEFAULT 0,
+            correct_streak INTEGER DEFAULT 0)"""
+    )
+
+
+def update_mastery(doc_id: int, is_correct: bool) -> float:
+    """更新单题掌握度：答对 +0.15（连对加成，最多再 +0.1），答错 -0.25，夹在 0~1。"""
+    conn = connect()
+    _ensure_mastery(conn)
+    row = conn.execute(
+        "SELECT score, correct_streak FROM mastery WHERE doc_id=?", (doc_id,)
+    ).fetchone()
+    score = float(row["score"]) if row else MASTERY_DEFAULT
+    streak = int(row["correct_streak"]) if row else 0
+    if is_correct:
+        streak += 1
+        bonus = 0.02 * min(streak - 1, 5)          # 连对 2..6 次，每次 +0.02，封顶 +0.1
+        score = min(1.0, score + MASTERY_UP + bonus)
+    else:
+        streak = 0
+        score = max(0.0, score - MASTERY_DOWN)
+    conn.execute(
+        """INSERT OR REPLACE INTO mastery(doc_id, score, updated_at, correct_streak)
+           VALUES(?,?,?,?)""",
+        (int(doc_id), score, time.time(), streak),
+    )
+    conn.commit()
+    conn.close()
+    return score
+
+
+_last_decay_at = 0.0
+
+
+def decay_mastery(force: bool = False, min_interval: float = 3600.0) -> int:
+    """按天数批量衰减长期未复习题目的掌握度（幂等，可重复调用）。
+
+    以每题的 updated_at 为基准，每满一天衰减 MASTERY_DECAY_PER_DAY，
+    最多衰减到 0。默认 1 小时内只真正执行一次（force=True 可强制）。
+    返回本次被调整的题数。
+    """
+    global _last_decay_at
+    now = time.time()
+    if not force and now - _last_decay_at < min_interval:
+        return 0
+    _last_decay_at = now
+    conn = connect()
+    _ensure_mastery(conn)
+    rows = conn.execute(
+        "SELECT doc_id, score, updated_at FROM mastery").fetchall()
+    changed = 0
+    for r in rows:
+        days = int((now - (r["updated_at"] or now)) // 86400)
+        if days <= MASTERY_DECAY_AFTER_DAYS:
+            continue
+        eff = min(days - MASTERY_DECAY_AFTER_DAYS, 60)   # 封顶，避免一次衰减到底
+        new_score = max(0.0, float(r["score"]) - eff * MASTERY_DECAY_PER_DAY)
+        if abs(new_score - float(r["score"])) < 1e-9:
+            continue
+        conn.execute(
+            "UPDATE mastery SET score=?, updated_at=? WHERE doc_id=?",
+            (new_score, now, r["doc_id"]),
+        )
+        changed += 1
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def mastery_map() -> dict[int, float]:
+    """doc_id -> 掌握度。"""
+    conn = connect()
+    _ensure_mastery(conn)
+    rows = conn.execute("SELECT doc_id, score FROM mastery").fetchall()
+    conn.close()
+    return {int(r["doc_id"]): float(r["score"]) for r in rows}
+
+
+def adaptive_paper(module: str = "", n: int = 15, kaodian: str = "") -> list[int]:
+    """自适应组卷：按掌握度加权抽样，掌握度越低越容易被抽中。
+
+    - 仅从真题（kind='真题'）中抽；module / kaodian 可选过滤。
+    - 权重 = 1 - 掌握度，设 0.05 下限避免已掌握题完全抽不到。
+    - 加权无放回抽样，返回 doc_id 列表。
+    """
+    conn = connect()
+    _ensure_mastery(conn)
+    where = ["d.kind='真题'"]
+    args: list = [MASTERY_DEFAULT]
+    if module:
+        where.append("d.module=?")
+        args.append(module)
+    if kaodian:
+        where.append("d.kaodian=?")
+        args.append(kaodian)
+    rows = conn.execute(
+        f"""SELECT d.id AS id, COALESCE(m.score, ?) AS score
+            FROM documents d LEFT JOIN mastery m ON m.doc_id = d.id
+            WHERE {' AND '.join(where)}""",
+        args,
+    ).fetchall()
+    conn.close()
+    pool = [(int(r["id"]), float(r["score"] or MASTERY_DEFAULT)) for r in rows]
+    if not pool:
+        return []
+    n = max(1, min(int(n), len(pool)))
+    out: list[int] = []
+    for _ in range(n):
+        weights = [max(0.05, 1.0 - s) for _, s in pool]
+        total = sum(weights)
+        r = random.random() * total
+        acc = 0.0
+        pick = len(pool) - 1
+        for i, w in enumerate(weights):
+            acc += w
+            if r <= acc:
+                pick = i
+                break
+        out.append(pool.pop(pick)[0])
+    return out
+
+
+def kaodian_mastery(module: str = "") -> list[dict]:
+    """考点级掌握度图谱：正确率、题量、最近练习时间、平均掌握度。
+
+    未练过的考点也会返回（rate=None），便于前端标红提示。
+    """
+    conn = connect()
+    _ensure_mastery(conn)
+    mod_where = "AND d.module=?" if module else ""
+    args = [module] if module else []
+    # 考点维度：正确率/题量/最近练习（来自作答）
+    stat: dict[tuple, dict] = {}
+    for r in conn.execute(
+        f"""SELECT d.module, d.kaodian,
+                   COUNT(*) n, SUM(CASE WHEN a.correct=1 THEN 1 ELSE 0 END) ok,
+                   MAX(a.created_at) last_at
+            FROM answers a JOIN documents d ON d.id=a.doc_id
+            WHERE d.kind='真题' AND d.kaodian!='' {mod_where}
+            GROUP BY d.module, d.kaodian""",
+        args,
+    ).fetchall():
+        stat[(r["module"], r["kaodian"])] = {
+            "n": r["n"], "ok": r["ok"] or 0, "last_at": r["last_at"]}
+    # 考点维度：题量 + 平均掌握度（来自题库，含未练）
+    total: dict[tuple, dict] = {}
+    for r in conn.execute(
+        f"""SELECT d.module, d.kaodian, COUNT(*) q,
+                   AVG(COALESCE(m.score, {MASTERY_DEFAULT})) am
+            FROM documents d LEFT JOIN mastery m ON m.doc_id=d.id
+            WHERE d.kind='真题' AND d.kaodian!='' {mod_where}
+            GROUP BY d.module, d.kaodian""",
+        args,
+    ).fetchall():
+        total[(r["module"], r["kaodian"])] = {"q": r["q"], "am": r["am"]}
+    conn.close()
+
+    out = []
+    for (mod, kd), t in total.items():
+        s = stat.get((mod, kd))
+        n = s["n"] if s else 0
+        ok = s["ok"] if s else 0
+        rate = round(ok / n * 100) if n else None
+        avg_m = round(float(t["am"] or MASTERY_DEFAULT), 2)
+        if rate is None:
+            level = "red"                      # 未练 → 红
+        elif rate >= 80:
+            level = "green"
+        elif rate >= 50:
+            level = "amber"
+        else:
+            level = "red"
+        out.append({
+            "module": mod, "kaodian": kd, "total": t["q"],
+            "n": n, "ok": ok, "rate": rate,
+            "last_at": (s or {}).get("last_at"),
+            "mastery": avg_m, "level": level,
+        })
+    # 红→黄→绿，同级按题量降序
+    order = {"red": 0, "amber": 1, "green": 2}
+    out.sort(key=lambda x: (order.get(x["level"], 3), -x["total"]))
     return out
 
 
@@ -1229,6 +1657,22 @@ def review_dashboard() -> dict:
         "by_reason": sorted(({"name": k, "count": v} for k, v in by_reason.items()), key=lambda x: -x["count"]),
         "items": items[:30],
     }
+
+
+def sequential_paper(module: str = "", kaodian: str = "", n: int = 10) -> list[int]:
+    """顺序组卷（功能 1.1 的「顺序模式」）：按 doc_id 升序取题，便于系统化推进。"""
+    conn = connect()
+    where, args = ["kind='真题'"], []
+    if module:
+        where.append("module=?"); args.append(module)
+    if kaodian:
+        where.append("kaodian LIKE ?"); args.append(kaodian + "%")
+    rows = conn.execute(
+        f"SELECT id FROM documents WHERE {' AND '.join(where)} ORDER BY id LIMIT ?",
+        tuple(args) + (max(1, min(50, n)),),
+    ).fetchall()
+    conn.close()
+    return [r["id"] for r in rows]
 
 
 def random_paper(module: str = "", kaodian: str = "", n: int = 10, trap: bool = False) -> list[int]:
@@ -1364,6 +1808,7 @@ def kaodian_tree(module: str, top: int = 10) -> list[dict]:
 
 def stats_overview() -> dict:
     """Dashboard 汇总数据。"""
+    decay_mastery()   # 掌握度随时间衰减（内部节流，1 小时最多一次）
     conn = connect()
     today = time.time() - (time.time() % 86400) - 8 * 3600 + 86400  # 今天 24:00 (UTC+8 修正粗略)
     # 用本地日界
@@ -1460,16 +1905,8 @@ def stats_overview() -> dict:
         })
     speed_trend.reverse()
 
-    # F6 错因分布
-    reason_dist = [
-        {"reason": r["reason"] or "未标注", "c": r["c"]}
-        for r in conn.execute(
-            """SELECT COALESCE(NULLIF(w.reason,''),'未标注') reason, COUNT(*) c
-               FROM (SELECT doc_id, MAX(id) mid FROM answers GROUP BY doc_id) s
-               JOIN answers a ON a.id=s.mid AND a.correct=0
-               LEFT JOIN wrong_reasons w ON w.doc_id=s.doc_id
-               GROUP BY reason ORDER BY c DESC""")
-    ]
+    # F6 错因分布（错因 2.0：优先手填，其次 AI 分类）
+    reason_dist = wrong_reason_distribution()
 
     # F8 高频错题 TOP10
     top_wrong = []
@@ -1656,6 +2093,21 @@ def weekly_report() -> dict:
     review_due = conn.execute(
         "SELECT COUNT(*) c FROM review_plan WHERE due_at<=?", (now,)).fetchone()["c"]
 
+    # 高频错因 Top3（本周错题；错因 2.0：优先手填，其次 AI 分类）
+    reason_top = [
+        {"reason": r["r"], "c": r["c"]}
+        for r in conn.execute(
+            """SELECT CASE
+                        WHEN COALESCE(w.reason,'') != '' THEN w.reason
+                        WHEN COALESCE(w.ai_category,'') != '' THEN w.ai_category
+                        ELSE '未标注' END AS r,
+                      COUNT(*) c
+               FROM answers a LEFT JOIN wrong_reasons w ON w.doc_id = a.doc_id
+               WHERE a.correct = 0 AND a.created_at >= ?
+               GROUP BY r ORDER BY c DESC LIMIT 3""",
+            (week_start,)).fetchall()
+    ]
+
     conn.close()
 
     # ---- 规则化建议 ----
@@ -1697,6 +2149,7 @@ def weekly_report() -> dict:
         "speed": speed_b,
         "formula": formula_b,
         "review_due": review_due,
+        "reason_top": reason_top,
         "advice": advice,
     }
 
@@ -1954,6 +2407,51 @@ def mobile_commit_items(items: list[dict], defaults: dict) -> dict:
         "SELECT COUNT(*) c FROM documents WHERE kind='真题'").fetchone()["c"]
     conn.close()
     return {"ok": True, "saved": saved, "failed": failed, "total": total}
+
+
+def list_my_documents() -> list[dict]:
+    """当前账号「我的题库」：用户导入的私有题目（手机端导入落 my_documents）。
+
+    返回轻量列表（不含完整 data），供前端展示与删除。
+    """
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """SELECT id,title,module,kaodian,region,year,exam,
+                      difficulty,qid,kind,mtime,data
+               FROM my_documents
+               ORDER BY id DESC"""
+        ).fetchall()
+    except sqlite3.Error:
+        conn.close()
+        return []
+    out = []
+    for r in rows:
+        d = dict(r)
+        raw = d.pop("data", "") or "{}"
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        d["stem"] = data.get("stem") or d.get("title") or ""
+        d["options"] = len(data.get("options", []) or [])
+        d["has_analysis"] = bool(data.get("official") or data.get("analysis"))
+        out.append(d)
+    conn.close()
+    return out
+
+
+def delete_my_document(doc_id: int) -> bool:
+    """从「我的题库」删除一条私有题目（仅本人库，不动共享题库）。"""
+    conn = connect()
+    try:
+        cur = conn.execute("DELETE FROM my_documents WHERE id=?", (int(doc_id),))
+        conn.commit()
+        return cur.rowcount > 0
+    except (sqlite3.Error, ValueError):
+        return False
+    finally:
+        conn.close()
 
 
 # ---------------- F5 真实配比模考 ----------------
@@ -2325,10 +2823,16 @@ def get_shizheng_quiz(period: str) -> str:
 # ---------------- 申论/综应 批改记录 ----------------
 
 def _ensure_grade_score(conn: sqlite3.Connection) -> None:
-    """essay_grades 表补 score 列（AI 实际得分，旧库迁移）。"""
+    """essay_grades 表补列（score / level，兼容旧库惰性迁移）。"""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(essay_grades)")}
+    changed = False
     if "score" not in cols:
         conn.execute("ALTER TABLE essay_grades ADD COLUMN score REAL DEFAULT 0")
+        changed = True
+    if "level" not in cols:
+        conn.execute("ALTER TABLE essay_grades ADD COLUMN level TEXT DEFAULT ''")
+        changed = True
+    if changed:
         conn.commit()
 
 

@@ -200,7 +200,7 @@ function syncNavGroup(name) {
   });
 }
 
-const ROUTE_LOADING_LABELS = { home: "今日书房", report: "周报", history: "做题记录", "ai-ask": "AI 答疑", paper: "组卷", logic: "判断专项", formula: "列式专项", wordfill: "词语填空", speed: "速算", cube: "空间折叠", essay: "申论综应", argument: "论证评价", "argument-quiz": "辨析快练", wenxian: "科技文献", "zy-notes": "综应考点", shizheng: "时政", grade: "AI 批改", review: "今日复习", wrong: "错题本", marks: "收藏", cards: "辨析卡", search: "题库检索", doubts: "疑点工作台", import: "导入题库", settings: "设置", exam: "模考试卷", doc: "题目详情" };
+const ROUTE_LOADING_LABELS = { home: "今日书房", report: "周报", history: "做题记录", "ai-ask": "AI 答疑", paper: "组卷", logic: "判断专项", formula: "列式专项", wordfill: "词语填空", speed: "速算", cube: "空间折叠", essay: "申论综应", argument: "论证评价", "argument-quiz": "辨析快练", wenxian: "科技文献", "zy-notes": "综应考点", shizheng: "时政", grade: "AI 批改", review: "今日复习", wrong: "错题本", marks: "收藏", cards: "辨析卡", search: "题库检索", doubts: "疑点工作台", import: "导入题库", settings: "设置", exam: "模考试卷", doc: "题目详情", mastery: "掌握度图谱", plan: "学习计划", interview: "面试模拟" };
 function routeLoadingMarkup(name) {
   const label = ROUTE_LOADING_LABELS[name] || "上岸自习室";
   return `<div class="route-skeleton" aria-live="polite" aria-label="正在加载${esc(label)}"><div class="route-skeleton-head"><span class="route-skeleton-title">${esc(label)}</span><span class="route-spinner" aria-hidden="true"></span></div><div class="route-skeleton-line wide"></div><div class="route-skeleton-line"></div><div class="route-skeleton-grid"><i></i><i></i><i></i></div><div class="route-skeleton-block"></div></div>`;
@@ -246,7 +246,7 @@ function route() {
   else if (parts[0] === "settings") dispatch(renderSettings);
   else if (name === "wrong") dispatch(renderWrong);
   else if (name === "marks") dispatch(renderMarks);
-  else if (name === "paper") dispatch(renderPaper);
+  else if (name === "paper") dispatch(() => renderPaper(parts[1] || ""));
   else if (name === "search") dispatch(renderSearch);
   else if (name === "cards") dispatch(renderCards);
   else if (name === "import") dispatch(renderImport);
@@ -263,6 +263,7 @@ function route() {
   else if (name === "history") dispatch(renderHistory);
   else if (name === "ai-ask") dispatch(renderAiAsk);
   else if (name === "exam") dispatch(renderExam);
+  else if (name === "mastery") dispatch(renderMastery);
   else dispatch(renderHome);
 }
 window.addEventListener("hashchange", route);
@@ -359,6 +360,14 @@ async function renderHome() {
       <div class="stat-card link" data-go="review" style="--accent:var(--amber)"><div class="v">${s.review_due + s.card_due}<small>项</small></div><div class="k">今日待复习（题 ${s.review_due} + 卡 ${s.card_due}）</div></div>
     </div>
 
+    <div class="panel rise rise-2" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <div>
+        <h3 style="margin:0 0 4px">🎯 今日推荐练习</h3>
+        <p style="margin:0;font-size:13px;color:var(--ink-2)">按掌握度智能组卷 15 题：错得多、久未练的题优先出现</p>
+      </div>
+      <button class="btn btn-primary" id="recGo">生成推荐练习</button>
+    </div>
+
     <div class="dash-grid rise rise-2">
       <div>
         <div class="panel">
@@ -430,6 +439,7 @@ async function renderHome() {
     </div>`;
 
   $$(".stat-card.link").forEach(el => el.onclick = () => (location.hash = "#/" + el.dataset.go));
+  $("#recGo").onclick = () => (location.hash = "#/paper/adaptive");
 }
 
 /* =====================================================
@@ -467,6 +477,7 @@ async function renderSearch() {
     <div class="pager" id="pager"></div>`;
 
   const doSearch = async (page = 1) => {
+    if (!$("#rcount")) return;   // 已离开搜索页，丢弃过期结果
     searchState.page = page;
     $("#rcount").textContent = "正在检索…";
     const res = await api("/api/search", { ...searchState, page, page_size: 20 });
@@ -509,6 +520,16 @@ async function renderSearch() {
   }
   $("#q").addEventListener("keydown", e => {
     if (e.key === "Enter") { searchState.q = e.target.value.trim(); doSearch(1); }
+  });
+  // 输入防抖：停止输入 300ms 后才发请求，避免每敲一个字都查一次
+  let searchTimer = null;
+  $("#q").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      if (!$("#q")) return;
+      searchState.q = $("#q").value.trim();
+      doSearch(1);
+    }, 300);
   });
   $("#go").onclick = () => { searchState.q = $("#q").value.trim(); doSearch(1); };
   await doSearch(searchState.page);
@@ -950,15 +971,69 @@ async function renderDoc(id, tabName) {
 /* F6 错因五类 */
 const WRONG_REASONS = ["知识盲区", "审题失误", "计算错误", "时间不够", "蒙猜"];
 
+/* 错因分布圆环（纯内联 SVG，不引图表库） */
+const DONUT_COLORS = ["#b3402f", "#c98a2e", "#5e7a5a", "#43546b", "#8a6fa8", "#9a9a9a"];
+
+function reasonDonut(items) {
+  const data = (items || []).filter(x => x.c > 0);
+  const total = data.reduce((a, b) => a + b.c, 0);
+  if (!total) return "";
+  const R = 54, r = 32, C = 70;
+  let acc = 0;
+  const arcs = data.map((d, i) => {
+    const frac = d.c / total;
+    const a0 = acc * 2 * Math.PI - Math.PI / 2;
+    acc += frac;
+    const a1 = acc * 2 * Math.PI - Math.PI / 2;
+    const col = DONUT_COLORS[i % DONUT_COLORS.length];
+    if (frac >= 0.999) {
+      return `<circle cx="${C}" cy="${C}" r="${(R + r) / 2}" fill="none"
+                stroke="${col}" stroke-width="${R - r}"/>`;
+    }
+    const pt = (rad, ang) => [C + rad * Math.cos(ang), C + rad * Math.sin(ang)];
+    const [x0, y0] = pt(R, a0), [x1, y1] = pt(R, a1);
+    const [x2, y2] = pt(r, a1), [x3, y3] = pt(r, a0);
+    const large = frac > 0.5 ? 1 : 0;
+    return `<path d="M${x0.toFixed(2)} ${y0.toFixed(2)}
+      A${R} ${R} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}
+      L${x2.toFixed(2)} ${y2.toFixed(2)}
+      A${r} ${r} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)} Z" fill="${col}"/>`;
+  }).join("");
+  const legend = data.map((d, i) => `
+    <div style="display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 0">
+      <span style="width:10px;height:10px;border-radius:2px;background:${DONUT_COLORS[i % DONUT_COLORS.length]}"></span>
+      <span style="flex:1">${esc(d.reason)}</span>
+      <b>${d.c}</b>
+      <span style="color:var(--ink-3);font-size:12px;width:38px;text-align:right">${Math.round(d.c / total * 100)}%</span>
+    </div>`).join("");
+  return `<div class="panel rise rise-1">
+    <h3 style="margin:0 0 10px">错因分布</h3>
+    <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap">
+      <svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label="错因分布圆环">
+        ${arcs}
+        <text x="${C}" y="${C - 2}" text-anchor="middle" font-size="22" font-weight="700" fill="var(--ink-1)">${total}</text>
+        <text x="${C}" y="${C + 16}" text-anchor="middle" font-size="11" fill="var(--ink-3)">道错题</text>
+      </svg>
+      <div style="flex:1;min-width:190px">${legend}</div>
+    </div>
+  </div>`;
+}
+
 async function renderWrong() {
-  const [res, reasons] = await Promise.all([api("/api/wrong-book"), api("/api/wrong-reasons")]);
+  const [res, reasons, dist, aiMap] = await Promise.all([
+    api("/api/wrong-book"), api("/api/wrong-reasons"),
+    api("/api/wrong-reason/distribution").catch(() => ({ items: [] })),
+    api("/api/wrong-reason/ai-map").catch(() => ({ items: {} })),
+  ]);
   const items = res.items;
+  const ai = aiMap.items || {};
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">错题本</h1>
       <p class="page-desc">最近一次答错的真题，共 ${items.length} 道 · 消灭它们比刷 100 道新题更值</p>
-      ${items.length ? `<button class="btn btn-sm" id="aiReason" style="margin-top:8px">🤖 AI 预归因未打标题</button>` : ""}
+      ${items.length ? `<button class="btn btn-sm" id="aiReason" style="margin-top:8px">🤖 AI 归因未打标题</button>` : ""}
     </div>
+    ${reasonDonut(dist.items)}
     <div class="doc-list rise rise-1" id="list"></div>`;
   $("#list").innerHTML = items.length
     ? items.map(it => {
@@ -974,6 +1049,10 @@ async function renderWrong() {
               ${WRONG_REASONS.map(r =>
                 `<span class="reason-chip ${reason === r ? "on" : ""}" data-r="${r}">${r}</span>`).join("")}
             </div>
+            ${ai[it.id] ? `<div class="doubt-note" data-ai-note="${it.id}" style="margin-top:6px">
+              <b>AI 归因：${esc(ai[it.id].category)}</b>${ai[it.id].specific ? ` · ${esc(ai[it.id].specific)}` : ""}
+              ${ai[it.id].advice ? `<div style="color:var(--ink-3);font-size:12.5px">建议：${esc(ai[it.id].advice)}</div>` : ""}
+            </div>` : ""}
           </div>
           <div class="doc-side">
             <div class="wrong-meta">
@@ -981,6 +1060,7 @@ async function renderWrong() {
               <span>${it.wrongs}/${it.tries} 次错</span>
             </div>
             <button class="btn btn-sm btn-primary anni-btn" data-id="${it.id}">${it.annihilated ? "💥 再歼灭一轮" : "⚔ 变式歼灭"}</button>
+            <button class="btn btn-sm" data-dismiss="${it.id}">移出</button>
           </div>
         </div>`;
       }).join("")
@@ -989,6 +1069,7 @@ async function renderWrong() {
     el.onclick = e => {
       if (e.target.classList.contains("reason-chip")) return;
       if (e.target.classList.contains("anni-btn")) return;
+      if (e.target.dataset.dismiss) return;
       setQueue(items.map(i => i.id));
       location.hash = `#/doc/${el.dataset.id}/answer`;
     }
@@ -996,6 +1077,13 @@ async function renderWrong() {
   $$(".anni-btn").forEach(b => b.onclick = e => {
     e.stopPropagation();
     annihilateFlow(+b.dataset.id);
+  });
+  $$("[data-dismiss]").forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    if (!confirm("把这道题移出错题本？答题记录不受影响。")) return;
+    await api("/api/wrong-book/dismiss", { doc_id: +b.dataset.dismiss });
+    toast("已移出错题本");
+    renderWrong();
   });
   $$(".reason-chip").forEach(ch => ch.onclick = async e => {
     e.stopPropagation();
@@ -1008,28 +1096,29 @@ async function renderWrong() {
     if (!wasOn) ch.classList.add("on");
   });
 
-  // AI 预归因：批量处理未打标的错题，逐题调用后端，完成后重渲染上色
+  // AI 结构化归因（错因 2.0）：批量处理未归因的错题，完成后刷新分布图
   const aiBtn = $("#aiReason");
   if (aiBtn) aiBtn.onclick = async () => {
-    const todo = items.filter(it => !reasons[it.id]);
-    if (!todo.length) return toast("所有错题都已有错因标注");
+    const todo = items.filter(it => !ai[it.id]);
+    if (!todo.length) return toast("所有错题都已有 AI 归因");
     aiBtn.disabled = true; aiBtn.textContent = `归因中 0/${todo.length}`;
     let done = 0;
     for (const it of todo) {
       try {
         const r = await api("/api/wrong-reason/ai-suggest", { doc_id: it.id });
-        if (r.ok && r.reason) reasons[it.id] = r.reason;
+        if (r.ok && r.category) {
+          ai[it.id] = {
+            category: r.category, specific: r.specific || "",
+            kaodian: r.kaodian || "", advice: r.advice || "",
+          };
+          // 已有手填错因时不覆盖（chip 行只反映用户手填）
+        }
       } catch (e) { /* 网络问题已由 api() toast 提示 */ }
       done++;
       aiBtn.textContent = `归因中 ${done}/${todo.length}`;
-      // 实时更新对应行的标签
-      const row = document.querySelector(`.reason-row[data-id="${it.id}"]`);
-      if (row && reasons[it.id]) {
-        $$(".reason-chip", row).forEach(c => c.classList.toggle("on", c.dataset.r === reasons[it.id]));
-      }
     }
-    aiBtn.disabled = false; aiBtn.textContent = "🤖 AI 预归因未打标题";
-    toast(`AI 预归因完成：${done} 题`);
+    toast(`AI 归因完成：${done} 题`);
+    renderWrong();
   };
 }
 
@@ -1196,13 +1285,13 @@ async function renderArgument() {
       <div class="panel arg-quiz-entry">
         <div>
           <div class="arg-title">⚡ 错误辨析快练</div>
-          <div class="arg-src">给一句论证，判断错在哪类 —— 每组 5 题，即时判分</div>
+          <div class="arg-src">给一句论证，判断错在哪类 —— 可选 5~20 题，即时判分</div>
           <div class="arg-card-meta">${qs.total ? `累计 ${qs.total} 题 · 答对 ${qs.right}` : "还没练过，来一组"}</div>
         </div>
         <a class="btn btn-primary" href="#/argument-quiz">开练</a>
       </div>
       <div class="panel arg-tax-panel">
-        <div class="arg-title">论证错误 12 类</div>
+        <div class="arg-title">论证错误 10 类</div>
         <div class="arg-tax-wrap">${chips}</div>
         <div class="arg-src">${ARG_TAXONOMY_NOTE}</div>
       </div>
@@ -1219,7 +1308,7 @@ async function renderArgumentDo(mid) {
     `<span class="arg-tax pick ${sel === t ? "on" : ""}" data-t="${t}">${t}</span>`).join("");
   let ovTaxonomy = [];
   try { ovTaxonomy = (await api("/api/argument/overview")).taxonomy; }
-  catch { ovTaxonomy = ["以偏概全", "偷换概念", "强加因果", "因果倒置", "类比不当", "数据误用", "样本偏差", "预设结论", "忽略他因", "绝对化表述", "诉诸权威", "诉诸无知"]; }
+  catch { ovTaxonomy = ["以偏概全", "偷换概念", "强加因果", "因果倒置", "类比不当", "数据误用", "绝对化表述", "诉诸权威", "非黑即白", "论据不充分"]; }
 
   view.innerHTML = `
     <div class="arg-do-head">
@@ -1325,7 +1414,7 @@ async function renderArgumentDo(mid) {
 
   const renderResult = (r) => {
     const pct = r.score / r.max_score;
-    const verdict = pct >= 0.9 ? "论证评价已入门" : pct >= 0.6 ? "还需练标句子" : "先背熟 12 类错误";
+    const verdict = pct >= 0.9 ? "论证评价已入门" : pct >= 0.6 ? "还需练标句子" : "先背熟 10 类错误";
     // 材料句着色
     sentsEl.querySelectorAll(".arg-sent").forEach(el => {
       const i = +el.dataset.i;
@@ -1379,24 +1468,55 @@ async function renderArgumentQuiz() {
       <a class="btn btn-sm" href="#/argument">← 返回</a>
       <h1 class="page-title" style="margin:0">⚡ 错误辨析快练</h1>
     </div>
-    <div class="arg-type-bar panel rise rise-1">
-      <div class="arg-type-lbl">点类型专练：自动混入易混类型对比，练的正是区分 · 或全部混合（共 ${stats.reduce((a, b) => a + b.count, 0)} 题）</div>
-      <div class="arg-type-chips">
-        <button class="btn arg-type-chip arg-type-all" data-type="">全部混合</button>
-        ${stats.map(t => {
-          const acc = t.done ? Math.round(t.right / t.done * 100) + "%" : "未练";
-          return `<button class="btn arg-type-chip" data-type="${esc(t.type)}">${esc(t.type)}<small>${t.count}题 · ${acc}</small></button>`;
-        }).join("")}
-      </div>
-    </div>
     <div id="argQuizBody" class="arg-quiz-wrap">
-      <div class="empty">选好类型开始抽题…</div>
+      <div class="empty">加载中…</div>
     </div>`;
 
   const body = $("#argQuizBody");
+  let mode = "choice"; // choice 选择模式 | recall 默写模式
+  const TYPES = ov.taxonomy || [];
+  let perBatch = 10; // 每组题量
+
+  const renderPicker = () => {
+    body.innerHTML = `
+      <div class="panel" style="padding:18px">
+        <div style="margin-bottom:10px;font-weight:600">① 选择每组题量</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+          ${[5,10,15,20].map(n => `<button class="btn ${perBatch===n?'btn-primary':''}" data-n="${n}">${n} 题</button>`).join("")}
+        </div>
+        <div style="margin-bottom:10px;font-weight:600">② 选择答题模式</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+          <button class="btn ${mode==='choice'?'btn-primary':''}" data-mode="choice">选择模式（四选一）</button>
+          <button class="btn ${mode==='recall'?'btn-primary':''}" data-mode="recall">默写模式（自己写类型名）</button>
+        </div>
+        <div style="margin-bottom:10px;font-weight:600">③ 选择练习类型</div>
+        <div class="arg-type-chips">
+          <button class="btn arg-type-chip arg-type-all active" data-type="">全部混合</button>
+          ${stats.map(t => {
+            const acc = t.done ? Math.round(t.right / t.done * 100) + "%" : "未练";
+            return `<button class="btn arg-type-chip" data-type="${esc(t.type)}">${esc(t.type)}<small>${t.count}题 · ${acc}</small></button>`;
+          }).join("")}
+        </div>
+        <div style="color:var(--ink-3);font-size:12.5px;margin-top:12px">共 ${stats.reduce((a,b)=>a+b.count,0)} 题</div>
+      </div>`;
+    $$("[data-n]").forEach(b => b.onclick = () => {
+      perBatch = parseInt(b.dataset.n);
+      renderPicker();
+    });
+    $$("[data-mode]").forEach(b => b.onclick = () => {
+      mode = b.dataset.mode;
+      renderPicker();
+    });
+    $$(".arg-type-chip").forEach(ch => ch.onclick = () => {
+      $$(".arg-type-chip").forEach(x => x.classList.remove("active"));
+      ch.classList.add("active");
+      start(ch.dataset.type || null);
+    });
+  };
+
   const start = async (types) => {
     body.innerHTML = `<div class="empty">抽题中…</div>`;
-    const draw = await api("/api/argument/quiz/draw", { n: 5, types: types || undefined });
+    const draw = await api("/api/argument/quiz/draw", { n: perBatch, types: types || undefined });
     let idx = 0, right = 0;
     const picks = [];
 
@@ -1405,39 +1525,66 @@ async function renderArgumentQuiz() {
     const q = draw.items[idx];
     body.innerHTML = `
       <div class="panel arg-quiz-q">
-        <div class="arg-quiz-prog">第 ${idx + 1}/${draw.items.length} 题 · 来源：${esc(q.src)}${idx === 0 && draw.note ? ` · ${esc(draw.note)}` : ""}</div>
-        <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
-        <div class="arg-quiz-opts">
-          ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
+        <div class="arg-quiz-prog" style="display:flex;justify-content:space-between;align-items:center">
+          <span>第 ${idx + 1}/${draw.items.length} 题 · 来源：${esc(q.src)}${idx === 0 && draw.note ? ` · ${esc(draw.note)}` : ""}</span>
+          <span style="color:var(--ink-3);font-size:12.5px">${mode === "choice" ? "选择模式" : "默写模式"}</span>
         </div>
+        <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
+        ${mode === "choice" ? `
+          <div class="arg-quiz-opts">
+            ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
+          </div>` : `
+          <div class="arg-recall-box">
+            <input type="text" class="arg-recall-input" placeholder="输入错误类型名称，如：以偏概全" autocomplete="off" />
+            <button class="btn btn-primary arg-recall-submit">提交</button>
+          </div>
+          <div class="arg-recall-hint">10类标准：${esc(TYPES.join("、"))}</div>
+        `}
         <div class="arg-quiz-exp" style="display:none"></div>
       </div>`;
-    body.querySelectorAll(".arg-opt").forEach(b => b.onclick = () => {
-      body.querySelectorAll(".arg-opt").forEach(x => x.disabled = true);
-      picks.push({ qid: q.qid, pick: b.dataset.o });
+
+    const submit = (pickVal) => {
+      body.querySelectorAll(".arg-opt, .arg-recall-submit, .arg-recall-input").forEach(x => x.disabled = true);
+      picks.push({ qid: q.qid, pick: pickVal });
       api("/api/argument/quiz/check", { answers: [picks[picks.length - 1]] }).then(r => {
         const res = r.results[0];
         if (res.correct) right++;
-        b.classList.add(res.correct ? "opt-ok" : "opt-no");
-        body.querySelectorAll(".arg-opt").forEach(x => {
-          if (x.dataset.o === res.answer) x.classList.add("opt-answer");
-        });
+        if (mode === "choice") {
+          body.querySelectorAll(".arg-opt").forEach(x => {
+            if (x.dataset.o === res.pick) x.classList.add(res.correct ? "opt-ok" : "opt-no");
+            if (x.dataset.o === res.answer) x.classList.add("opt-answer");
+          });
+        } else {
+          const inp = body.querySelector(".arg-recall-input");
+          inp.style.borderColor = res.correct ? "var(--bamboo)" : "var(--cinnabar)";
+        }
         const exp = body.querySelector(".arg-quiz-exp");
         exp.style.display = "";
         exp.innerHTML = `
-          <div class="${res.correct ? "arg-ok" : "arg-no"}">${res.correct ? "✓ 判断正确" : "✗ 正确答案：" + esc(res.answer)}</div>
+          <div class="${res.correct ? "arg-ok" : "arg-no"}">${res.correct ? "✓ 判断正确" : "✗ 你的答案：" + esc(res.pick || "（空）") + "　正确答案：" + esc(res.answer)}</div>
           <div class="arg-why">${esc(res.why)}</div>
           <button class="btn btn-primary" id="argQNext">${idx + 1 < draw.items.length ? "下一题 →" : "看结果"}</button>`;
         $("#argQNext", body).onclick = () => { idx++; showQ(); };
       });
-    });
+    };
+
+    if (mode === "choice") {
+      body.querySelectorAll(".arg-opt").forEach(b => b.onclick = () => submit(b.dataset.o));
+    } else {
+      const inp = body.querySelector(".arg-recall-input");
+      const btn = body.querySelector(".arg-recall-submit");
+      inp.focus();
+      const doSub = () => { const v = inp.value.trim(); if (v) submit(v); };
+      btn.onclick = doSub;
+      inp.onkeydown = (e) => { if (e.key === "Enter") doSub(); };
+    }
   };
 
   const showEnd = () => {
     body.innerHTML = `
       <div class="arg-score-card">
         <div class="arg-score-num">${right}<small>/${draw.items.length}</small></div>
-        <div class="arg-score-verdict">${right >= 4 ? "语感很准，继续保持" : "把 12 类错误的典型例句再过一遍"}</div>
+        <div class="arg-score-verdict">${right >= draw.items.length * 0.8 ? "语感很准，继续保持" : "把 10 类错误的典型例句再过一遍"}</div>
         ${draw.note ? `<div style="color:var(--ink-3);font-size:12.5px;margin-top:4px">${esc(draw.note)}</div>` : ""}
         <div class="arg-score-actions">
           <a class="btn btn-primary" href="#/argument-quiz" onclick="location.reload()">再来一组</a>
@@ -1447,11 +1594,7 @@ async function renderArgumentQuiz() {
   };
   showQ();
   };
-  $$(".arg-type-chip").forEach(ch => ch.onclick = () => {
-    $$(".arg-type-chip").forEach(x => x.classList.remove("active"));
-    ch.classList.add("active");
-    start(ch.dataset.type || null);
-  });
+  renderPicker();
 }
 
 /* =====================================================
@@ -1490,7 +1633,7 @@ async function renderMarks() {
    随机组卷
 ===================================================== */
 
-async function renderPaper() {
+async function renderPaper(auto = "") {
   const [facets, kd] = await Promise.all([api("/api/facets"), api("/api/kaodian-list")]);
   const kaodians = kd.items;
 
@@ -1504,6 +1647,13 @@ async function renderPaper() {
         <div class="cfg-group">
           <div class="cfg-label">自由组卷</div>
           <div class="cfg-inline">
+            <span>模式
+              <span class="type-checks" id="pMode" style="display:inline-flex;vertical-align:middle">
+                <div class="type-check on" data-m="adaptive">智能</div>
+                <div class="type-check" data-m="random">随机</div>
+                <div class="type-check" data-m="sequential">顺序</div>
+              </span>
+            </span>
             <span>模块 <select id="pModule"><option value="">全部</option>${facets.modules.map(m => `<option>${esc(m)}</option>`).join("")}</select></span>
             <span>考点
               <span class="kd-combo" id="kdCombo">
@@ -1512,6 +1662,9 @@ async function renderPaper() {
               </span>
             </span>
             <span>题量 <input type="number" id="pN" value="10" min="3" max="30" style="width:70px"/></span>
+          </div>
+          <div style="font-size:12.5px;color:var(--ink-3);margin-top:6px">
+            智能模式按掌握度加权抽题（错得多、久未练的优先）；随机模式纯随机；顺序模式按题目编号推进
           </div>
         </div>
         <div><button class="btn btn-primary" id="gen">开始组卷</button></div>
@@ -1842,14 +1995,25 @@ async function renderPaper() {
     if (kdOpen) kdRender();
   };
 
+  $$("#pMode .type-check").forEach(t => t.onclick = () => {
+    $$("#pMode .type-check").forEach(x => x.classList.toggle("on", x === t));
+  });
+
   $("#gen").onclick = async () => {
     // 只用 kdPicked（选中态），不再信任输入框裸文本，防止用户敲了一半就去点组卷
-    const res = await api("/api/paper", {
+    const mode = ($("#pMode .type-check.on") || {}).dataset?.m || "adaptive";
+    const payload = {
       module: $("#pModule").value, kaodian: kdPicked, n: +$("#pN").value || 10,
-    });
+    };
+    const path = mode === "adaptive" ? "/api/paper/adaptive"
+      : mode === "sequential" ? "/api/paper/sequential" : "/api/paper";
+    const res = await api(path, payload);
     if (!res.ids.length) return alert("该范围内没有真题");
     runPaper(res.ids);
   };
+
+  // 从首页「今日推荐练习」进入时自动生成（#/paper/adaptive）
+  if (auto === "adaptive") $("#gen").click();
 }
 
 async function runPaper(ids, opt = {}) {
@@ -2827,6 +2991,7 @@ async function renderWordfill() {
   const stats = await api("/api/wordfill/stats");
   const cfg = { category: "", difficulty: "mid", n: 5 };
   const run = { items: [], idx: 0, correct: 0, startedAt: 0, answered: false };
+  let retryCount = 0;   // 生成失败重试计数，最多 2 次
 
   view.innerHTML = `
     <div class="page-head rise">
@@ -2877,7 +3042,20 @@ async function renderWordfill() {
       $$("[data-d]").forEach(x => x.classList.toggle("on", x === el));
     });
     $("#wfN").oninput = e => cfg.n = Math.min(10, Math.max(3, +e.target.value || 5));
-    $("#wfStart").onclick = start;
+    $("#wfStart").onclick = () => { retryCount = 0; start(); };
+  }
+
+  // 生成失败视图：最多重试 2 次，超出后引导检查 API Key
+  function failView(msg) {
+    body.innerHTML = `<div class="panel"><div class="empty">${esc(msg)}</div>
+      <div style="text-align:center">
+        ${retryCount < 2 ? '<button class="btn btn-primary" id="wfRetry">重试</button> ' : ""}
+        <button class="btn" id="wfBack">返回</button>
+      </div></div>`;
+    if (retryCount < 2) {
+      $("#wfRetry").onclick = () => { retryCount++; start(); };
+    }
+    $("#wfBack").onclick = showConfig;
   }
 
   async function start() {
@@ -2888,19 +3066,19 @@ async function renderWordfill() {
     try {
       const res = await api("/api/wordfill/practice", cfg);
       if (!res.items.length) {
-        body.innerHTML = `<div class="panel"><div class="empty">生成失败，请到设置页检查 API Key</div>
-          <div style="text-align:center"><button class="btn" id="wfBack">返回</button></div></div>`;
-        $("#wfBack").onclick = showConfig;
+        failView(retryCount < 2
+          ? "生成失败，可点击重试"
+          : "生成失败，请到设置页检查 API Key");
         return;
       }
+      retryCount = 0;
       run.items = res.items;
       run.idx = 0;
       run.correct = 0;
       showQ();
     } catch (e) {
-      body.innerHTML = `<div class="panel"><div class="empty">请求失败：${esc(e.message)}</div>
-        <div style="text-align:center"><button class="btn" id="wfBack">返回</button></div></div>`;
-      $("#wfBack").onclick = showConfig;
+      failView("请求失败：" + e.message
+        + (retryCount < 2 ? "" : "（请检查网络或 API Key）"));
     }
   }
 
@@ -4233,6 +4411,78 @@ async function renderWenxian() {
 
 // ============== f4 每周学习诊断报告 ==============
 
+/* =====================================================
+   知识掌握度图谱（功能 1.4）
+===================================================== */
+
+const MASTERY_COLOR = { green: "var(--bamboo)", amber: "var(--amber)", red: "var(--cinnabar)" };
+const MASTERY_LABEL = { green: "已掌握", amber: "待巩固", red: "薄弱/未练" };
+
+async function renderMastery(module = "") {
+  const facets = await api("/api/facets");
+  const d = await api(`/api/mastery?module=${encodeURIComponent(module)}`);
+  const items = d.items || [];
+  const cnt = { green: 0, amber: 0, red: 0 };
+  for (const it of items) cnt[it.level] = (cnt[it.level] || 0) + 1;
+
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">知识掌握度图谱</h1>
+      <p class="page-desc">按考点聚合正确率与掌握度 · 共 ${items.length} 个考点 · 点任一行直接开练</p>
+    </div>
+    <div class="panel rise rise-1">
+      <div class="cfg-inline" style="flex-wrap:wrap;gap:8px">
+        <span class="type-checks" id="mMods">
+          <div class="type-check ${module === "" ? "on" : ""}" data-m="">全部</div>
+          ${(facets.modules || []).map(m =>
+            `<div class="type-check ${module === m ? "on" : ""}" data-m="${esc(m)}">${esc(m)}</div>`).join("")}
+        </span>
+      </div>
+      <div style="display:flex;gap:18px;margin-top:12px;font-size:13.5px">
+        <span><b style="color:${MASTERY_COLOR.green}">●</b> 已掌握 ${cnt.green || 0}</span>
+        <span><b style="color:${MASTERY_COLOR.amber}">●</b> 待巩固 ${cnt.amber || 0}</span>
+        <span><b style="color:${MASTERY_COLOR.red}">●</b> 薄弱/未练 ${cnt.red || 0}</span>
+      </div>
+    </div>
+    <div class="panel rise rise-2">
+      ${items.length ? `
+      <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+        <tr style="color:var(--ink-3)">
+          <th style="text-align:left;padding:6px 8px">考点</th>
+          <th style="text-align:left;padding:6px 8px">模块</th>
+          <th style="text-align:right;padding:6px 8px">题库</th>
+          <th style="text-align:right;padding:6px 8px">已练</th>
+          <th style="text-align:right;padding:6px 8px">正确率</th>
+          <th style="text-align:right;padding:6px 8px">掌握度</th>
+          <th style="text-align:center;padding:6px 8px">状态</th>
+        </tr>
+        ${items.map(it => `
+          <tr class="mst-row" data-module="${esc(it.module)}" data-kaodian="${esc(it.kaodian)}"
+              style="border-top:1px solid var(--line-soft);cursor:pointer">
+            <td style="padding:7px 8px">${esc(it.kaodian)}</td>
+            <td style="padding:7px 8px;color:var(--ink-3)">${esc(it.module)}</td>
+            <td style="padding:7px 8px;text-align:right">${it.total}</td>
+            <td style="padding:7px 8px;text-align:right">${it.n}</td>
+            <td style="padding:7px 8px;text-align:right">${it.rate === null ? "—" : it.rate + "%"}</td>
+            <td style="padding:7px 8px;text-align:right;font-family:var(--mono)">${it.mastery.toFixed(2)}</td>
+            <td style="padding:7px 8px;text-align:center">
+              <span style="color:${MASTERY_COLOR[it.level]}">●</span>
+              <span style="font-size:12px;color:var(--ink-3)">${MASTERY_LABEL[it.level]}</span>
+            </td>
+          </tr>`).join("")}
+      </table>` : `<div class="empty">暂无考点数据，先去题库做几道题吧</div>`}
+    </div>`;
+
+  $$("#mMods .type-check").forEach(t => t.onclick = () => renderMastery(t.dataset.m));
+  $$(".mst-row").forEach(tr => tr.onclick = async () => {
+    const res = await api("/api/paper", {
+      module: tr.dataset.module, kaodian: tr.dataset.kaodian, n: 10,
+    });
+    if (!res.ids.length) return alert("该考点暂无可用真题");
+    runPaper(res.ids, { title: `${tr.dataset.kaodian} 专项` });
+  });
+}
+
 async function renderReport() {
   view.innerHTML = `
     <div class="page-head rise">
@@ -4259,7 +4509,10 @@ async function renderReport() {
   body.innerHTML = `
     <div class="panel" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <b style="font-size:15px">${esc(d.range)}</b>
-      <button class="btn btn-sm" id="rpRefresh">重新生成</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-sm" id="rpExport">导出学习报告</button>
+        <button class="btn btn-sm" id="rpRefresh">重新生成</button>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
       <div class="panel rp-card">
@@ -4306,6 +4559,17 @@ async function renderReport() {
         </table>` : `<div class="empty" style="padding:14px">本周暂无做题数据，先去做一组题吧</div>`}
     </div>
 
+    ${(d.reason_top && d.reason_top.length) ? `
+    <div class="panel">
+      <h3 style="margin:0 0 10px">高频错因 TOP${d.reason_top.length} <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">本周答错题的错因归类</span></h3>
+      ${d.reason_top.map((r, i) => `
+        <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line-soft)">
+          <span class="tag">#${i + 1}</span>
+          <span style="flex:1;font-size:13.5px">${esc(r.reason)}</span>
+          <span style="color:var(--cinnabar);font-size:13px">${r.c} 题</span>
+        </div>`).join("")}
+    </div>` : ""}
+
     ${d.weak.length ? `
     <div class="panel">
       <h3 style="margin:0 0 10px">薄弱考点 TOP${d.weak.length}</h3>
@@ -4326,6 +4590,65 @@ async function renderReport() {
     </div>`;
 
   $("#rpRefresh").onclick = renderReport;
+
+  // 导出学习报告（文本）：聚合总览 + 学习时长 + 本周诊断
+  $("#rpExport").onclick = async () => {
+    const btn = $("#rpExport");
+    btn.disabled = true; btn.textContent = "导出中…";
+    try {
+      const [stats, time] = await Promise.all([
+        api("/api/stats"), api("/api/study-time"),
+      ]);
+      const pct = stats.answers_total
+        ? Math.round(stats.answers_correct / stats.answers_total * 100) : 0;
+      const lines = [
+        "上岸自习室 · 学习报告",
+        `生成时间：${new Date().toLocaleString("zh-CN")}`,
+        "",
+        `【本周】${d.range}`,
+        `  做题：${d.summary.total} 道（上周 ${d.summary.last_total} 道）`,
+        `  时长：${d.summary.minutes} 分钟 · 学习 ${d.summary.days} 天`,
+        `  申论批改：${d.grades.cur === null ? "—" : d.grades.cur + "%"}（本周 ${d.grades.n} 次）`,
+        "",
+        "【累计】",
+        `  累计作答：${stats.answers_total} 题 · 正确率 ${pct}%`,
+        `  今日作答：${stats.today_answers} 题 · 对 ${stats.today_correct}`,
+        `  连续学习：${stats.streak} 天`,
+        `  待消灭错题：${stats.wrong_count} 题`,
+        `  累计学习时长：${time.total_minutes} 分钟（日均 ${time.avg_daily} 分钟）`,
+        "",
+      ];
+      if (d.compare && d.compare.length) {
+        lines.push("【模块周对比】");
+        for (const m of d.compare) {
+          lines.push(`  ${m.module}：${m.n} 题 · 正确率 ${m.rate}% · 均时 ${m.avg_s}s`);
+        }
+        lines.push("");
+      }
+      if (d.weak && d.weak.length) {
+        lines.push("【薄弱考点】");
+        for (const w of d.weak) {
+          lines.push(`  ${w.module} / ${w.kaodian.replace(/^[^\/]+\/\s*/, "")}：${w.rate}%（${w.ok}/${w.n}）`);
+        }
+        lines.push("");
+      }
+      if (d.advice && d.advice.length) {
+        lines.push("【本周建议】");
+        for (const a of d.advice) lines.push(`  · ${a}`);
+      }
+      const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `学习报告-${new Date().toISOString().split("T")[0]}.txt`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (e) {
+      alert("导出失败：" + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = "导出学习报告";
+    }
+  };
 }
 
 // ---------------- AI 答疑（不做题也能问） ----------------

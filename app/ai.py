@@ -18,8 +18,8 @@ EXAM_C_FACTS = """【事业单位联考C类（自然科学专技类）权威题�
   言语理解以逻辑填空、片段阅读、语句表达为主；综合分析是C类职测特色压轴，包含策略制定与实验设计。
 - 《综合应用能力（C类）》（主观题，120分钟，满分150分），共四道大题：
   1. 科技文献阅读题（约50分）：客观判断/选择/匹配 + 主观摘要与简答；
-  2. 论证评价题（约40分）：指出材料中4处左右论证错误并说明理由（常见谬误：偷换概念、以偏概全、
-     强加因果、因果倒置、忽略他因、类比不当、诉诸权威/情感、数据误用等）；
+  2. 论证评价题（约40分）：指出材料中4处左右论证错误并说明理由（标准10类谬误：偷换概念、以偏概全、
+     强加因果、因果倒置、类比不当、数据误用、绝对化表述、诉诸权威、非黑即白、论据不充分）；
   3. 科技实务题（约40分，部分年份含实验设计/图表分析/数据纠错）；
   4. **材料作文题（约50～60分，压轴必考）**：给定科技或社会热点材料，写一篇800～1000字议论文，
      常考话题：科技创新、科学精神、科技与人文、成果转化、生态文明等。
@@ -230,6 +230,73 @@ async def chat_once(messages: list[dict], temperature: float = 0.3) -> str:
         elif kind == "error":
             raise RuntimeError(payload)
     return "".join(buf)
+
+
+# ---------------- 错因结构化归因 2.0 ----------------
+
+# 五类错因（与前端 WRONG_REASONS 保持一致）
+WRONG_CATEGORIES = ["知识盲区", "审题失误", "计算错误", "时间不够", "蒙猜"]
+
+
+def build_wrong_reason_prompt(stem: str, options: str, correct: str,
+                              last_selected: str, tries: int, wrongs: int) -> str:
+    """错因 2.0：要求 AI 返回结构化 JSON（含具体错点、考点、建议）。"""
+    return (
+        "你是事业单位C类教研老师。学生做错了一道选择题，请给出结构化归因。\n"
+        "严格只输出一个 JSON 对象，不要 markdown 代码块、不要任何多余文字，格式：\n"
+        '{"category":"...","specific":"...","kaodian":"...","advice":"..."}\n'
+        "字段要求：\n"
+        "- category：必须且只能是以下五类之一：知识盲区 / 审题失误 / 计算错误 / 时间不够 / 蒙猜\n"
+        "- specific：一句话说清具体错在哪（≤30 字）\n"
+        "- kaodian：本题考点（≤20 字，尽量用题干/选项里出现的考点词）\n"
+        "- advice：一句可执行的改进建议（≤30 字）\n"
+        "判定标准：\n"
+        "- 考点完全陌生、需补知识才能做对 → 知识盲区\n"
+        "- 会做但看错问法/理解偏差/忽略限定词 → 审题失误\n"
+        "- 涉及数值计算且错选项常为过程错误值 → 计算错误\n"
+        "- 作答次数多、耗时短、反复换答案、无明显思路 → 时间不够\n"
+        "- 错选项与任何考点无关联、随机乱选 → 蒙猜\n"
+        "若题干/选项包含图片（图形推理等），你无法读图，禁止据图片臆断；"
+        "若错因只能靠图判断，category 取「审题失误」。\n\n"
+        f"【题目】{stem[:800]}\n"
+        f"【选项】\n{options[:700]}\n"
+        f"【正确答案】{correct}\n"
+        f"【学生最近错选】{last_selected or '未知'}\n"
+        f"【作答历史】共 {tries} 次错 {wrongs} 次"
+    )
+
+
+def parse_wrong_reason_json(raw: str) -> dict | None:
+    """解析 AI 结构化归因 JSON，容错处理 markdown 代码块与前后杂字。
+
+    解析失败、非 dict、或 category 不落在五类内时返回 None（调用方走关键词兜底）。
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"```\s*$", "", text).strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    cat = str(data.get("category", "")).strip()
+    if cat not in WRONG_CATEGORIES:
+        cat = next((c for c in WRONG_CATEGORIES if c and (c in cat or cat in c)), "")
+    if not cat:
+        return None
+    return {
+        "category": cat,
+        "specific": str(data.get("specific", "")).strip()[:60],
+        "kaodian": str(data.get("kaodian", "")).strip()[:40],
+        "advice": str(data.get("advice", "")).strip()[:80],
+    }
 
 
 async def stream_chat_with_temp(messages: list[dict], temperature: float):
