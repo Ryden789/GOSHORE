@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """综应C·论证评价训练器 + 论证错误辨析快练。
 
-数据源：data/argument_materials.json
+数据源：app/argument_materials.json（与本模块同目录，Chaquopy 会作为数据文件打包进 APK）
 - materials: 5道材料（真题×3 + 练习题×1 + 自编×2），每道含 flaw 标注
-- taxonomy: 12 类论证错误
+- taxonomy: 10 类论证错误（综应C类标准采分词）
 
 材料训练：句子级标注判分（防作弊：/material 接口不下发 flaws）
 辨析快练：flaws 自动拆成 quote→选错误类型 的选择题
@@ -24,23 +24,53 @@ import httpx
 from .config import load_settings
 from . import db
 
-_DATA = Path(__file__).resolve().parent.parent / "data" / "argument_materials.json"
-_BANK = Path(__file__).resolve().parent.parent / "data" / "argument_quiz.json"
+_DATA = Path(__file__).resolve().parent / "argument_materials.json"
+_BANK = Path(__file__).resolve().parent / "argument_quiz.json"
 
-# 易混类型映射：辨析题干扰项优先取易混类型，训练区分能力
+# 默写模式简称映射：用户输入常见简称/别称时自动归一到标准类型名
+_ALIAS = {
+    "以偏": "以偏概全", "以偏概": "以偏概全", "概全": "以偏概全",
+    "偷换": "偷换概念", "偷换概念": "偷换概念",
+    "强加": "强加因果", "强加因果": "强加因果",
+    "倒置": "因果倒置", "因果倒置": "因果倒置", "倒果": "因果倒置",
+    "类比": "类比不当", "类比不当": "类比不当",
+    "数据": "数据误用", "数据误用": "数据误用", "统计": "数据误用",
+    "绝对": "绝对化表述", "绝对化": "绝对化表述", "绝对化表述": "绝对化表述",
+    "权威": "诉诸权威", "诉诸权威": "诉诸权威",
+    "非黑": "非黑即白", "非黑即白": "非黑即白", "两难": "非黑即白",
+    "论据": "论据不充分", "论据不充分": "论据不充分", "不充分": "论据不充分",
+    # 旧称兼容（旧版本用过的类型名，归入标准类型）
+    "样本偏差": "以偏概全", "幸存者偏差": "以偏概全",
+    "预设结论": "论据不充分", "诉诸无知": "论据不充分",
+    "忽略他因": "论据不充分", "论据不实": "论据不充分",
+}
+
+
+def _normalize_type(s: str) -> str:
+    """把用户输入的错误类型名称归一到标准类型名。
+    规则：先去空格；精确匹配别名表；再做包含匹配（标准名含用户输入且≥2字）。
+    匹配不到则原样返回（判分会判错）。"""
+    s = re.sub(r"\s+", "", str(s))
+    if not s:
+        return ""
+    if s in _ALIAS:
+        return _ALIAS[s]
+    # 包含匹配：用户输入是某个标准类型的子串（如"以偏概"匹配"以偏概全"）
+    for t in _TAXONOMY:
+        if len(s) >= 2 and (s in t or t in s):
+            return t
+    return s
 _CONFUSE = {
-    "强加因果": ["因果倒置", "忽略他因"],
-    "因果倒置": ["强加因果", "忽略他因"],
-    "忽略他因": ["强加因果", "因果倒置"],
-    "以偏概全": ["样本偏差", "数据误用"],
-    "样本偏差": ["以偏概全", "数据误用"],
+    "强加因果": ["因果倒置", "论据不充分"],
+    "因果倒置": ["强加因果", "论据不充分"],
+    "以偏概全": ["数据误用", "类比不当"],
     "数据误用": ["以偏概全", "绝对化表述"],
-    "偷换概念": ["预设结论", "绝对化表述"],
-    "预设结论": ["偷换概念", "诉诸无知"],
-    "绝对化表述": ["以偏概全", "数据误用"],
-    "诉诸权威": ["诉诸无知", "预设结论"],
-    "诉诸无知": ["诉诸权威", "绝对化表述"],
+    "偷换概念": ["类比不当", "论据不充分"],
     "类比不当": ["以偏概全", "偷换概念"],
+    "绝对化表述": ["非黑即白", "论据不充分"],
+    "诉诸权威": ["论据不充分", "绝对化表述"],
+    "非黑即白": ["绝对化表述", "以偏概全"],
+    "论据不充分": ["诉诸权威", "绝对化表述", "强加因果"],
 }
 
 
@@ -193,7 +223,7 @@ def submit(mid: str, marks: list[dict]) -> dict:
 # ---------------- 辨析快练 ----------------
 
 def _bank_items() -> list[dict]:
-    """独立辨析题库（data/argument_quiz.json，84 条自编）。"""
+    """独立辨析题库（app/argument_quiz.json，300 条自编）。"""
     global _BANK_CACHE
     if _BANK_CACHE is None:
         try:
@@ -306,7 +336,8 @@ def quiz_check(answers: list[dict]) -> dict:
         if not q:
             continue
         pick = str(a.get("pick", ""))
-        ok = pick == q["type"]
+        norm = _normalize_type(pick)
+        ok = norm == q["type"]
         correct += ok
         conn.execute(
             "INSERT INTO argument_quiz_log(qid,picked,correct,created_at) VALUES(?,?,?,?)",
