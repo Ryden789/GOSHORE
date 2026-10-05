@@ -708,6 +708,18 @@ class _Handler(BaseHTTPRequestHandler):
                 key = s.get("deepseek_api_key") or ""
                 s["deepseek_api_key"] = ("***" + key[-4:]) if key else ""
                 self._json(s)
+            elif path == "/api/argument/overview":
+                ov = argument.list_materials()
+                ov["taxonomy"] = argument._TAXONOMY
+                ov["quiz_stats"] = argument.quiz_stats()
+                ov["quiz_type_stats"] = argument.quiz_type_stats()
+                self._json(ov)
+            elif path.startswith("/api/argument/material/"):
+                m = argument.get_material(path.rsplit("/", 1)[-1])
+                if m:
+                    self._json(m)
+                else:
+                    self._json({"error": "not found"}, 404)
             elif path.startswith("/api/doc/"):
                 try:
                     doc_id = int(path.rsplit("/", 1)[1])
