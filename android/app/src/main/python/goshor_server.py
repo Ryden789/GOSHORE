@@ -941,6 +941,20 @@ class _Handler(BaseHTTPRequestHandler):
                                          bool(b.get("correct")), int(b.get("ms", 0)),
                                          bool(b.get("guessed")))
                 self._json({"ok": True, "annihilated": bool(info.get("annihilated"))})
+            elif path == "/api/answer/batch":
+                # 考场模式：交卷时一次性落库本卷全部作答（延迟结算）
+                with _lock:
+                    items = b.get("items", []) or []
+                    n = 0
+                    ann = []
+                    for it in items:
+                        info = db.add_answer(int(it["doc_id"]), it.get("selected", ""),
+                                             bool(it.get("correct")), int(it.get("ms", 0)),
+                                             bool(it.get("guessed")))
+                        n += 1
+                        if info.get("annihilated"):
+                            ann.append(int(it["doc_id"]))
+                self._json({"ok": True, "n": n, "annihilated": ann})
             elif path == "/api/focus/add":
                 with _lock:
                     total = db.add_focus(int(b.get("seconds", 0)))

@@ -160,12 +160,30 @@ class AnswerIn(BaseModel):
     selected: str = ""
     correct: bool = False
     ms: int = 0
+    guessed: bool = False
 
 
 @app.post("/api/answer")
 def api_answer(b: AnswerIn):
-    db.add_answer(b.doc_id, b.selected, b.correct, b.ms)
+    db.add_answer(b.doc_id, b.selected, b.correct, b.ms, b.guessed)
     return {"ok": True}
+
+
+class BatchAnswerIn(BaseModel):
+    items: list[AnswerIn] = []
+
+
+@app.post("/api/answer/batch")
+def api_answer_batch(b: BatchAnswerIn):
+    """考场模式：交卷时一次性落库本卷全部作答（延迟结算，不再一题一判）。"""
+    n = 0
+    annihilated: list[int] = []
+    for it in b.items:
+        info = db.add_answer(it.doc_id, it.selected, it.correct, it.ms, it.guessed)
+        n += 1
+        if info.get("annihilated"):
+            annihilated.append(it.doc_id)
+    return {"ok": True, "n": n, "annihilated": annihilated}
 
 
 class MarkIn(BaseModel):

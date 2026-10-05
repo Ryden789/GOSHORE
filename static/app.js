@@ -26,6 +26,23 @@ function toast(msg, ms = 3200) {
   t._h = setTimeout(() => { t.style.opacity = "0"; }, ms);
 }
 
+/** 考场模式：进入全屏（桌面端 Fullscreen API；失败静默降级） */
+function enterFullscreen() {
+  const el = document.documentElement;
+  try {
+    if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  } catch (e) { /* 非用户手势或浏览器不支持，忽略 */ }
+}
+
+/** 退出全屏（非全屏状态下调用无副作用） */
+function exitFullscreen() {
+  try {
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+    else if (document.webkitFullscreenElement && document.webkitExitFullscreen) document.webkitExitFullscreen();
+  } catch (e) { /* ignore */ }
+}
+
 /** 自定义确认弹窗（替代浏览器原生 confirm，不显示地址栏来源） */
 function confirmBox(msg) {
   return new Promise(resolve => {
@@ -1675,9 +1692,13 @@ async function renderPaper(auto = "") {
               </span>
             </span>
             <span>题量 <input type="number" id="pN" value="10" min="3" max="30" style="width:70px"/></span>
+            <span>限时 <input type="number" id="pMin" value="0" min="0" max="180" style="width:70px"/><span style="font-size:12px;color:var(--ink-3)"> 分钟（0=不限）</span></span>
+            <span class="type-checks" id="pExam" style="display:inline-flex;vertical-align:middle">
+              <div class="type-check" data-e="1" title="全屏作答 + 标准化答题卡 + 交卷统一判分">考场模式</div>
+            </span>
           </div>
           <div style="font-size:12.5px;color:var(--ink-3);margin-top:6px">
-            智能模式按掌握度加权抽题（错得多、久未练的优先）；随机模式纯随机；顺序模式按题目编号推进
+            智能模式按掌握度加权抽题（错得多、久未练的优先）；随机模式纯随机；顺序模式按题目编号推进；考场模式＝全屏 + 答题卡 + 交卷统一判分
           </div>
         </div>
         <div><button class="btn btn-primary" id="gen">开始组卷</button></div>
@@ -1789,7 +1810,7 @@ async function renderPaper(auto = "") {
       $("#tplMsg").textContent =
         `${res.name}：${res.lack.join("、")} 题量不足，已等比缩减为 ${res.ids.length} 题 / ${res.minutes} 分钟`;
     }
-    runPaper(res.ids, { title: res.name, minutes: res.minutes });
+    runPaper(res.ids, { title: res.name, minutes: res.minutes, examMode: true, fullscreen: true });
   });
 
   // 模块联动 + 考点组合搜索（输入即过滤，支持按考点名或所属模块搜）
@@ -2011,6 +2032,7 @@ async function renderPaper(auto = "") {
   $$("#pMode .type-check").forEach(t => t.onclick = () => {
     $$("#pMode .type-check").forEach(x => x.classList.toggle("on", x === t));
   });
+  $$("#pExam .type-check").forEach(t => t.onclick = () => t.classList.toggle("on"));
 
   $("#gen").onclick = async () => {
     // 只用 kdPicked（选中态），不再信任输入框裸文本，防止用户敲了一半就去点组卷
@@ -2022,7 +2044,9 @@ async function renderPaper(auto = "") {
       : mode === "sequential" ? "/api/paper/sequential" : "/api/paper";
     const res = await api(path, payload);
     if (!res.ids.length) return alert("该范围内没有真题");
-    runPaper(res.ids);
+    const examMode = !!($("#pExam .type-check.on"));
+    const minutes = +$("#pMin").value || 0;
+    runPaper(res.ids, examMode ? { examMode: true, minutes, fullscreen: true, title: "考场模式" } : {});
   };
 
   // 从首页「今日推荐练习」进入时自动生成（#/paper/adaptive）
@@ -2049,11 +2073,16 @@ async function runPaper(ids, opt = {}) {
   const docs = res.items || [];
   const container = opt.container || $("#paperBody");
   if (!docs.length) { if (container) container.innerHTML = `<div class="panel">题目加载失败</div>`; return; }
-  const answers = new Array(docs.length).fill(null);   // {sel, correct, ms}
+  const exam = !!opt.examMode;                          // 考场模式：延迟结算 + 标准化答题卡
+  const answers = new Array(docs.length).fill(null);    // 常规 {sel,correct,ms}；考场先存 {sel,ms}，交卷后补 correct
+  const marked = new Array(docs.length).fill(false);    // 答题卡「标记」
   let cur = 0, startedAt = Date.now(), finished = false;
   const t0 = Date.now();
   const deadline = opt.minutes ? t0 + opt.minutes * 60000 : null;
   let timerH = null;
+  let warned5 = false;   // 交卷前 5 分钟提醒只弹一次
+  let cardOpen = true;   // 答题卡展开态
+  let daub = false;      // 涂卡录入模式
 
   const body = container;
 
@@ -2074,6 +2103,11 @@ async function runPaper(ids, opt = {}) {
     const m = Math.floor(left / 60000), s = Math.floor(left % 60000 / 1000);
     el.textContent = `⏱ ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
     el.style.color = left < 5 * 60000 ? "var(--cinnabar)" : "var(--ink-3)";
+    if (exam && left <= 5 * 60000 && !warned5) {
+      warned5 = true;
+      const blank = answers.filter(a => !(a && a.sel)).length;
+      toast(`⏰ 距交卷还有 5 分钟${blank ? `，尚有 ${blank} 题未作答` : ""}`, 6000);
+    }
   }
   timerH = setInterval(tick, 1000);
 
@@ -2087,16 +2121,84 @@ async function runPaper(ids, opt = {}) {
     </div>`;
   }
 
+  /* ---------- 标准化答题卡（考场模式） ---------- */
+  function cardStats() {
+    const answered = answers.filter(a => a && a.sel).length;
+    return { answered, blank: docs.length - answered, markedN: marked.filter(Boolean).length };
+  }
+
+  function daubPanel() {
+    return `<div class="exam-daub">
+      ${docs.map((_, i) => {
+        const a = answers[i];
+        return `<div class="daub-row" data-i="${i}">
+          <span class="daub-n">${i + 1}</span>
+          <span class="daub-opts">
+            ${(docs[i].data.options || []).map(o =>
+              `<b class="daub-o ${a && a.sel === o.label ? "on" : ""}" data-i="${i}" data-l="${esc(o.label)}">${esc(o.label)}</b>`).join("")}
+          </span>
+        </div>`;
+      }).join("")}
+    </div>`;
+  }
+
+  function card() {
+    const st = cardStats();
+    return `<div class="exam-card">
+      <div class="exam-card-head">
+        <span class="exam-card-title">答题卡</span>
+        <span class="exam-card-stats">
+          <span class="ec-a">已答 ${st.answered}</span>
+          <span class="ec-b">未答 ${st.blank}</span>
+          <span class="ec-m">标记 ${st.markedN}</span>
+        </span>
+        <button class="btn btn-sm ${daub ? "btn-primary" : ""}" id="daubBtn" style="margin-left:auto">涂卡录入</button>
+        <button class="btn btn-sm" id="cardToggle">${cardOpen ? "收起" : "展开"}</button>
+      </div>
+      ${cardOpen ? (daub ? daubPanel() : `<div class="exam-card-grid">
+        ${docs.map((_, i) => {
+          const a = answers[i];
+          const cls = [i === cur ? "cur" : "", a && a.sel ? "done" : "blank", marked[i] ? "mark" : ""].filter(Boolean).join(" ");
+          return `<span class="ec-cell ${cls}" data-i="${i}">${i + 1}${a && a.sel ? `<i>${esc(a.sel)}</i>` : ""}</span>`;
+        }).join("")}
+      </div>`) : ""}
+    </div>`;
+  }
+
+  function bindCard() {
+    $$(".ec-cell", body).forEach(c => c.onclick = () => show(+c.dataset.i));
+    $$(".daub-o", body).forEach(b => b.onclick = () => {
+      const i = +b.dataset.i;
+      answers[i] = { sel: b.dataset.l, ms: answers[i] ? answers[i].ms : 0 };
+      renderCard();
+    });
+    const db = $("#daubBtn");
+    if (db) db.onclick = () => { daub = !daub; renderCard(); };
+    const ct = $("#cardToggle");
+    if (ct) ct.onclick = () => { cardOpen = !cardOpen; renderCard(); };
+  }
+
+  // 只重绘答题卡区域（保持当前题与计时不重置）
+  function renderCard() {
+    const el = body.querySelector(".exam-card");
+    if (!el) return;
+    const wrap = document.createElement("div");
+    wrap.innerHTML = card();
+    el.replaceWith(wrap.firstElementChild);
+    bindCard();
+  }
+
   function show(i) {
     cur = i; startedAt = Date.now();
     const doc = docs[i], d = doc.data;
+    const a = answers[i];
     body.innerHTML = `
       <div class="panel">
         <div class="paper-runner-top">
           <span>第 ${i + 1} / ${docs.length} 题 · ${esc(doc.kaodian || doc.module || "")}</span>
           <span id="pTimer" style="color:var(--ink-3)"></span>
         </div>
-        ${dots()}
+        ${exam ? card() : dots()}
         ${d.material ? `
         <details class="material-box" open style="margin-top:10px">
           <summary style="cursor:pointer;font-weight:600">给定材料</summary>
@@ -2104,23 +2206,43 @@ async function runPaper(ids, opt = {}) {
         </details>` : ""}
         <div class="stem" style="margin-top:14px">${md(d.stem || "")}</div>
         <div class="options">
-          ${(d.options || []).map(o => `
-            <div class="option ${answers[i] ? "disabled" : ""} ${answers[i] && o.correct ? "correct" : ""} ${answers[i] && answers[i].sel === o.label && !answers[i].correct ? "wrong" : ""}" data-label="${o.label}">
+          ${(d.options || []).map(o => {
+            if (exam) {
+              const sel = a && a.sel === o.label;
+              return `<div class="option ${sel ? "sel" : ""}" data-label="${o.label}">
+                <span class="ol">${o.label}</span><span>${esc(o.text)}</span>
+              </div>`;
+            }
+            return `<div class="option ${a ? "disabled" : ""} ${a && o.correct ? "correct" : ""} ${a && a.sel === o.label && !a.correct ? "wrong" : ""}" data-label="${o.label}">
               <span class="ol">${o.label}</span><span>${esc(o.text)}</span>
-            </div>`).join("")}
+            </div>`;
+          }).join("")}
         </div>
         <div class="answer-bar">
           <button class="btn btn-sm" id="prev" ${i === 0 ? "disabled" : ""}>← 上一题</button>
           <button class="btn btn-sm" id="next">${i === docs.length - 1 ? "到交卷页" : "下一题 →"}</button>
+          ${exam ? `<button class="btn btn-sm ${marked[i] ? "btn-primary" : ""}" id="markBtn">⚑ ${marked[i] ? "取消标记" : "标记"}</button>` : ""}
           <button class="btn btn-sm btn-primary" id="finish" style="margin-left:auto">交卷</button>
           <button class="btn btn-sm" id="quitPaper" style="margin-left:8px;color:var(--ink-3)">退出</button>
         </div>
       </div>`;
 
-    $$(".paper-dot", body).forEach(dt => dt.onclick = () => show(+dt.dataset.i));
+    if (exam) {
+      bindCard();
+      const mb = $("#markBtn");
+      if (mb) mb.onclick = () => { marked[i] = !marked[i]; show(i); };
+    } else {
+      $$(".paper-dot", body).forEach(dt => dt.onclick = () => show(+dt.dataset.i));
+    }
     $$(".option", body).forEach(op => op.onclick = async () => {
-      if (answers[i]) return;
       const sel = op.dataset.label;
+      if (exam) {
+        // 考场模式：只记录选择、允许改答，不即时判分、不落库
+        answers[i] = (a && a.sel === sel) ? null : { sel, ms: Date.now() - startedAt };
+        show(i);
+        return;
+      }
+      if (answers[i]) return;
       const correctObj = (d.options || []).find(o => o.correct);
       const correct = correctObj ? sel === correctObj.label : false;
       answers[i] = { sel, correct, ms: Date.now() - startedAt };
@@ -2129,31 +2251,64 @@ async function runPaper(ids, opt = {}) {
     });
     $("#prev").onclick = () => show(i - 1);
     $("#next").onclick = () => i === docs.length - 1 ? summary() : show(i + 1);
-    $("#finish").onclick = summary;
+    $("#finish").onclick = () => summary();
     $("#quitPaper").onclick = async () => {
-      if (!(await confirmBox("退出将丢失本卷作答进度，确定退出？"))) return;
+      const msg = exam ? "退出将放弃本卷作答（考场模式不保留进度），确定退出？" : "退出将丢失本卷作答进度，确定退出？";
+      if (!(await confirmBox(msg))) return;
       clearInterval(timerH);
       document.onkeydown = null;
+      exitFullscreen();
       document.body.classList.remove("exam-mode");
       if (opt.onQuit) opt.onQuit();
       else location.hash = opt.exitHash || "#/home";
     };
-    // 键盘作答：1-4 / A-D 选择，←→ 翻题，Enter 下一题
+    // 键盘作答：1-4 / A-D 选择，←→ 翻题，Enter 下一题；考场模式 M 标记
     document.onkeydown = e => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
       const opts = $$(".option", body);
       const keyMap = { "1": 0, "2": 1, "3": 2, "4": 3, a: 0, b: 1, c: 2, d: 3 };
       const k = e.key.toLowerCase();
-      if (k in keyMap && opts[keyMap[k]] && !answers[i]) { opts[keyMap[k]].click(); e.preventDefault(); }
+      if (k in keyMap && opts[keyMap[k]] && (exam || !answers[i])) { opts[keyMap[k]].click(); e.preventDefault(); }
+      else if (exam && k === "m" && $("#markBtn")) { $("#markBtn").click(); e.preventDefault(); }
       else if (e.key === "ArrowRight" || e.key === "Enter") $("#next").click();
       else if (e.key === "ArrowLeft") $("#prev").click();
     };
   }
 
-  function summary(auto = false) {
+  async function summary(auto = false) {
     if (finished) return; finished = true;
     clearInterval(timerH);
     document.onkeydown = null;
+    exitFullscreen();
+    if (exam) {
+      // 交卷前未答二次确认（到时自动交卷不拦）
+      const blank = answers.filter(x => !(x && x.sel)).length;
+      if (!auto && blank > 0) {
+        const markedN = marked.filter(Boolean).length;
+        const extra = markedN ? `，其中 ${markedN} 题仍带标记` : "";
+        const go = await confirmBox(`还有 ${blank} 题未作答${extra}。实战中未答按错计分，确定交卷？`);
+        if (!go) { finished = false; timerH = setInterval(tick, 1000); return; }
+      }
+      // 延迟结算：逐题判定正确性 + 一次性批量落库（不再一题一判）
+      const items = [];
+      docs.forEach((doc, i) => {
+        const a = answers[i];
+        if (!a || !a.sel) return;
+        const correctObj = (doc.data.options || []).find(o => o.correct);
+        a.correct = correctObj ? a.sel === correctObj.label : false;
+        items.push({ doc_id: doc.id, selected: a.sel, correct: a.correct, ms: a.ms || 0 });
+      });
+      if (items.length) {
+        try {
+          const r = await api("/api/answer/batch", { items });
+          if (r && r.annihilated && r.annihilated.length) toast(`💥 错题歼灭 +${r.annihilated.length}`);
+        } catch (e) { /* 落库失败不阻断结算展示 */ }
+      }
+    }
+    renderSummary(auto);
+  }
+
+  function renderSummary(auto = false) {
     const done = answers.filter(Boolean);
     const ok = done.filter(a => a.correct).length;
     const unDone = answers.length - done.length;
@@ -2237,21 +2392,25 @@ async function runPaper(ids, opt = {}) {
           </div>`).join("")}
       </div>`;
     $("#rePaper").onclick = () => {
+      exitFullscreen();
       if (opt.onRestart) opt.onRestart();
       else renderPaper();
     };
     $("#backHome").onclick = () => {
+      exitFullscreen();
       document.body.classList.remove("exam-mode");
       location.hash = opt.exitHash || "#/home";
     };
     $$(".doc-item", body).forEach(el => el.onclick = () => {
       const doc = docs[+el.dataset.i];
+      exitFullscreen();
       document.body.classList.remove("exam-mode");
       location.hash = `#/doc/${doc.id}/ai`;
     });
   }
 
   show(0);
+  if (exam && opt.fullscreen) enterFullscreen();
 }
 
 /* =====================================================
@@ -2278,7 +2437,8 @@ async function renderExam() {
   </div>`;
 
   const quit = async () => {
-    if (!(await confirmBox("退出将丢失本卷作答进度，确定退出？"))) return;
+    if (!(await confirmBox("退出将放弃本卷作答（考场模式不保留进度），确定退出？"))) return;
+    exitFullscreen();
     document.body.classList.remove("exam-mode");
     sessionStorage.removeItem("goshore_exam");
     location.hash = "#/paper";
@@ -2297,7 +2457,7 @@ async function renderExam() {
       return;
     }
     const t = $("#examTitle");
-    if (t) t.textContent = `${r.name} · ${r.ids.length} 题 / ${r.minutes} 分钟`;
+    if (t) t.textContent = `${r.name} · ${r.ids.length} 题 / ${r.minutes} 分钟 · 答题卡模式`;
     runPaper(r.ids, {
       title: r.name,
       minutes: r.minutes,
@@ -2305,6 +2465,8 @@ async function renderExam() {
       fullScore: r.full_score || 0,
       container: $("#examBody"),
       exitHash: "#/paper",
+      examMode: true,        // 2.4 考场模式：答题卡 + 延迟结算
+      fullscreen: true,      // 桌面端全屏
       onRestart: startPaper,   // 再组一卷：留在考试页重抽
     });
     if (r.short && r.short.length) {

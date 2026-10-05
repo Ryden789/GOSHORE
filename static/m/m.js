@@ -1310,6 +1310,15 @@ async function renderPractice(auto = "") {
         <span class="chip on" data-n="10">10 题</span>
         <span class="chip" data-n="20">20 题</span>
       </div>
+      <div class="cfg-label" style="margin:12px 0 6px">限时 / 考场模式</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap" id="pMins">
+        <span class="chip on" data-min="0">不限时</span>
+        <span class="chip" data-min="15">15 分</span>
+        <span class="chip" data-min="30">30 分</span>
+        <span class="chip" data-min="60">60 分</span>
+        <span class="chip" id="examChip" data-exam="1">考场模式</span>
+      </div>
+      <div class="muted" style="font-size:12px;margin:8px 0 0">考场模式＝标准化答题卡 + 交卷统一判分（可选限时）</div>
       <div style="margin-top:14px"><button class="btn btn-primary btn-block" id="pGo">开始组卷</button></div>
     </div>
     <div class="card">
@@ -1370,6 +1379,12 @@ async function renderPractice(auto = "") {
     $$("[data-n]").forEach(x => x.classList.remove("on"));
     c.classList.add("on"); n = +c.dataset.n;
   });
+  let pMin = 0, pExam = false;
+  $$("#pMins .chip").forEach(c => c.onclick = () => {
+    if (c.id === "examChip") { pExam = !pExam; c.classList.toggle("on", pExam); return; }
+    $$("#pMins .chip").forEach(x => { if (x.id !== "examChip") x.classList.remove("on"); });
+    c.classList.add("on"); pMin = +c.dataset.min || 0;
+  });
   $$("#fTypes .chip").forEach(c => c.onclick = () => {
     $$("#fTypes .chip").forEach(x => x.classList.remove("on"));
     c.classList.add("on"); ftype = c.dataset.t;
@@ -1384,7 +1399,9 @@ async function renderPractice(auto = "") {
       const r = await api(path, { module: mod, n });
       if (!r.ids.length) return toast("该范围暂无真题");
       const label = pmode === "adaptive" ? "智能推题" : pmode === "sequential" ? "顺序练习" : "随机";
-      runPaper(r.ids, { title: mod ? `${mod} · ${label} ${n}题` : `${label} ${n} 题` });
+      runPaper(r.ids, pExam
+        ? { title: "考场模式", examMode: true, minutes: pMin }
+        : { title: mod ? `${mod} · ${label} ${n}题` : `${label} ${n} 题` });
     } finally {
       btn.disabled = false; btn.textContent = "开始组卷";
     }
@@ -1407,7 +1424,7 @@ async function renderPractice(auto = "") {
     try {
       const r = await api("/api/exam-paper", { exam });
       if (!r.ids.length) return toast("该套卷没有可用题目");
-      runPaper(r.ids, { title: r.name, minutes: r.minutes });
+      runPaper(r.ids, { title: r.name, minutes: r.minutes, examMode: true });
     } finally {
       const b = $("#examGo"); if (b) { b.disabled = false; b.textContent = "开始整卷"; }
     }
@@ -1466,14 +1483,17 @@ async function runPaper(ids, opt = {}) {
   inRun = true;
   runFrom = location.hash;
   Pomo.mount();
-  $("#mTitle").textContent = opt.title || "做题中";
+  const exam = !!opt.examMode;   // 考场模式：答题卡 + 延迟结算
+  $("#mTitle").textContent = opt.title || (exam ? "考场模式" : "做题中");
   view.innerHTML = `<div class="empty">题目加载中…</div>`;
   const res = await api("/api/docs/batch", { ids });
   const docs = res.items || [];
   if (!docs.length) { view.innerHTML = `<div class="empty">题目加载失败</div>`; return; }
 
   const answers = new Array(docs.length).fill(null);
+  const marked = new Array(docs.length).fill(false);   // 答题卡标记
   let cur = 0, t0 = Date.now(), qStart = Date.now();
+  let finished = false, warned5 = false, cardOpen = false, daub = false;
   const deadline = opt.minutes ? Date.now() + opt.minutes * 60000 : 0;
   let timerH = 0;
   function fmtRemain() {
@@ -1494,42 +1514,120 @@ async function runPaper(ids, opt = {}) {
       }
       el.textContent = fmtRemain();
       el.classList.toggle("urgent", deadline - Date.now() < 60000);
+      if (exam && !warned5 && deadline - Date.now() <= 5 * 60000) {
+        warned5 = true;
+        const blank = answers.filter(a => !(a && a.sel)).length;
+        toast(`⏰ 距交卷还有 5 分钟${blank ? `，尚有 ${blank} 题未作答` : ""}`, 5000);
+      }
     }, 1000);
   }
 
   let guessedNow = false;
+
+  /* ---------- 标准化答题卡（考场模式 · 功能 2.4） ---------- */
+  function cardStats() {
+    const answered = answers.filter(a => a && a.sel).length;
+    return { answered, blank: docs.length - answered, markedN: marked.filter(Boolean).length };
+  }
+  function cardHtml() {
+    const st = cardStats();
+    return `<div class="m-exam-card">
+      <div class="m-card-head">
+        <span class="ec-a">已答 ${st.answered}</span>
+        <span class="ec-b">未答 ${st.blank}</span>
+        <span class="ec-m">标记 ${st.markedN}</span>
+        <button class="btn btn-sm ${daub ? "btn-primary" : ""}" id="daubBtn">${daub ? "退出涂卡" : "涂卡录入"}</button>
+      </div>
+      ${daub ? `<div class="exam-daub">
+        ${docs.map((_, i) => {
+          const a = answers[i];
+          return `<div class="daub-row">
+            <span class="daub-n">${i + 1}</span>
+            <span class="daub-opts">${(docs[i].data.options || []).map(o =>
+              `<b class="daub-o ${a && a.sel === o.label ? "on" : ""}" data-i="${i}" data-l="${esc(o.label)}">${esc(o.label)}</b>`).join("")}</span>
+          </div>`;
+        }).join("")}
+      </div>`
+      : `<div class="m-card-grid">
+        ${docs.map((_, i) => {
+          const a = answers[i];
+          const cls = [i === cur ? "cur" : "", a && a.sel ? "done" : "blank", marked[i] ? "mark" : ""].filter(Boolean).join(" ");
+          return `<span class="ec-cell ${cls}" data-i="${i}">${i + 1}${a && a.sel ? `<i>${esc(a.sel)}</i>` : ""}</span>`;
+        }).join("")}
+      </div>`}
+    </div>`;
+  }
+  function bindCard() {
+    $$(".ec-cell").forEach(c => c.onclick = () => { cardOpen = true; show(+c.dataset.i); });
+    $$(".daub-o").forEach(b => b.onclick = () => {
+      const i = +b.dataset.i;
+      answers[i] = { sel: b.dataset.l, ms: answers[i] ? answers[i].ms : 0 };
+      show(cur);
+    });
+    const db = $("#daubBtn");
+    if (db) db.onclick = () => { daub = !daub; show(cur); };
+  }
+
+  function pick(el) {
+    const i = cur, sel = el.dataset.label;
+    answers[i] = (answers[i] && answers[i].sel === sel) ? null : { sel, ms: Date.now() - qStart };
+    show(i);
+  }
+
   function show(i) {
     cur = i; qStart = Date.now();
     guessedNow = false;
     const doc = docs[i], d = doc.data;
+    const a = answers[i];
     view.innerHTML = `
       <div class="qhead">
         <button class="run-exit" id="runExit">‹ 退出</button>
         <span class="prog">第 ${i + 1} / ${docs.length} 题</span>
         ${deadline ? `<span class="paper-timer" id="paperTimer">${fmtRemain()}</span>` : `<span class="tag">${esc(doc.kaodian || doc.module || "")}</span>`}
+        ${exam ? `<button class="run-card-btn" id="cardBtn">${cardOpen ? "收起卡" : "答题卡"}</button>` : ""}
       </div>
+      ${exam && cardOpen ? cardHtml() : ""}
       ${d.material ? `<details class="material" open>
         <summary>本则资料 · 点击折叠/展开</summary>
         <div class="mat-body">${d.material}</div>
       </details>` : ""}
       <div class="stem">${normalizeStem(d.stem || "")}</div>
-      ${(d.options || []).map(o => `
-        <div class="opt" data-label="${o.label}">
+      ${(d.options || []).map(o => {
+        if (exam) {
+          const sel = a && a.sel === o.label;
+          return `<div class="opt ${sel ? "sel" : ""}" data-label="${o.label}">
+            <span class="ol">${o.label}</span><div class="opt-text">${rich(o.text)}</div>
+          </div>`;
+        }
+        return `<div class="opt" data-label="${o.label}">
           <span class="ol">${o.label}</span><div class="opt-text">${rich(o.text)}</div>
-        </div>`).join("")}
+        </div>`;
+      }).join("")}
       <div class="run-mini-actions">
-        <button class="btn btn-ghost" id="guessBtn">⚑ 蒙的</button>
+        ${exam
+          ? `<button class="btn btn-ghost ${marked[i] ? "on" : ""}" id="markBtn">⚑ ${marked[i] ? "已标记" : "标记"}</button>`
+          : `<button class="btn btn-ghost" id="guessBtn">⚑ 蒙的</button>`}
         <button class="btn btn-ghost" id="skipBtn">⏭ 跳过</button>
+        ${exam ? `<button class="btn btn-primary" id="finishBtn">交卷</button>` : ""}
       </div>
       <div id="anaBox"></div>`;
     animIn(view);
     $("#runExit").onclick = exitRun;
-    $$(".opt").forEach(el => el.onclick = () => judge(el, doc, d));
-    $("#guessBtn").onclick = () => {
-      guessedNow = !guessedNow;
-      $("#guessBtn").classList.toggle("on", guessedNow);
-    };
+    if (exam) {
+      bindCard();
+      const cb = $("#cardBtn"); if (cb) cb.onclick = () => { cardOpen = !cardOpen; show(cur); };
+      const mb = $("#markBtn"); if (mb) mb.onclick = () => { marked[i] = !marked[i]; show(i); };
+      const fb = $("#finishBtn"); if (fb) fb.onclick = () => summary();
+      $$(".opt").forEach(el => el.onclick = () => pick(el));
+    } else {
+      $$(".opt").forEach(el => el.onclick = () => judge(el, doc, d));
+      $("#guessBtn").onclick = () => {
+        guessedNow = !guessedNow;
+        $("#guessBtn").classList.toggle("on", guessedNow);
+      };
+    }
     $("#skipBtn").onclick = () => {
+      if (exam) { if (cur + 1 < docs.length) show(cur + 1); else summary(); return; }
       answers[cur] = { skip: true, ms: Date.now() - qStart };
       if (opt.daily) { Pref.set("dskip", todayStr()); DAILY_DONE = true; }
       if (cur + 1 < docs.length) show(cur + 1); else summary();
@@ -1571,14 +1669,45 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
     $("#nextBtn").scrollIntoView({ block: "nearest" });
   }
 
-  function summary() {
+  async function summary() {
+    if (finished) return; finished = true;
     clearInterval(timerH);
     Pomo.unmount();
+    if (exam) {
+      // 未答二次确认
+      const blank = answers.filter(x => !(x && x.sel)).length;
+      if (blank > 0) {
+        const markedN = marked.filter(Boolean).length;
+        const extra = markedN ? `，其中 ${markedN} 题仍带标记` : "";
+        if (!confirm(`还有 ${blank} 题未作答${extra}。实战中未答按错计分，确定交卷？`)) {
+          finished = false; startTimer(); return;
+        }
+      }
+      // 延迟结算：逐题判定 + 一次性批量落库
+      const items = [];
+      docs.forEach((doc, i) => {
+        const a = answers[i];
+        if (!a || !a.sel) return;
+        a.correct = !!(doc.data.options || []).find(o => o.label === a.sel && o.correct);
+        items.push({ doc_id: doc.id, selected: a.sel, correct: a.correct, ms: a.ms || 0 });
+      });
+      if (items.length) {
+        try {
+          const r = await api("/api/answer/batch", { items });
+          if (r && r.annihilated && r.annihilated.length) toast(`💥 错题歼灭 +${r.annihilated.length}`);
+        } catch (e) { /* 落库失败不阻断结算 */ }
+      }
+    }
+    renderSummary();
+  }
+
+  function renderSummary() {
     const skippedN = answers.filter(a => a && a.skip).length;
     const judgedN = docs.length - skippedN;
     const ok = answers.filter(a => a && a.correct).length;
     const used = Math.round((Date.now() - t0) / 1000);
     const wrongIdx = answers.map((a, i) => a && !a.correct && !a.skip ? i : -1).filter(i => i >= 0);
+    const blankIdx = answers.map((a, i) => (!a || !a.sel) && !(a && a.skip) ? i : -1).filter(i => i >= 0);
     view.innerHTML = `
       <div class="card result-card run-result">
         <div class="muted">${esc(opt.title || "本次练习")}</div>
@@ -1589,15 +1718,23 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
           <span><b>${docs.length}</b> 总题数</span>
           <span><b>${ok}</b> 答对</span>
           <span><b>${wrongIdx.length}</b> 答错</span>
-          <span><b>${skippedN}</b> 跳过</span>
+          ${exam ? `<span><b>${blankIdx.length}</b> 未答</span>` : `<span><b>${skippedN}</b> 跳过</span>`}
         </div>
         ${skippedN ? `<div class="muted" style="margin-top:6px">⏭ 已跳过 ${skippedN} 题（不计入正确率）</div>` : ""}
+        ${exam && blankIdx.length ? `<div class="muted" style="margin-top:6px">○ 未作答 ${blankIdx.length} 题（按错计分）</div>` : ""}
       </div>
       ${wrongIdx.length ? `<h2 class="sec">错题回顾（${wrongIdx.length}）</h2>` +
         wrongIdx.map(i => `
           <div class="item run-wrong-item">
             <b>${esc(docs[i].title || "")}</b>
             <div class="meta">${esc(docs[i].kaodian || "")} · 你选 ${answers[i].sel}，正确 ${(docs[i].data.options.find(o => o.correct) || {}).label}</div>
+            <button class="btn btn-sm run-review" data-i="${i}">查看解析</button>
+          </div>`).join("") : ""}
+      ${exam && blankIdx.length ? `<h2 class="sec">未作答（${blankIdx.length}）</h2>` +
+        blankIdx.map(i => `
+          <div class="item run-wrong-item">
+            <b>${esc(docs[i].title || "")}</b>
+            <div class="meta">${esc(docs[i].kaodian || "")} · 正确 ${(docs[i].data.options.find(o => o.correct) || {}).label}</div>
             <button class="btn btn-sm run-review" data-i="${i}">查看解析</button>
           </div>`).join("") : ""}
       <div class="run-result-actions">

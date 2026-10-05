@@ -474,6 +474,49 @@ input, select, textarea { font-family: var(--sans); }
 .paper-dot.ok { background: var(--bamboo-soft); border-color: var(--bamboo); color: var(--bamboo); }
 .paper-dot.no { background: var(--cinnabar-soft); border-color: var(--cinnabar); color: var(--cinnabar); }
 
+/* ===== 标准化答题卡（考场模式 · 功能 2.4） ===== */
+.option.sel { border-color: var(--indigo); background: #eef2fb; }
+.option.sel .ol { color: var(--indigo); }
+.exam-card {
+  margin-top: 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: #fff; padding: 10px 12px;
+}
+.exam-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.exam-card-title { font-weight: 700; font-family: var(--serif); letter-spacing: 1px; }
+.exam-card-stats { display: flex; gap: 10px; font-size: 12.5px; font-family: var(--mono); }
+.exam-card-stats .ec-a { color: var(--bamboo); }
+.exam-card-stats .ec-b { color: var(--cinnabar); }
+.exam-card-stats .ec-m { color: var(--amber); }
+.exam-card-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 6px; margin-top: 10px; max-height: 220px; overflow: auto;
+}
+.ec-cell {
+  position: relative; min-height: 34px; border: 1px solid var(--line); border-radius: 5px;
+  display: grid; place-items: center; font-size: 12.5px; cursor: pointer; background: #fff;
+  font-family: var(--mono); user-select: none;
+}
+.ec-cell:hover { border-color: var(--indigo); }
+.ec-cell.done { background: var(--bamboo-soft); border-color: var(--bamboo); color: var(--bamboo); }
+.ec-cell.blank { background: #fff; color: var(--ink-3); }
+.ec-cell.mark::after {
+  content: ""; position: absolute; top: 2px; right: 2px;
+  width: 0; height: 0; border-top: 7px solid var(--amber); border-left: 7px solid transparent;
+}
+.ec-cell.cur { outline: 2px solid var(--cinnabar); outline-offset: -2px; }
+.ec-cell i { font-style: normal; font-size: 10px; margin-left: 2px; }
+.exam-daub { margin-top: 10px; max-height: 300px; overflow: auto; }
+.daub-row { display: flex; align-items: center; gap: 10px; padding: 3px 2px; border-bottom: 1px dashed var(--line); }
+.daub-n { width: 30px; text-align: right; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); }
+.daub-opts { display: flex; gap: 6px; }
+.daub-o {
+  width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 50%;
+  display: grid; place-items: center; font-size: 12px; cursor: pointer; font-weight: 600;
+  color: var(--ink-2); background: #fff;
+}
+.daub-o:hover { border-color: var(--indigo); color: var(--indigo); }
+.daub-o.on { background: var(--indigo); border-color: var(--indigo); color: #fff; }
+
 /* ============ 速算 ============ */
 .speed-config { display: flex; flex-direction: column; gap: 16px; }
 .cfg-group .cfg-label { font-weight: 700; margin-bottom: 8px; font-family: var(--serif); letter-spacing: 1px; }
