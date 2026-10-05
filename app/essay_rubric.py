@@ -413,6 +413,31 @@ def parse_grade_json(raw: str) -> dict | None:
     }
 
 
+def enrich_dims(p: dict, category: str, total: int) -> None:
+    """按题型预设补齐 dims 的满分（full）并统一顺序（原地修改）。
+
+    AI 只返回各维度得分，满分由后端按权重算出，避免模型算错。
+    AI 未返回任何维度时不做处理。
+    """
+    got = {d.get("name", ""): d for d in (p.get("dims") or [])}
+    if not got:
+        return
+    out: list[dict] = []
+    for d in dims_for(category):
+        full = round(total * d["weight"] / 100, 1)
+        g = got.get(d["name"])
+        if g is None:                       # 名称微调时模糊匹配
+            g = next((v for k, v in got.items()
+                      if k and (k in d["name"] or d["name"] in k)), None)
+        out.append({
+            "name": d["name"],
+            "full": full,
+            "score": round(min(full, max(0.0, _num((g or {}).get("score")))), 1),
+            "comment": (g or {}).get("comment", ""),
+        })
+    p["dims"] = out
+
+
 def render_grade_markdown(p: dict, total: int) -> str:
     """把结构化批改结果渲染成 Markdown（用于历史记录展示 / 降级兜底）。"""
     out = [f"## 总分：{_num(p.get('score')):g} / {total}分"]
@@ -433,11 +458,12 @@ def render_grade_markdown(p: dict, total: int) -> str:
                 note.replace("\n", " ")))
 
     if p.get("dims"):
-        out += ["", "## 四维评分", "| 维度 | 得分 | 评语 |", "|---|---|---|"]
+        out += ["", "## 四维评分", "| 维度 | 得分 | 满分 | 评语 |", "|---|---|---|---|"]
         for d in p["dims"]:
-            out.append("| {} | {} | {} |".format(
+            out.append("| {} | {} | {} | {} |".format(
                 (d.get("name") or "").replace("|", "｜"),
                 f"{_num(d.get('score')):g}",
+                f"{_num(d.get('full')):g}",
                 (d.get("comment") or "").replace("|", "｜").replace("\n", " ")))
 
     if p.get("problems"):

@@ -3880,6 +3880,113 @@ async function renderHistory() {
    AI 批改（申论 / 综应）
 ===================================================== */
 
+/* ---- 批改 2.0：结构化结果渲染 ---- */
+const GRADE_ST = {
+  "命中": ["hit", "✅ 命中"],
+  "部分命中": ["part", "🟡 部分命中"],
+  "缺失": ["miss", "❌ 缺失"],
+};
+
+function gradeRing(score, total) {
+  const r = 34, c = 2 * Math.PI * r;
+  const pct = total > 0 ? Math.max(0, Math.min(1, score / total)) : 0;
+  const color = pct >= 0.8 ? "var(--bamboo)" : pct >= 0.6 ? "var(--amber)" : "var(--cinnabar)";
+  return `<svg class="gr-ring" width="84" height="84" viewBox="0 0 84 84">
+    <circle cx="42" cy="42" r="${r}" fill="none" stroke="var(--line)" stroke-width="7"/>
+    <circle cx="42" cy="42" r="${r}" fill="none" stroke="${color}" stroke-width="7"
+      stroke-linecap="round" stroke-dasharray="${(c * pct).toFixed(1)} ${c.toFixed(1)}"
+      transform="rotate(-90 42 42)"/>
+    <text x="42" y="47" text-anchor="middle" font-size="17" font-weight="700" fill="${color}">${Math.round(pct * 100)}%</text>
+  </svg>`;
+}
+
+function gradeResultHtml(d, total) {
+  const score = Number(d.score || 0);
+  const pts = d.points || [], dims = d.dims || [];
+  const hit = pts.filter(p => p.status === "命中").length;
+  const part = pts.filter(p => p.status === "部分命中").length;
+  const miss = pts.filter(p => p.status === "缺失").length;
+
+  const card = `<div class="gr-score">
+    ${gradeRing(score, total)}
+    <div style="flex:1;min-width:0">
+      <div class="gr-score-num">${score} <span>/ ${total} 分</span></div>
+      ${d.level ? `<div class="gr-level">${esc(d.level)}</div>` : ""}
+      ${d.summary ? `<div class="gr-summary">${esc(d.summary)}</div>` : ""}
+      ${pts.length ? `<div class="gr-trend-legend">要点 ${pts.length} 个：命中 ${hit} · 部分命中 ${part} · 缺失 ${miss}</div>` : ""}
+    </div>
+  </div>`;
+
+  const table = pts.length ? `<div class="gr-sec">要点命中表</div>
+    <table class="gr-table">
+      <thead><tr><th style="width:24%">得分点</th><th style="width:15%">状态</th><th style="width:11%">得分</th><th>评语</th></tr></thead>
+      <tbody>${pts.map(p => {
+        const [cls, txt] = GRADE_ST[p.status] || GRADE_ST["缺失"];
+        return `<tr class="gr-tr-${cls}">
+          <td>${esc(p.name)}</td>
+          <td class="gr-st gr-st-${cls}">${txt}</td>
+          <td>${p.score}${p.full ? ` / ${p.full}` : ""}</td>
+          <td>${esc(p.comment || "")}${p.evidence ? `<span class="gr-ev">依据：${esc(p.evidence)}</span>` : ""}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>` : "";
+
+  const dimsHtml = dims.length ? `<div class="gr-sec">四维评分</div>
+    <div class="gr-dims">${dims.map(dd => {
+      const full = dd.full || 0;
+      const pct = full > 0 ? Math.max(0, Math.min(100, Math.round(dd.score / full * 100))) : 0;
+      const color = pct >= 80 ? "var(--bamboo)" : pct >= 60 ? "var(--amber)" : "var(--cinnabar)";
+      return `<div class="gr-dim">
+        <span class="gr-dim-name">${esc(dd.name)}</span>
+        <span class="gr-dim-bar"><i style="width:${pct}%;background:${color}"></i></span>
+        <span class="gr-dim-num">${dd.score}${full ? ` / ${full}` : ""}</span>
+        ${dd.comment ? `<span class="gr-dim-cmt">${esc(dd.comment)}</span>` : ""}
+      </div>`;
+    }).join("")}</div>` : "";
+
+  const prob = (d.problems && d.problems.length)
+    ? `<div class="gr-sec">主要问题</div><ol class="gr-ol">${d.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+  const sug = (d.suggestions && d.suggestions.length)
+    ? `<div class="gr-sec">修改建议</div><ol class="gr-ol">${d.suggestions.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+  const rw = (d.rewrite && d.rewrite.revised) ? `<div class="gr-sec">修改示范</div>
+    <div class="gr-rw">
+      ${d.rewrite.original ? `<div class="gr-rw-old">${esc(d.rewrite.original)}</div>` : ""}
+      <div class="gr-rw-new">${esc(d.rewrite.revised)}</div>
+      ${d.rewrite.note ? `<div class="gr-rw-note">${esc(d.rewrite.note)}</div>` : ""}
+    </div>` : "";
+
+  return card + table + dimsHtml + prob + sug + rw;
+}
+
+function trendSvg(items) {
+  if (!items || !items.length) {
+    return `<div style="color:var(--ink-3);font-size:13px;padding:8px 0">暂无批改记录，完成一次批改后这里会显示提分曲线</div>`;
+  }
+  const W = 620, H = 150, PL = 40, PR = 14, PT = 14, PB = 26;
+  const iw = W - PL - PR, ih = H - PT - PB, n = items.length;
+  const X = i => PL + (n === 1 ? iw / 2 : iw * i / (n - 1));
+  const Y = r => PT + ih * (1 - Math.max(0, Math.min(1, r)));
+  const pts = items.map((it, i) => [X(i), Y(it.rate)]);
+  const line = pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+  const area = `${PL},${PT + ih} ${line} ${(PL + iw).toFixed(1)},${PT + ih}`;
+  const grid = [0, 0.5, 1].map(r => {
+    const y = Y(r).toFixed(1);
+    return `<line x1="${PL}" y1="${y}" x2="${PL + iw}" y2="${y}" stroke="var(--line-soft)" stroke-width="1"/>
+      <text x="${PL - 6}" y="${(+y + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--ink-3)">${Math.round(r * 100)}%</text>`;
+  }).join("");
+  const dots = pts.map((p, i) => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3" fill="#fff" stroke="var(--cinnabar)" stroke-width="2"><title>${items[i].score}/${items[i].total}（${Math.round(items[i].rate * 100)}%）</title></circle>`).join("");
+  const first = items[0], last = items[n - 1];
+  const delta = Math.round((last.rate - first.rate) * 100);
+  const dtxt = n < 2 ? "" : (delta >= 0 ? `较首次提升 ${delta} 个百分点` : `较首次下降 ${Math.abs(delta)} 个百分点`);
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px">
+    ${grid}
+    <polygon points="${area}" fill="var(--cinnabar-soft)" opacity=".6"/>
+    <polyline points="${line}" fill="none" stroke="var(--cinnabar)" stroke-width="2" stroke-linejoin="round"/>
+    ${dots}
+  </svg>
+  <div class="gr-trend-legend">共 ${n} 次批改${dtxt ? " · " + dtxt : ""}（纵轴为得分率，悬停圆点看具体分数）</div>`;
+}
+
 async function renderGrade() {
   const [rub, hist, qs] = await Promise.all([
     api("/api/essay/rubrics"),
@@ -3890,7 +3997,7 @@ async function renderGrade() {
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">AI 批改 · 申论 / 综应</h1>
-      <p class="page-desc">按真实阅卷规则批改：小题踩点给分、作文按档赋分 · 可从真题库选题，也可自行粘贴</p>
+      <p class="page-desc">按真实阅卷规则批改：要点逐条命中判定 + 四维评分 + 改写示范 · 可从真题库选题，也可自行粘贴</p>
     </div>
     <div class="panel rise rise-1">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
@@ -3913,6 +4020,16 @@ async function renderGrade() {
       </div>
     </div>
     <div id="gOut"></div>
+    <div class="panel rise rise-2" style="margin-top:18px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+        <h3 style="margin:0">📈 提分曲线</h3>
+        <select id="gTrendCat" style="padding:6px 10px;font-size:13px">
+          <option value="">全部题型</option>
+          ${rub.items.map(r => `<option value="${r.key}">${esc(r.name)}</option>`).join("")}
+        </select>
+      </div>
+      <div id="gTrend" class="gr-trend"></div>
+    </div>
     <div class="panel rise rise-2" style="margin-top:18px">
       <h3 style="margin:0 0 8px">批改记录</h3>
       <div id="gHist"></div>
@@ -3986,13 +4103,38 @@ async function renderGrade() {
       : `<div style="color:var(--ink-3);font-size:13px">暂无批改记录</div>`);
     $$(".gh-item").forEach(el => el.onclick = async () => {
       const d = await api("/api/essay/history/" + el.dataset.id);
+      let struct = null;
+      try {
+        const pts = JSON.parse(d.points_json || "[]");
+        const dims = JSON.parse(d.dims_json || "[]");
+        const rw = JSON.parse(d.rewrite_json || "{}");
+        if (pts.length || dims.length) {
+          const lines = (d.result || "").split("\n");
+          struct = { score: d.score || 0, level: d.level || "",
+            summary: (lines[1] || "").replace(/^（/, "").replace(/）$/, ""),
+            points: pts, dims, problems: [], suggestions: [], rewrite: rw };
+        }
+      } catch (e) { /* 旧记录无结构化字段 */ }
+      const inner = struct
+        ? gradeResultHtml(struct, d.total_score || 0)
+        : `<div class="sz-content">${md(d.result)}</div>`;
       $("#gOut").innerHTML = `<div class="panel" style="border-left:4px solid var(--indigo);margin-top:14px">
         <div style="font-size:12.5px;color:var(--ink-3);margin-bottom:6px">历史批改 · ${new Date(d.created_at * 1000).toLocaleString("zh-CN")}</div>
-        <div class="sz-content">${md(d.result)}</div></div>`;
+        ${inner}</div>`;
       window.scrollTo({ top: $("#gOut").offsetTop - 70, behavior: "smooth" });
     });
   }
   drawHist();
+
+  async function drawTrend() {
+    const cat = $("#gTrendCat").value;
+    try {
+      const t = await api("/api/essay/trend?category=" + encodeURIComponent(cat) + "&limit=40");
+      $("#gTrend").innerHTML = trendSvg(t.items);
+    } catch (e) { $("#gTrend").innerHTML = ""; }
+  }
+  $("#gTrendCat").onchange = drawTrend;
+  drawTrend();
 
   let busy = false;
   $("#gGo").onclick = async () => {
@@ -4003,13 +4145,14 @@ async function renderGrade() {
     $("#gOut").innerHTML = `<div class="panel" style="margin-top:14px;border-left:4px solid var(--cinnabar)"><div class="sz-content" id="gRes"></div></div>`;
     const box = $("#gRes");
     box.classList.add("cursor-blink");
-    let full = "";
+    let full = "", lastData = null;
     try {
       const r = await fetch("/api/essay/grade", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           category: catSel.value, question, answer,
           material: $("#gM").value.trim(),
+          reference: curRef,
           total_score: parseInt(totalIn.value) || 0,
         }),
       });
@@ -4026,14 +4169,25 @@ async function renderGrade() {
           const line = f.split("\n").find(l => l.startsWith("data:"));
           if (!line) continue;
           const ev = JSON.parse(line.slice(5).trim());
-          if (ev.type === "delta") { full += ev.text; box.innerHTML = md(full); }
+          if (ev.type === "phase") { $("#gTip").textContent = ev.text; }
+          else if (ev.type === "result") {
+            lastData = ev.data;
+            box.classList.remove("cursor-blink");
+            box.classList.remove("sz-content");
+            box.innerHTML = gradeResultHtml(ev.data, ev.total);
+          }
+          else if (ev.type === "fallback") { full = ev.text; box.innerHTML = md(full); }
+          else if (ev.type === "delta") { full += ev.text; box.innerHTML = md(full); }
           else if (ev.type === "error") { full += `\n\n**⚠ ${ev.text}**`; box.innerHTML = md(full); }
           else if (ev.type === "saved") {
-            const mScore = full.match(/总分[：:]\s*(\d+(?:\.\d+)?)/);
+            let score = 0, total = parseInt(totalIn.value) || 0;
+            if (lastData) { score = Number(lastData.score || 0); total = lastData.total || total; }
+            else { const m = full.match(/总分[：:]\s*(\d+(?:\.\d+)?)/); score = m ? +m[1] : 0; }
             hist.items.unshift({ id: +ev.text, category: catSel.value, question,
-              total_score: parseInt(totalIn.value) || 0, score: mScore ? +mScore[1] : 0,
-              summary: full.split("\n")[0].slice(0, 60), created_at: Date.now() / 1000 });
-            drawHist();
+              total_score: total, score, level: lastData ? (lastData.level || "") : "",
+              summary: lastData ? (lastData.summary || "").slice(0, 60) : full.split("\n")[0].slice(0, 60),
+              created_at: Date.now() / 1000 });
+            drawHist(); drawTrend();
           }
         }
       }

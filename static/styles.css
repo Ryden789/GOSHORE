@@ -906,3 +906,39 @@ body.exam-mode .view {
 .rp-sub { font-size: 14px; font-weight: 400; color: var(--ink-3); }
 .rp-sub2 { font-size: 12px; color: var(--ink-3); }
 
+
+/* ===== 批改 2.0：结构化结果 ===== */
+.gr-score { display: flex; align-items: center; gap: 18px; padding: 14px 16px; background: var(--paper-2); border-radius: 10px; margin-bottom: 14px; }
+.gr-ring { flex: 0 0 auto; }
+.gr-score-num { font-size: 30px; font-weight: 700; font-family: var(--serif); color: var(--ink); line-height: 1.1; }
+.gr-score-num span { font-size: 14px; font-weight: 400; color: var(--ink-3); }
+.gr-level { display: inline-block; margin: 4px 0; padding: 1px 9px; font-size: 12.5px; border-radius: 20px; background: var(--indigo-soft); color: var(--indigo); }
+.gr-summary { font-size: 13.5px; color: var(--ink-2); line-height: 1.65; margin-top: 4px; }
+.gr-sec { font-size: 14px; font-weight: 700; color: var(--ink); margin: 16px 0 8px; font-family: var(--serif); }
+.gr-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.gr-table th { text-align: left; font-weight: 600; color: var(--ink-3); font-size: 12px; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+.gr-table td { padding: 7px 8px; border-bottom: 1px solid var(--line-soft); color: var(--ink-2); vertical-align: top; line-height: 1.6; }
+.gr-st { white-space: nowrap; font-size: 12px; font-weight: 600; }
+.gr-st-hit { color: var(--bamboo); }
+.gr-st-part { color: var(--amber); }
+.gr-st-miss { color: var(--cinnabar); }
+.gr-tr-hit { background: rgba(92,113,83,.06); }
+.gr-tr-part { background: rgba(176,124,36,.07); }
+.gr-tr-miss { background: rgba(176,58,46,.05); }
+.gr-ev { display: block; font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+.gr-dims { display: flex; flex-direction: column; gap: 8px; }
+.gr-dim { display: flex; align-items: center; gap: 10px; font-size: 13px; flex-wrap: wrap; }
+.gr-dim-name { flex: 0 0 96px; color: var(--ink-2); }
+.gr-dim-bar { flex: 1; height: 9px; background: var(--line-soft); border-radius: 5px; overflow: hidden; }
+.gr-dim-bar > i { display: block; height: 100%; border-radius: 5px; }
+.gr-dim-num { flex: 0 0 auto; font-size: 12.5px; color: var(--ink-3); min-width: 46px; text-align: right; }
+.gr-dim-cmt { flex: 1 1 100%; font-size: 12px; color: var(--ink-3); padding-left: 106px; margin-top: -2px; line-height: 1.6; }
+.gr-ol { margin: 0; padding-left: 20px; font-size: 13.5px; color: var(--ink-2); line-height: 1.85; }
+.gr-rw { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.gr-rw-old { padding: 10px 13px; background: var(--indigo-soft); color: var(--indigo); font-size: 13.5px; line-height: 1.75; }
+.gr-rw-old::before { content: "原文（待改进）"; display: block; font-size: 11.5px; color: var(--ink-3); margin-bottom: 4px; }
+.gr-rw-new { padding: 10px 13px; background: var(--cinnabar-soft); color: var(--cinnabar-deep); font-size: 13.5px; line-height: 1.75; }
+.gr-rw-new::before { content: "改写示范（新增/优化）"; display: block; font-size: 11.5px; color: var(--ink-3); margin-bottom: 4px; }
+.gr-rw-note { padding: 8px 13px; font-size: 12.5px; color: var(--ink-3); border-top: 1px dashed var(--line); line-height: 1.6; }
+.gr-trend { padding: 6px 0 0; }
+.gr-trend-legend { font-size: 12px; color: var(--ink-3); margin-top: 4px; }

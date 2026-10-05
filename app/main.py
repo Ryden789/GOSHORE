@@ -1213,11 +1213,17 @@ class EssayGradeIn(BaseModel):
     question: str
     material: str = ""
     answer: str
+    reference: str = ""       # 参考答案（真题库带出），空则 AI 自拟要点
     total_score: int = 0      # 0 = 用题型默认满分
+
+
+def _sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
 @app.post("/api/essay/grade")
 async def api_essay_grade(b: EssayGradeIn):
+    """批改 2.0：结构化 JSON（要点命中表 + 四维评分 + 改写示范），解析失败降级为纯文本。"""
     r = essay_rubric.RUBRICS.get(b.category)
     if not r:
         raise HTTPException(400, "未知题型")
@@ -1225,36 +1231,47 @@ async def api_essay_grade(b: EssayGradeIn):
         raise HTTPException(400, "题目与作答均不能为空")
     total = b.total_score if 10 <= b.total_score <= 100 else r["default_score"]
 
-    user = (
-        f"请批改下面这份作答。题型：{r['name']}，满分 {total} 分。\n\n"
-        f"【评分细则】\n{r['rubric']}\n\n"
-        f"{essay_rubric.OUTPUT_SPEC.replace('{total}', str(total))}\n\n"
-        f"【题目】\n{b.question.strip()[:3000]}\n\n"
-    )
-    if b.material.strip():
-        user += f"【给定材料】\n{b.material.strip()[:8000]}\n\n"
-    else:
-        user += "【给定材料】（考生未提供，请基于题目与作答本身批改，并在总评中注明缺材料可能影响要点判定）\n\n"
-    user += f"【考生作答】\n{b.answer.strip()[:8000]}"
-
-    messages = [
-        {"role": "system", "content": essay_rubric.SYSTEM_PROMPT},
-        {"role": "user", "content": user},
-    ]
+    messages = essay_rubric.build_grade_messages(
+        b.category, total, b.question, b.material, b.answer, b.reference)
 
     buffer: list[str] = []
 
     async def gen():
+        yield _sse({"type": "phase", "text": "正在拆解得分点并逐条评分…"})
         async for kind, payload in ai.stream_chat_with_temp(messages, 0.2):
             if kind == "delta":
                 buffer.append(payload)
-            yield f"data: {json.dumps({'type': kind, 'text': payload}, ensure_ascii=False)}\n\n"
-        result = "".join(buffer).strip()
-        if result:
-            gid = db.save_essay_grade(b.category, b.question, b.answer, total, result)
-            yield f"data: {json.dumps({'type': 'saved', 'text': str(gid)}, ensure_ascii=False)}\n\n"
+            elif kind == "error":
+                yield _sse({"type": "error", "text": payload})
+                return
+        raw = "".join(buffer).strip()
+        parsed = essay_rubric.parse_grade_json(raw)
+        if parsed:
+            parsed["score"] = max(0.0, min(float(total), float(parsed.get("score") or 0)))
+            essay_rubric.enrich_dims(parsed, b.category, total)
+            md_text = essay_rubric.render_grade_markdown(parsed, total)
+            gid = db.save_essay_grade(
+                b.category, b.question, b.answer, total, md_text,
+                score=parsed["score"], level=parsed.get("level", ""),
+                points_json=json.dumps(parsed["points"], ensure_ascii=False),
+                dims_json=json.dumps(parsed["dims"], ensure_ascii=False),
+                rewrite_json=json.dumps(parsed["rewrite"], ensure_ascii=False))
+            yield _sse({"type": "result", "data": parsed, "total": total})
+            yield _sse({"type": "saved", "text": str(gid)})
+        elif raw:
+            gid = db.save_essay_grade(b.category, b.question, b.answer, total, raw)
+            yield _sse({"type": "fallback", "text": raw})
+            yield _sse({"type": "saved", "text": str(gid)})
+        else:
+            yield _sse({"type": "error", "text": "批改未返回内容，请重试"})
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/essay/trend")
+def api_essay_trend(category: str = "", limit: int = 30):
+    """历史提分曲线：按题型（可选）返回历次批改得分率。"""
+    return {"items": db.essay_score_trend(category, limit)}
 
 
 @app.get("/api/essay/history")

@@ -2843,14 +2843,22 @@ def _parse_grade_score(result: str) -> float:
 
 
 def save_essay_grade(category: str, question: str, answer: str,
-                     total_score: int, result: str) -> int:
+                     total_score: int, result: str, score: float | None = None,
+                     level: str = "", points_json: str = "", dims_json: str = "",
+                     rewrite_json: str = "") -> int:
+    """保存批改记录。score 为空时从 result 文本解析（兼容纯文本降级）。"""
     conn = connect()
     _ensure_grade_score(conn)
+    if score is None:
+        score = _parse_grade_score(result)
     cur = conn.execute(
-        "INSERT INTO essay_grades(category,question,answer,total_score,result,score,created_at)"
-        " VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO essay_grades"
+        "(category,question,answer,total_score,result,score,level,"
+        "points_json,dims_json,rewrite_json,created_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (category, question[:2000], answer[:8000], total_score, result,
-         _parse_grade_score(result), time.time()))
+         float(score or 0), level or "", points_json or "", dims_json or "",
+         rewrite_json or "", time.time()))
     conn.commit()
     gid = cur.lastrowid
     conn.close()
@@ -2861,8 +2869,9 @@ def list_essay_grades(limit: int = 50) -> list[dict]:
     conn = connect()
     _ensure_grade_score(conn)
     rows = conn.execute(
-        "SELECT id, category, question, total_score, result, score, created_at"
-        " FROM essay_grades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        "SELECT id, category, question, total_score, result, score, level,"
+        " created_at FROM essay_grades ORDER BY id DESC LIMIT ?",
+        (limit,)).fetchall()
     items = []
     for r in rows:
         d = dict(r)
@@ -2874,6 +2883,38 @@ def list_essay_grades(limit: int = 50) -> list[dict]:
         items.append(d)
     conn.commit()
     conn.close()
+    return items
+
+
+def essay_score_trend(category: str = "", limit: int = 30) -> list[dict]:
+    """历史提分曲线：按时间升序返回历次批改得分率（rate = score / total）。"""
+    conn = connect()
+    _ensure_grade_score(conn)
+    sql = ("SELECT id, category, score, total_score, level, result, created_at"
+           " FROM essay_grades WHERE total_score>0")
+    args: list = []
+    if category:
+        sql += " AND category=?"
+        args.append(category)
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(max(1, min(200, int(limit))))
+    rows = conn.execute(sql, args).fetchall()
+    conn.close()
+    items = []
+    for r in reversed(rows):
+        total = float(r["total_score"] or 0)
+        score = float(r["score"] or 0)
+        if not score and r["result"]:               # 旧记录惰性回填
+            score = _parse_grade_score(r["result"])
+        items.append({
+            "id": r["id"],
+            "category": r["category"],
+            "score": round(score, 1),
+            "total": int(total),
+            "level": r["level"] or "",
+            "rate": round(score / total, 4) if total else 0.0,
+            "created_at": r["created_at"],
+        })
     return items
 
 

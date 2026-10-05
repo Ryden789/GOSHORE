@@ -772,6 +772,13 @@ class _Handler(BaseHTTPRequestHandler):
                     it.pop("result", None)
                     it.pop("answer", None)
                 self._json({"items": items})
+            elif path == "/api/essay/trend":
+                cat = (q.get("category", [""])[0] or "")
+                try:
+                    lim = int(q.get("limit", ["30"])[0])
+                except (TypeError, ValueError):
+                    lim = 30
+                self._json({"items": db.essay_score_trend(cat, lim)})
             elif path.startswith("/api/essay/history/"):
                 try:
                     gid = int(path.rsplit("/", 1)[1])
@@ -1241,8 +1248,12 @@ class _Handler(BaseHTTPRequestHandler):
                     kind, payload = loop.run_until_complete(agen.__anext__())
                 except StopAsyncIteration:
                     break
-                frame = ("data: " + json.dumps(
-                    {"type": kind, "text": payload}, ensure_ascii=False) + "\n\n")
+                if isinstance(payload, dict):
+                    obj = {"type": kind}
+                    obj.update(payload)
+                else:
+                    obj = {"type": kind, "text": payload}
+                frame = ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n")
                 self._sse_chunk(frame.encode("utf-8"))
         except BrokenPipeError:
             pass
@@ -1334,36 +1345,44 @@ class _Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             total = 0
         total = total if 10 <= total <= 100 else rub["default_score"]
+        reference = b.get("reference", "") or ""
 
-        user = (
-            f"请批改下面这份作答。题型：{rub['name']}，满分 {total} 分。\n\n"
-            f"【评分细则】\n{rub['rubric']}\n\n"
-            f"{essay_rubric.OUTPUT_SPEC.replace('{total}', str(total))}\n\n"
-            f"【题目】\n{question[:3000]}\n\n"
-        )
-        if material:
-            user += f"【给定材料】\n{material[:8000]}\n\n"
-        else:
-            user += ("【给定材料】（考生未提供，请基于题目与作答本身批改，并在总评中注明"
-                     "缺材料可能影响要点判定）\n\n")
-        user += f"【考生作答】\n{answer[:8000]}"
-        messages = [
-            {"role": "system", "content": essay_rubric.SYSTEM_PROMPT},
-            {"role": "user", "content": user},
-        ]
+        messages = essay_rubric.build_grade_messages(
+            category, total, question, material, answer, reference)
 
         async def gen():
+            yield "phase", "正在拆解得分点并逐条评分…"
             buffer = []
             async for kind, payload in ai.stream_chat_with_temp(messages, 0.2):
                 if kind == "delta":
                     buffer.append(payload)
-                yield kind, payload
-            result = "".join(buffer).strip()
-            if result:
+                elif kind == "error":
+                    yield "error", payload
+                    return
+            raw = "".join(buffer).strip()
+            parsed = essay_rubric.parse_grade_json(raw)
+            if parsed:
+                parsed["score"] = max(
+                    0.0, min(float(total), float(parsed.get("score") or 0)))
+                essay_rubric.enrich_dims(parsed, category, total)
+                md_text = essay_rubric.render_grade_markdown(parsed, total)
                 with _lock:
                     gid = db.save_essay_grade(
-                        category, question, answer, total, result)
+                        category, question, answer, total, md_text,
+                        score=parsed["score"], level=parsed.get("level", ""),
+                        points_json=json.dumps(parsed["points"], ensure_ascii=False),
+                        dims_json=json.dumps(parsed["dims"], ensure_ascii=False),
+                        rewrite_json=json.dumps(parsed["rewrite"], ensure_ascii=False))
+                yield "result", {"data": parsed, "total": total}
                 yield "saved", str(gid)
+            elif raw:
+                with _lock:
+                    gid = db.save_essay_grade(
+                        category, question, answer, total, raw)
+                yield "fallback", raw
+                yield "saved", str(gid)
+            else:
+                yield "error", "批改未返回内容，请重试"
 
         self._stream_sse(gen())
 

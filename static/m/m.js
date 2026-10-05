@@ -4003,6 +4003,112 @@ async function renderShizheng() {
 
 /* ---------- AI 批改 ---------- */
 
+const M_GRADE_ST = {
+  "命中": ["hit", "✅ 命中"],
+  "部分命中": ["part", "🟡 部分命中"],
+  "缺失": ["miss", "❌ 缺失"],
+};
+
+function mGradeRing(score, total) {
+  const r = 30, c = 2 * Math.PI * r;
+  const pct = total > 0 ? Math.max(0, Math.min(1, score / total)) : 0;
+  const color = pct >= 0.8 ? "var(--green)" : pct >= 0.6 ? "var(--amber)" : "var(--cinnabar)";
+  return `<svg class="gr-ring" width="72" height="72" viewBox="0 0 72 72">
+    <circle cx="36" cy="36" r="${r}" fill="none" stroke="var(--line)" stroke-width="6"/>
+    <circle cx="36" cy="36" r="${r}" fill="none" stroke="${color}" stroke-width="6"
+      stroke-linecap="round" stroke-dasharray="${(c * pct).toFixed(1)} ${c.toFixed(1)}"
+      transform="rotate(-90 36 36)"/>
+    <text x="36" y="41" text-anchor="middle" font-size="15" font-weight="700" fill="${color}">${Math.round(pct * 100)}%</text>
+  </svg>`;
+}
+
+function mGradeResultHtml(d, total) {
+  const score = Number(d.score || 0);
+  const pts = d.points || [], dims = d.dims || [];
+  const hit = pts.filter(p => p.status === "命中").length;
+  const part = pts.filter(p => p.status === "部分命中").length;
+  const miss = pts.filter(p => p.status === "缺失").length;
+
+  const card = `<div class="gr-score">
+    ${mGradeRing(score, total)}
+    <div style="flex:1;min-width:0">
+      <div class="gr-score-num">${score} <span>/ ${total} 分</span></div>
+      ${d.level ? `<div class="gr-level">${esc(d.level)}</div>` : ""}
+      ${d.summary ? `<div class="gr-summary">${esc(d.summary)}</div>` : ""}
+      ${pts.length ? `<div class="gr-trend-legend">要点 ${pts.length} 个：命中 ${hit} · 部分 ${part} · 缺失 ${miss}</div>` : ""}
+    </div>
+  </div>`;
+
+  const table = pts.length ? `<div class="gr-sec">要点命中表</div>
+    <table class="gr-table">
+      <thead><tr><th style="width:26%">得分点</th><th style="width:18%">状态</th><th style="width:14%">得分</th><th>评语</th></tr></thead>
+      <tbody>${pts.map(p => {
+        const [cls, txt] = M_GRADE_ST[p.status] || M_GRADE_ST["缺失"];
+        return `<tr class="gr-tr-${cls}">
+          <td>${esc(p.name)}</td>
+          <td class="gr-st gr-st-${cls}">${txt}</td>
+          <td>${p.score}${p.full ? ` / ${p.full}` : ""}</td>
+          <td>${esc(p.comment || "")}${p.evidence ? `<span class="gr-ev">依据：${esc(p.evidence)}</span>` : ""}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>` : "";
+
+  const dimsHtml = dims.length ? `<div class="gr-sec">四维评分</div>
+    <div class="gr-dims">${dims.map(dd => {
+      const full = dd.full || 0;
+      const pct = full > 0 ? Math.max(0, Math.min(100, Math.round(dd.score / full * 100))) : 0;
+      const color = pct >= 80 ? "var(--green)" : pct >= 60 ? "var(--amber)" : "var(--cinnabar)";
+      return `<div class="gr-dim">
+        <span class="gr-dim-name">${esc(dd.name)}</span>
+        <span class="gr-dim-bar"><i style="width:${pct}%;background:${color}"></i></span>
+        <span class="gr-dim-num">${dd.score}${full ? ` / ${full}` : ""}</span>
+        ${dd.comment ? `<span class="gr-dim-cmt">${esc(dd.comment)}</span>` : ""}
+      </div>`;
+    }).join("")}</div>` : "";
+
+  const prob = (d.problems && d.problems.length)
+    ? `<div class="gr-sec">主要问题</div><ol class="gr-ol">${d.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+  const sug = (d.suggestions && d.suggestions.length)
+    ? `<div class="gr-sec">修改建议</div><ol class="gr-ol">${d.suggestions.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+  const rw = (d.rewrite && d.rewrite.revised) ? `<div class="gr-sec">修改示范</div>
+    <div class="gr-rw">
+      ${d.rewrite.original ? `<div class="gr-rw-old">${esc(d.rewrite.original)}</div>` : ""}
+      <div class="gr-rw-new">${esc(d.rewrite.revised)}</div>
+      ${d.rewrite.note ? `<div class="gr-rw-note">${esc(d.rewrite.note)}</div>` : ""}
+    </div>` : "";
+
+  return card + table + dimsHtml + prob + sug + rw;
+}
+
+function mTrendSvg(items) {
+  if (!items || !items.length) {
+    return `<p class="muted">暂无批改记录，完成一次批改后这里会显示提分曲线</p>`;
+  }
+  const W = 320, H = 130, PL = 34, PR = 12, PT = 12, PB = 22;
+  const iw = W - PL - PR, ih = H - PT - PB, n = items.length;
+  const X = i => PL + (n === 1 ? iw / 2 : iw * i / (n - 1));
+  const Y = r => PT + ih * (1 - Math.max(0, Math.min(1, r)));
+  const pts = items.map((it, i) => [X(i), Y(it.rate)]);
+  const line = pts.map(p => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+  const area = `${PL},${PT + ih} ${line} ${(PL + iw).toFixed(1)},${PT + ih}`;
+  const grid = [0, 0.5, 1].map(r => {
+    const y = Y(r).toFixed(1);
+    return `<line x1="${PL}" y1="${y}" x2="${PL + iw}" y2="${y}" stroke="var(--line-soft)" stroke-width="1"/>
+      <text x="${PL - 5}" y="${(+y + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--ink-3)">${Math.round(r * 100)}%</text>`;
+  }).join("");
+  const dots = pts.map((p, i) => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.5" fill="#fff" stroke="var(--cinnabar)" stroke-width="1.6"><title>${items[i].score}/${items[i].total}（${Math.round(items[i].rate * 100)}%）</title></circle>`).join("");
+  const first = items[0], last = items[n - 1];
+  const delta = Math.round((last.rate - first.rate) * 100);
+  const dtxt = n < 2 ? "" : (delta >= 0 ? `较首次提升 ${delta} 个百分点` : `较首次下降 ${Math.abs(delta)} 个百分点`);
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%">
+    ${grid}
+    <polygon points="${area}" fill="rgba(140,43,33,.10)"/>
+    <polyline points="${line}" fill="none" stroke="var(--cinnabar)" stroke-width="1.8" stroke-linejoin="round"/>
+    ${dots}
+  </svg>
+  <div class="gr-trend-legend">共 ${n} 次批改${dtxt ? " · " + dtxt : ""}</div>`;
+}
+
 async function renderGrade() {
   const [rub, hist, qs, set] = await Promise.all([
     api("/api/essay/rubrics"),
@@ -4017,7 +4123,7 @@ async function renderGrade() {
     <div class="page-head">
       <h2>${hasKey ? "AI 批改" : "对照自评"} · 申论 / 综应</h2>
       <p class="muted">${hasKey
-        ? "按真实阅卷规则批改：小题踩点给分、作文按档赋分 · 可从真题库选题，也可自行粘贴"
+        ? "按真实阅卷规则批改：要点逐条命中 + 四维评分 + 改写示范 · 可从真题库选题，也可自行粘贴"
         : "免 Key 模式：对照参考答案与评分细则自行评分，自评照常进统计"}</p>
       ${hasKey ? "" : `<div class="key-tip" id="gKeyTip">配置 DeepSeek Key 可解锁 AI 批改 →</div>`}
     </div>
@@ -4037,6 +4143,16 @@ async function renderGrade() {
       </div>
     </div>
     <div id="gOut"></div>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <h3 class="sec" style="margin:0">📈 提分曲线</h3>
+        <select id="gTrendCat" class="g-field" style="width:auto;margin:0;padding:5px 8px;font-size:12.5px">
+          <option value="">全部题型</option>
+          ${rub.items.map(r => `<option value="${r.key}">${esc(r.name)}</option>`).join("")}
+        </select>
+      </div>
+      <div id="gTrend" class="gr-trend"></div>
+    </div>
     <div class="card">
       <h3 class="sec">失分画像</h3>
       <div id="gProf"></div>
@@ -4104,15 +4220,38 @@ async function renderGrade() {
       : '<p class="muted">暂无批改记录</p>';
     $$(".gh-item").forEach(el => el.onclick = async () => {
       const d = await api("/api/essay/history/" + el.dataset.id);
+      let struct = null;
+      try {
+        const pts = JSON.parse(d.points_json || "[]");
+        const dims = JSON.parse(d.dims_json || "[]");
+        const rw = JSON.parse(d.rewrite_json || "{}");
+        if (pts.length || dims.length) {
+          const lines = (d.result || "").split("\n");
+          struct = { score: d.score || 0, level: d.level || "",
+            summary: (lines[1] || "").replace(/^（/, "").replace(/）$/, ""),
+            points: pts, dims, problems: [], suggestions: [], rewrite: rw };
+        }
+      } catch (e) { /* 旧记录无结构化字段 */ }
+      const inner = struct
+        ? mGradeResultHtml(struct, d.total_score || 0)
+        : `<div class="md-body">${md(d.result)}</div>`;
       $("#gOut").innerHTML = `
         <div class="card g-detail">
           <p class="muted">历史批改 · ${new Date(d.created_at * 1000).toLocaleString("zh-CN")}</p>
-          <div class="md-body">${md(d.result)}</div>
+          ${inner}
         </div>`;
       window.scrollTo({ top: $("#gOut").offsetTop - 10, behavior: "smooth" });
     });
   }
-  drawProf(); drawHist();
+  async function drawTrend() {
+    const cat = $("#gTrendCat").value;
+    try {
+      const t = await api("/api/essay/trend?category=" + encodeURIComponent(cat) + "&limit=40");
+      $("#gTrend").innerHTML = mTrendSvg(t.items);
+    } catch (e) { $("#gTrend").innerHTML = ""; }
+  }
+  $("#gTrendCat").onchange = drawTrend;
+  drawProf(); drawHist(); drawTrend();
 
   /* ---- 免 Key 对照自评：参考答案 + 按 rubric 维度勾选评分 ---- */
   function runSelfGrade() {
@@ -4188,13 +4327,14 @@ async function renderGrade() {
     $("#gTip").textContent = "批改中，约 30-60 秒…";
     $("#gOut").innerHTML = `<div class="card g-detail"><div class="md-body" id="gRes"></div></div>`;
     const box = $("#gRes");
-    let full = "";
+    let full = "", lastData = null;
     try {
       const r = await fetch("/api/essay/grade", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           category: catSel.value, question, answer,
           material: $("#gM").value.trim(),
+          reference: curRef,
           total_score: parseInt(totalIn.value) || 0,
         }),
       });
@@ -4211,18 +4351,26 @@ async function renderGrade() {
           const line = f.split("\n").find(l => l.startsWith("data:"));
           if (!line) continue;
           const ev = JSON.parse(line.slice(5).trim());
-          if (ev.type === "delta") { full += ev.text; box.innerHTML = md(full); }
+          if (ev.type === "phase") { $("#gTip").textContent = ev.text; }
+          else if (ev.type === "result") {
+            lastData = ev.data;
+            box.classList.remove("md-body");
+            box.innerHTML = mGradeResultHtml(ev.data, ev.total);
+          }
+          else if (ev.type === "fallback") { full = ev.text; box.innerHTML = md(full); }
+          else if (ev.type === "delta") { full += ev.text; box.innerHTML = md(full); }
           else if (ev.type === "error") { full += `\n\n⚠ ${ev.text}`; box.innerHTML = md(full); }
           else if (ev.type === "saved") {
-            const mScore = full.match(/总分[：:]\s*(\d+(?:\.\d+)?)/);
+            let score = 0, total = parseInt(totalIn.value) || 0;
+            if (lastData) { score = Number(lastData.score || 0); total = lastData.total || total; }
+            else { const m = full.match(/总分[：:]\s*(\d+(?:\.\d+)?)/); score = m ? +m[1] : 0; }
             history.unshift({
               id: +ev.text, category: catSel.value, question,
-              total_score: parseInt(totalIn.value) || 0,
-              score: mScore ? +mScore[1] : 0,
-              summary: full.split("\n")[0].slice(0, 60),
+              total_score: total, score, level: lastData ? (lastData.level || "") : "",
+              summary: lastData ? (lastData.summary || "").slice(0, 60) : full.split("\n")[0].slice(0, 60),
               created_at: Date.now() / 1000,
             });
-            drawProf(); drawHist();
+            drawProf(); drawHist(); drawTrend();
           }
         }
       }
