@@ -1063,3 +1063,8 @@ body.exam-mode .view {
 .countdown.cd-soon, .countdown.cd-today { border-color: var(--cinnabar); background: var(--cinnabar-soft); }
 .countdown.cd-soon .cd-n, .countdown.cd-today .cd-n { color: var(--cinnabar); }
 .countdown.cd-over .cd-n { font-size: 18px; color: var(--ink-3); }
+
+/* ===== N1 断点续做：首页/组卷页「继续上次」卡片（桌面端没有 .card，这里按 .panel 风格给一份） ===== */
+.draft-resume { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--cinnabar); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 14px; box-shadow: var(--shadow); }
+.draft-resume b { display: block; margin-bottom: 4px; font-family: var(--serif); font-size: 15px; }
+.draft-resume .muted { color: var(--ink-3); font-size: 13px; }

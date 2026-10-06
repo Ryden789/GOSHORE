@@ -46,6 +46,231 @@ function countdownBanner(examDate, daysLeft) {
     </div>`;
 }
 
+/* N1 断点续做 · 练习草稿（双端逐字节一致）。
+   把「做到第几题 / 每题选了什么 / 标记 / 考场倒计时截止时间」存到服务端
+   `paper_drafts`（scope 只有 'normal' 与 'exam'，各留最近一份），下次进做题页还原。
+   服务不可用时静默降级到 localStorage（Pref 键 'draft_<scope>'），不影响做题。
+
+   为什么自带一套定时器登记：桌面端（app.js）此前没有 safeTimeout/safeInterval，
+   而本块要求两端逐字节一致，故自带 draftSetTimeout/draftSetInterval/draftClearTimers。
+   两端各自的 route() 都必须调用 draftClearTimers()（切页清理，语义同 m.js 的 clearAllTimers）。 */
+const draftTimerIds = [];
+function draftSetTimeout(fn, delay) {
+  const id = setTimeout(() => {
+    const i = draftTimerIds.indexOf(id);
+    if (i > -1) draftTimerIds.splice(i, 1);
+    fn();
+  }, delay);
+  draftTimerIds.push(id);
+  return id;
+}
+function draftSetInterval(fn, delay) {
+  const id = setInterval(fn, delay);
+  draftTimerIds.push(id);
+  return id;
+}
+function draftClearTimer(id) {
+  if (!id) return;
+  const i = draftTimerIds.indexOf(id);
+  if (i > -1) draftTimerIds.splice(i, 1);
+  clearTimeout(id); clearInterval(id);
+}
+function draftClearTimers() {
+  draftTimerIds.forEach(id => { clearTimeout(id); clearInterval(id); });
+  draftTimerIds.length = 0;
+}
+
+/** 草稿 scope 归一：'exam' 考场模式，其余一律 'normal'。
+    必须与后端 db.normalize_draft_scope 同口径。 */
+function draftScope(examMode) { return examMode ? "exam" : "normal"; }
+
+/** 把运行期 answers/marked 序列化成草稿 state（纯函数）。
+    `correct` 只在**已判分**时写入：考场模式交卷前是 undefined，还原时据此区分「已判 / 未判」。 */
+function draftStateOf(answers, marked, cur, deadline) {
+  return {
+    cur: cur | 0,
+    deadline: deadline || 0,
+    answers: (answers || []).map((a, i) => {
+      const m = !!(marked && marked[i]);
+      if (!a) return { marked: m };
+      const o = { sel: a.sel || "", ms: a.ms || 0, marked: m };
+      if (a.skip) o.skip = true;
+      if (a.guessed) o.guessed = true;
+      if (a.correct !== undefined) o.correct = a.correct === true;
+      return o;
+    }),
+  };
+}
+
+/** 草稿 item → 运行期 answer（null = 未作答）。纯函数，脏数据一律当未作答。 */
+function draftItemToAnswer(it) {
+  if (!it || typeof it !== "object") return null;
+  if (!it.sel && !it.skip) return null;
+  const o = { sel: it.sel || "", ms: +it.ms || 0 };
+  if (it.skip) o.skip = true;
+  if (it.guessed) o.guessed = true;
+  if (it.correct !== undefined) o.correct = it.correct === true;
+  return o;
+}
+
+/** 把草稿（ids + state）对齐到**实际加载到的题目**上，过滤掉已不可用的题。
+    纯函数：loadedIds 是 /api/docs/batch 返回的题目 id（顺序与请求一致、缺失的已被剔除）。
+    返回 {items, cur, missing}：items 与 loadedIds 等长；missing = 被剔除的题数。 */
+function draftAlign(ids, state, loadedIds) {
+  const have = new Set((loadedIds || []).map(Number));
+  const ans = (state && Array.isArray(state.answers)) ? state.answers : [];
+  const items = [];
+  let missing = 0;
+  (ids || []).forEach((id, i) => {
+    if (!have.has(Number(id))) { missing++; return; }
+    items.push(ans[i] && typeof ans[i] === "object" ? ans[i] : null);
+  });
+  const want = state && isFinite(+state.cur) ? Math.floor(+state.cur) : 0;
+  const cur = items.length ? Math.max(0, Math.min(items.length - 1, want)) : 0;
+  return { items: items, cur: cur, missing: missing };
+}
+
+/** 草稿续做卡片（纯函数，便于静态校验）：items 来自 GET /api/paper-drafts */
+function draftCardHtml(items) {
+  if (!items || !items.length) return "";
+  return items.map(d => {
+    const label = d.scope === "exam" ? "考场" : "练习";
+    const left = d.left > 0 ? `还剩 ${d.left} 题` : "已答完，可继续交卷";
+    return `<div class="card draft-resume">
+      <b>继续上次${label}</b>
+      <div class="muted">《${esc(d.title || "未命名")}》已答 ${d.answered}/${d.total} · ${left}</div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-primary" data-draft-go="${esc(d.scope)}">继续</button>
+        <button class="btn" data-draft-drop="${esc(d.scope)}">放弃这套</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+const DraftPaper = {
+  scope: "", title: "", ids: [], state: null,
+  last: 0, dirty: false, hb: 0, trail: 0,
+  MIN_GAP: 2500,      // 节流窗口：两次落盘最短间隔
+  HB_MS: 15000,       // 心跳：最长 15 秒必落一次盘（防「强杀 APP」丢最后几题）
+  MIN_Q: 3,           // 少于 3 题不建草稿（单题解析/重做没必要，还会覆盖真正的练习）
+
+  /** 这次运行是否要建草稿 */
+  shouldDraft(n, opt) {
+    return !(opt && opt.draft === false) && (n | 0) >= this.MIN_Q;
+  },
+
+  begin(scope, title, ids, state) {
+    this.flush();                 // 上一份先落地
+    this.stopHeartbeat();
+    this.stopTrail();
+    this.scope = String(scope || "normal");
+    this.title = String(title || "");
+    this.ids = (ids || []).map(Number);
+    this.state = state || null;
+    this.last = 0; this.dirty = true;
+    this.hb = draftSetInterval(() => { if (this.dirty) this.flush(); }, this.HB_MS);
+  },
+
+  stopHeartbeat() { if (this.hb) { draftClearTimer(this.hb); this.hb = 0; } },
+  stopTrail() { if (this.trail) { draftClearTimer(this.trail); this.trail = 0; } },
+
+  /** 进度变化：节流窗口外立即落盘；窗口内只置脏，并在窗口结束时**尾随补写一次**
+      （这样「最后一次操作」最长只滞后 MIN_GAP，而不是等 15 秒心跳） */
+  touch(state) {
+    if (!this.scope) return;
+    if (state) this.state = state;
+    this.dirty = true;
+    const gap = Date.now() - this.last;
+    if (!this.last || gap >= this.MIN_GAP) { this.flush(); return; }
+    if (!this.trail) {
+      this.trail = draftSetTimeout(() => {
+        this.trail = 0;
+        if (this.dirty) this.flush();
+      }, this.MIN_GAP - gap);
+    }
+  },
+
+  flush(force) {
+    if (!this.scope || !this.state) return;
+    if (!this.dirty && !force) return;
+    const body = { scope: this.scope, title: this.title, ids: this.ids, state: this.state };
+    this.dirty = false; this.last = Date.now();
+    this.stopTrail();
+    api("/api/paper-draft/save", body).catch(() => {
+      // 服务异常：静默降级 localStorage，不影响做题（Pref 自己会 JSON 序列化）
+      try { Pref.set("draft_" + this.scope, body); } catch (e) {}
+    });
+  },
+
+  /** 离开做题页：强制落盘并**解除本次运行**。
+      解除是必须的——否则下一次 begin() 的 flush() 会拿着旧 scope/旧 state
+      把刚被「放弃」或已交卷的草稿又写回服务端。 */
+  leave() {
+    if (!this.scope) return;
+    this.stopHeartbeat();
+    this.stopTrail();
+    this.flush(true);
+    this.scope = ""; this.state = null; this.dirty = false;
+  },
+
+  /** 交卷结算后清草稿（本地兜底 + 服务端） */
+  clear() {
+    const sc = this.scope;
+    this.stopHeartbeat();
+    this.stopTrail();
+    this.scope = ""; this.state = null; this.dirty = false;
+    if (!sc) return;
+    try { Pref.set("draft_" + sc, ""); } catch (e) {}
+    api("/api/paper-draft/clear", { scope: sc }).catch(() => {});
+  },
+
+  /** 刷新 / 关闭页面兜底：sendBeacon 不保证有响应，但比直接丢数据强 */
+  beacon() {
+    if (!this.scope || !this.state) return;
+    try {
+      if (!navigator.sendBeacon) return;
+      const body = JSON.stringify({ scope: this.scope, title: this.title, ids: this.ids, state: this.state });
+      navigator.sendBeacon("/api/paper-draft/save", new Blob([body], { type: "application/json" }));
+    } catch (e) {}
+  },
+
+  /** 服务端草稿清单（失败一律当无草稿，不阻断页面） */
+  async list() {
+    try { const r = await api("/api/paper-drafts"); return (r && r.items) || []; }
+    catch (e) { return []; }
+  },
+
+  /** 单份草稿：服务端优先，失败回落到本地兜底 */
+  async get(scope) {
+    let d = null;
+    try { const r = await api("/api/paper-draft/" + encodeURIComponent(scope)); d = r && r.draft; }
+    catch (e) { d = null; }
+    if (d && d.ids && d.ids.length) return d;
+    try { const l = Pref.get("draft_" + scope, null); return (l && l.ids) ? l : null; }
+    catch (e) { return null; }
+  },
+
+  /** 放弃某份草稿 */
+  drop(scope) {
+    try { Pref.set("draft_" + scope, ""); } catch (e) {}
+    return api("/api/paper-draft/clear", { scope: scope }).catch(() => {});
+  },
+};
+
+/** 给续做卡片绑定「继续 / 放弃」（两端首页与刷题页共用；具体跳转由各端 draftResume 实现） */
+function bindDraftCard(root) {
+  $$("[data-draft-go]", root).forEach(b => b.onclick = () => draftResume(b.dataset.draftGo));
+  $$("[data-draft-drop]", root).forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    await DraftPaper.drop(b.dataset.draftDrop);
+    const card = b.closest(".draft-resume");
+    if (card) card.remove();
+    toast("已放弃该草稿");
+  });
+}
+
+/* 刷新 / 关闭页面兜底：beacon 在页面卸载时同步发出，不依赖 JS 继续运行 */
+window.addEventListener("pagehide", () => DraftPaper.beacon());
 /* N2 学习提醒 · 网页端（APP 内走原生 AlarmManager，不走这里）。
    浏览器无法在应用完全关闭后可靠定时，所以只在页面打开期间轮询；
    配置镜像进 localStorage，避免每次轮询都打接口。 */
@@ -531,7 +756,9 @@ function clearAllTimers() {
 
 function route() {
   inRun = false;
+  DraftPaper.leave();   // N1：切页前把草稿强制落盘（放在 clearAllTimers 之前）
   clearAllTimers();   // 先清旧页面遗留的定时器，再渲染新页面
+  draftClearTimers(); // N1：清掉草稿心跳（leave 已停本页心跳，这里兜底清残留）
   const h = location.hash || "#/home";
   const hParts = h.replace(/^#\//, "").split("/");
   const name = hParts[0] || "home";
@@ -616,6 +843,7 @@ let runFrom = "";
 /** 退出做题流，回到来源页（默认刷题页） */
 function exitRun() {
   inRun = false;
+  DraftPaper.leave();   // N1：离开做题页前把草稿强制落盘
   Pomo.unmount();
   const name = (runFrom || "").replace(/^#\//, "").split("/")[0];
   const hasRoute = name && (ROUTES[ALIAS[name] || name]);
@@ -631,6 +859,15 @@ window.GoshorBack = () => {
   exitRun();
   return true;
 };
+
+/** N1 断点续做：从首页/刷题页点「继续」进入做题页（scope 决定是否考场模式） */
+function draftResume(scope) {
+  const sc = scope === "exam" ? "exam" : "normal";
+  runPaper([], {
+    resumeScope: sc, examMode: sc === "exam",
+    title: sc === "exam" ? "考场模式" : "继续练习",
+  });
+}
 
 /**
  * 逻辑填空题干里的空只是普通空格（如“ ”或标点旁的空格），在网页里几乎
@@ -1294,7 +1531,8 @@ const DAILY_LOCKED = new Set([
 ]);
 
 async function renderHome() {
-  const [s, pl] = await Promise.all([api("/api/stats"), api("/api/study-plan")]);
+  const [s, pl, drafts] = await Promise.all([
+    api("/api/stats"), api("/api/study-plan"), DraftPaper.list()]);
   const rate = s.today_answers ? Math.round(s.today_correct / s.today_answers * 100) : 0;
   const totalRate = s.answers_total ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
   const rank = gameRank(s.answers_total);
@@ -1308,6 +1546,7 @@ async function renderHome() {
   const focusMin = Math.round((s.today_focus || 0) / 60);
   view.innerHTML = `
     ${countdownBanner(s.exam_date, s.days_left)}
+    ${draftCardHtml(drafts)}
     <div class="card rank-badge">
       <div class="rank-line">
         <span class="rank-name">🏅 ${esc(rank)}</span>
@@ -1363,6 +1602,7 @@ async function renderHome() {
       else runPaper(r.ids, { title: "每日一题", daily: true });
     } finally { dg.disabled = false; dg.textContent = "抽今日一题"; }
   };
+  bindDraftCard(view);   // N1：续做卡片「继续 / 放弃」
   $("#exportToday").onclick = () => showReportPreview(s);
   $("#recGo").onclick = async () => {
     try {
@@ -1522,15 +1762,17 @@ const FORMULA_TYPES = [
 ];
 
 async function renderPractice(auto = "") {
-  const [facets, stats] = await Promise.all([
+  const [facets, stats, drafts] = await Promise.all([
     api("/api/facets"),
-    api("/api/stats").catch(() => ({}))
+    api("/api/stats").catch(() => ({})),
+    DraftPaper.list()
   ]);
   const rateMap = {};
   (stats.module_stats || []).forEach(m => { rateMap[m.module] = m; });
   const heatCls = r => r < 40 ? "heat-r" : r < 70 ? "heat-y" : "heat-g";
   const mods = (facets.modules || []).filter(m => m && m !== "未分类");
   view.innerHTML = `
+    ${draftCardHtml(drafts)}
     <div class="card">
       <h3>随机组卷</h3>
       <div class="cfg-label" style="margin-bottom:6px">模式</div>
@@ -1718,6 +1960,7 @@ async function renderPractice(auto = "") {
   } catch (e) {
     $("#kdBox").textContent = "考点加载失败";
   }
+  bindDraftCard(view);   // N1：续做卡片「继续 / 放弃」
 }
 
 /* ---------- 做题流（真题组卷） ---------- */
@@ -1747,16 +1990,54 @@ async function runPaper(ids, opt = {}) {
   const exam = !!opt.examMode;   // 考场模式：答题卡 + 延迟结算
   $("#mTitle").textContent = opt.title || (exam ? "考场模式" : "做题中");
   view.innerHTML = `<div class="empty">题目加载中…</div>`;
+
+  /* N1 断点续做：从「继续上次」进来时，题目以草稿为准（草稿里的题号/作答才算数） */
+  const resumeScope = opt.resumeScope || "";
+  let draft = null;
+  if (resumeScope) {
+    draft = await DraftPaper.get(resumeScope);
+    if (draft && draft.ids && draft.ids.length) {
+      ids = draft.ids.slice();
+      if (draft.title) opt.title = draft.title;
+      $("#mTitle").textContent = opt.title || (exam ? "考场模式" : "做题中");
+    } else { draft = null; }
+  }
+
   const res = await api("/api/docs/batch", { ids });
   const docs = res.items || [];
   if (!docs.length) { view.innerHTML = `<div class="empty">题目加载失败</div>`; return; }
 
+  /* 草稿对齐：/api/docs/batch 会剔除已不存在的题，这里把 answers 按同样顺序对齐 */
+  const align = draft ? draftAlign(ids, draft.state, docs.map(d => d.id)) : null;
+  if (align && align.missing) toast(`有 ${align.missing} 题已不可用，已自动跳过`);
+
   const answers = new Array(docs.length).fill(null);
   const marked = new Array(docs.length).fill(false);   // 答题卡标记
-  let cur = 0, t0 = Date.now(), qStart = Date.now();
+  if (align) {
+    align.items.forEach((it, i) => {
+      answers[i] = draftItemToAnswer(it);
+      marked[i] = !!(it && it.marked);
+    });
+  }
+  let cur = align ? align.cur : 0, t0 = Date.now(), qStart = Date.now();
   let finished = false, warned5 = false, cardOpen = false, daub = false;
-  const deadline = opt.minutes ? Date.now() + opt.minutes * 60000 : 0;
+  let deadline = opt.minutes ? Date.now() + opt.minutes * 60000 : 0;
+  if (draft && draft.state && draft.state.deadline) deadline = +draft.state.deadline || 0;
   let timerH = 0;
+  /* 恢复的考场草稿若已过截止时间 → 不再二次确认，直接按「时间到」结算 */
+  const autoSettle = !!(exam && deadline && Date.now() >= deadline);
+
+  /* N1：本次运行的草稿生命周期。scope 优先用 resumeScope，保证续做不换 scope */
+  const draftOn = DraftPaper.shouldDraft(docs.length, opt);
+  if (draftOn) {
+    DraftPaper.begin(resumeScope || draftScope(exam), opt.title || "本次练习",
+                     docs.map(d => d.id), draftStateOf(answers, marked, cur, deadline));
+  }
+  /** 把当前进度写进草稿（节流/心跳由 DraftPaper 内部处理） */
+  function persist() {
+    if (!draftOn) return;
+    DraftPaper.touch(draftStateOf(answers, marked, cur, deadline));
+  }
   function fmtRemain() {
     if (!deadline) return "";
     const s = Math.max(0, Math.round((deadline - Date.now()) / 1000));
@@ -1861,7 +2142,13 @@ async function runPaper(ids, opt = {}) {
             <span class="ol">${o.label}</span><div class="opt-text">${rich(o.text)}</div>
           </div>`;
         }
-        return `<div class="opt" data-label="${o.label}">
+        // N1：草稿还原出来的**已判**题直接把对错着色渲染，否则看起来像没答过
+        const judged = !!(a && !a.skip && a.correct !== undefined);
+        const cls = judged
+          ? ["disabled", o.correct ? "correct" : "",
+             (a.sel === o.label && !o.correct) ? "wrong" : ""].filter(Boolean).join(" ")
+          : "";
+        return `<div class="opt ${cls}" data-label="${o.label}">
           <span class="ol">${o.label}</span><div class="opt-text">${rich(o.text)}</div>
         </div>`;
       }).join("")}
@@ -1881,6 +2168,8 @@ async function runPaper(ids, opt = {}) {
       const mb = $("#markBtn"); if (mb) mb.onclick = () => { marked[i] = !marked[i]; show(i); };
       const fb = $("#finishBtn"); if (fb) fb.onclick = () => summary();
       $$(".opt").forEach(el => el.onclick = () => pick(el));
+    } else if (a && !a.skip && a.correct !== undefined) {
+      renderAna(doc, d, a);   // N1：草稿还原出来的已判题，直接补解析与「下一题」
     } else {
       $$(".opt").forEach(el => el.onclick = () => judge(el, doc, d));
       $("#guessBtn").onclick = () => {
@@ -1894,13 +2183,31 @@ async function runPaper(ids, opt = {}) {
       if (opt.daily) { Pref.set("dskip", todayStr()); DAILY_DONE = true; }
       if (cur + 1 < docs.length) show(cur + 1); else summary();
     };
+    persist();
+  }
+
+  /** 已判题的解析框（正常作答与草稿还原共用，避免两处文案漂移） */
+  function renderAna(doc, d, a) {
+    const headMark = a.correct
+      ? (a.guessed ? "⚑ 蒙对了 · 按未掌握安排复习" : "✓ 回答正确")
+      : "✗ 正确答案 " +
+        esc(((d.options || []).find(o => o.correct) || {}).label || "");
+    const box = $("#anaBox");
+    if (!box) return;
+    box.innerHTML = `
+      <div class="analysis"><b>${headMark}</b>
+${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
+      <button class="btn btn-primary btn-block" id="nextBtn">
+        ${cur + 1 < docs.length ? "下一题" : "查看结算"}</button>`;
+    $("#nextBtn").onclick = () => cur + 1 < docs.length ? show(cur + 1) : summary();
+    $("#nextBtn").scrollIntoView({ block: "nearest" });
   }
 
   async function judge(el, doc, d) {
     if (answers[cur]) return;
     const sel = el.dataset.label;
     const correct = !!(d.options || []).find(o => o.label === sel && o.correct);
-    answers[cur] = { sel, correct, ms: Date.now() - qStart };
+    answers[cur] = { sel, correct, ms: Date.now() - qStart, guessed: guessedNow };
     $$(".opt").forEach(o => {
       o.classList.add("disabled");
       const opt = (d.options || []).find(x => x.label === o.dataset.label);
@@ -1918,17 +2225,8 @@ async function runPaper(ids, opt = {}) {
     }).catch(() => {});
     if (opt.daily) DAILY_DONE = true;
     noteResult(correct);
-    const headMark = correct
-      ? (guessedNow ? "⚑ 蒙对了 · 按未掌握安排复习" : "✓ 回答正确")
-      : "✗ 正确答案 " +
-        esc(((d.options || []).find(o => o.correct) || {}).label || "");
-    $("#anaBox").innerHTML = `
-      <div class="analysis"><b>${headMark}</b>
-${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
-      <button class="btn btn-primary btn-block" id="nextBtn">
-        ${cur + 1 < docs.length ? "下一题" : "查看结算"}</button>`;
-    $("#nextBtn").onclick = () => cur + 1 < docs.length ? show(cur + 1) : summary();
-    $("#nextBtn").scrollIntoView({ block: "nearest" });
+    renderAna(doc, d, answers[cur]);
+    persist();
   }
 
   async function summary() {
@@ -1936,9 +2234,9 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
     clearInterval(timerH);
     Pomo.unmount();
     if (exam) {
-      // 未答二次确认
+      // 未答二次确认（N1：恢复的过期草稿已到点，直接结算不再打扰）
       const blank = answers.filter(x => !(x && x.sel)).length;
-      if (blank > 0) {
+      if (blank > 0 && !autoSettle) {
         const markedN = marked.filter(Boolean).length;
         const extra = markedN ? `，其中 ${markedN} 题仍带标记` : "";
         if (!confirm(`还有 ${blank} 题未作答${extra}。实战中未答按错计分，确定交卷？`)) {
@@ -1954,6 +2252,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
         } catch (e) { /* 落库失败不阻断结算 */ }
       }
     }
+    DraftPaper.clear();   // N1：交卷结算完成 → 清草稿，首页不再提示「继续上次」
     renderSummary();
   }
 
@@ -2014,7 +2313,12 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
     }
   }
 
-  show(0);
+  if (autoSettle) {
+    toast("⏰ 该场考试时间已到，直接结算");
+    summary();
+    return;
+  }
+  show(cur);
   startTimer();
 }
 

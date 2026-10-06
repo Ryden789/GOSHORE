@@ -406,6 +406,129 @@ def check_browser():
         except Exception as e:
             record(False, "N2 提醒：设置页开关/时间/planOnly 可保存", f"异常：{e}")
 
+        # ---- N1 断点续做：草稿卡片 → 继续还原（题号/已答/解析）→ 进度回写 → 放弃
+        try:
+            js_errors.clear()
+            # 取 3 道真题做草稿（用顺序组卷接口拿真实 id，避免写死不存在的题）
+            code, paper = http_post("/api/paper/sequential",
+                                    {"module": "", "kaodian": "", "n": 3})
+            ids = paper.get("ids") or []
+            if code != 200 or len(ids) < 3:
+                raise RuntimeError(f"取不到 3 道真题：HTTP {code} ids={ids}")
+            code, _ = http_post("/api/paper-draft/save", {
+                "scope": "normal", "title": "E2E 真题卷", "ids": ids,
+                "state": {"cur": 0, "deadline": 0,
+                          "answers": [{"sel": "A", "correct": False, "ms": 1200, "marked": True},
+                                      None, None]},
+            })
+            if code != 200:
+                raise RuntimeError(f"写草稿失败，HTTP {code}")
+
+            pg.evaluate("location.hash = '#/all'")
+            pg.wait_for_timeout(300)
+            pg.evaluate("location.hash = '#/home'")
+            pg.wait_for_selector(".draft-resume", timeout=15000)
+            card_txt = " ".join(pg.locator(".draft-resume").first.inner_text().split())
+            problems = []
+            if "E2E 真题卷" not in card_txt:
+                problems.append(f"卡片未显示卷名：{card_txt!r}")
+            if "已答 1/3" not in card_txt:
+                problems.append(f"卡片进度不对（应为已答 1/3）：{card_txt!r}")
+            if "还剩 2 题" not in card_txt:
+                problems.append(f"卡片未显示剩余题数：{card_txt!r}")
+            if pg.locator('.draft-resume [data-draft-go="normal"]').count() != 1:
+                problems.append("缺少「继续」按钮")
+            if pg.locator('.draft-resume [data-draft-drop="normal"]').count() != 1:
+                problems.append("缺少「放弃」按钮")
+            if js_errors:
+                problems.append("JS 错误：" + "；".join(js_errors[:3]))
+            record(not problems, "N1 续做：首页出现「继续上次」卡片",
+                   "；".join(problems) if problems else card_txt[:60])
+
+            # 点「继续」→ 还原到第 1 题，已判题的着色与解析都要回来
+            pg.locator('.draft-resume [data-draft-go="normal"]').click()
+            pg.wait_for_selector(".opt", timeout=20000)
+            prog = " ".join(pg.locator(".prog").inner_text().split())
+            n_opt = pg.locator(".opt").count()
+            n_correct = pg.locator(".opt.correct").count()
+            n_disabled = pg.locator(".opt.disabled").count()
+            has_ana = pg.locator("#anaBox .analysis").count() == 1
+            problems = []
+            if "第 1 / 3 题" not in prog:
+                problems.append(f"未还原到第 1 题：{prog!r}")
+            if n_disabled != n_opt or n_opt < 2:
+                problems.append(f"已答题的选项应全部置灰：disabled={n_disabled} opt={n_opt}")
+            if n_correct != 1:
+                problems.append(f"应高亮 1 个正确选项：correct={n_correct}")
+            if not has_ana:
+                problems.append("已答题未还原解析框")
+            if js_errors:
+                problems.append("JS 错误：" + "；".join(js_errors[:3]))
+            record(not problems, "N1 续做：继续后还原题号/已答态/解析",
+                   "；".join(problems) if problems else f"{prog} · 选项 {n_opt} 个")
+
+            # 已答题不得重复计入：`.opt.disabled` 带 pointer-events:none（UI 层已拦住），
+            # 再用合成 click 绕过 pointer-events 打一次，逻辑层（judge 里的早退）也必须拦住
+            before = http_get("/api/paper-draft/normal")[1].get("draft", {}).get("state", {})
+            pg.evaluate("document.querySelectorAll('.opt')[0].click()")
+            pg.wait_for_timeout(500)
+            after = http_get("/api/paper-draft/normal")[1].get("draft", {}).get("state", {})
+            same = json.dumps(before.get("answers", [])[:1]) == \
+                json.dumps(after.get("answers", [])[:1])
+            record(same and pg.locator("#anaBox .analysis").count() == 1,
+                   "N1 续做：已答题重复点击不重复计入",
+                   f"前={json.dumps(before.get('answers', [])[:1], ensure_ascii=False)[:60]}")
+
+            # 答第 2 题 → 进度自动回写服务端（节流窗口 2.5s，尾随补写后必已落盘）
+            pg.locator("#nextBtn").click()
+            pg.wait_for_timeout(300)
+            pg.locator(".opt").first.click()
+            pg.wait_for_timeout(3200)
+            st = http_get("/api/paper-draft/normal")[1].get("draft", {}).get("state", {})
+            ans = st.get("answers") or []
+            sel2 = (ans[1] or {}).get("sel") if len(ans) > 1 else None
+            record(bool(sel2), "N1 续做：答题后进度自动回写服务端",
+                   f"answers[1].sel={sel2!r} cur={st.get('cur')}")
+
+            # 退出做题页 → 首页卡片进度更新为已答 2/3
+            pg.locator("#runExit").click()
+            pg.wait_for_selector(".draft-resume", timeout=15000)
+            card2 = " ".join(pg.locator(".draft-resume").first.inner_text().split())
+            record("已答 2/3" in card2, "N1 续做：退出后首页卡片进度已更新",
+                   card2[:60])
+
+            # 放弃 → 卡片消失 + 服务端草稿清空
+            pg.locator('.draft-resume [data-draft-drop="normal"]').click()
+            pg.wait_for_timeout(800)
+            left_cards = pg.locator(".draft-resume").count()
+            code, drafts = http_get("/api/paper-drafts")
+            items = drafts.get("items") if code == 200 else None
+            record(left_cards == 0 and items == [],
+                   "N1 续做：放弃后卡片消失且服务端草稿清空",
+                   f"卡片={left_cards} items={items}")
+
+            # 过期考场草稿：继续即按「时间到」直接结算（不再二次确认）
+            code, _ = http_post("/api/paper-draft/save", {
+                "scope": "exam", "title": "E2E 考场卷", "ids": ids,
+                "state": {"cur": 0, "deadline": int(time.time() * 1000) - 60000,
+                          "answers": [{"sel": "A", "ms": 100}, None, None]},
+            })
+            if code != 200:
+                raise RuntimeError(f"写考场草稿失败，HTTP {code}")
+            pg.evaluate("location.hash = '#/all'")
+            pg.wait_for_timeout(300)
+            pg.evaluate("location.hash = '#/home'")
+            pg.wait_for_selector('.draft-resume [data-draft-go="exam"]', timeout=15000)
+            pg.locator('.draft-resume [data-draft-go="exam"]').click()
+            pg.wait_for_selector(".sum-num", timeout=20000)
+            sum_txt = " ".join(pg.locator(".sum-num").inner_text().split())
+            code, drafts = http_get("/api/paper-drafts")
+            record(bool(sum_txt) and (drafts.get("items") or []) == [],
+                   "N1 续做：过期考场草稿继续即直接结算",
+                   f"结算={sum_txt!r} 剩余草稿={drafts.get('items')}")
+        except Exception as e:
+            record(False, "N1 续做：整体流程（卡片→继续→回写→放弃→过期考场）", f"异常：{e}")
+
         # ---- 全路由遍历：零 JS 错误 + 恰好一次入场动画 + 动画时 DOM 已是目标页
         routes = pg.evaluate("Object.keys(ROUTES)")
         print(f"  路由清单（{len(routes)} 个）：{' '.join(routes)}", flush=True)
@@ -499,6 +622,94 @@ def check_browser():
                    else f"结算 {sum_txt.strip()}，跳过 2，正确率 {rate}%")
         except Exception as e:
             record(False, "做题流闭环：组卷→判分→跳过→结算", f"异常：{e}")
+
+        # ---- N1 断点续做（桌面端 app.js）：runPaper 落盘 → route() 强制落盘 → resumeScope 还原
+        # 说明：桌面端做题内嵌在 #/paper 的 paperBody 里，而移动端 server 没有
+        # /api/kaodian-list；桌面 renderHome 又要 /api/study-time，响应结构也与移动端不同。
+        # 所以这里落在一个两端都有的页面（设置页），再用顶层函数 runPaper + 显式 container 驱动，
+        # 覆盖的正是 N1 在桌面端的接线：DraftPaper 落盘 / route() 的 leave() / draftAlign 还原。
+        try:
+            derr = []
+            pg2 = browser.new_page(viewport={"width": 1280, "height": 900})
+            pg2.add_init_script(INIT_JS)
+            pg2.on("pageerror", lambda e: derr.append(str(e)))
+            pg2.goto(BASE + "/index.html#/settings", wait_until="domcontentloaded", timeout=20000)
+            pg2.wait_for_selector("#remindOn", timeout=30000)
+
+            code, paper = http_post("/api/paper/sequential",
+                                    {"module": "", "kaodian": "", "n": 3})
+            ids = paper.get("ids") or []
+            if code != 200 or len(ids) < 3:
+                raise RuntimeError(f"取不到 3 道真题：HTTP {code} ids={ids}")
+
+            # 建草稿 → 答第 1 题（桌面端 .option 走 /api/answer 判分）
+            pg2.evaluate(
+                "(ids) => runPaper(ids, {container: document.getElementById('view'),"
+                " title: '桌面E2E'})", ids)
+            pg2.wait_for_selector(".option", timeout=15000)
+            n_opt = pg2.locator(".option").count()
+            pg2.locator(".option").first.click()
+            pg2.wait_for_timeout(3200)     # 等节流窗口 + 尾随补写落盘
+            st = http_get("/api/paper-draft/normal")[1].get("draft") or {}
+            ans = (st.get("state") or {}).get("answers") or []
+            problems = []
+            if not st:
+                problems.append("桌面端答题后未落草稿")
+            elif not (ans and ans[0] and ans[0].get("sel")):
+                problems.append(f"草稿里没有第 1 题作答：{ans[:1]}")
+            if derr:
+                problems.append("JS 错误：" + "；".join(derr[:3]))
+            record(not problems, "N1 续做（桌面）：答题后自动落草稿",
+                   "；".join(problems) if problems
+                   else f"answers[0]={json.dumps(ans[:1], ensure_ascii=False)[:60]}")
+
+            # route() 的 leave()：答第 2 题后**立刻切页**，草稿也必须已落盘
+            # （节流窗口内本来不会写，靠 route() → DraftPaper.leave() 强制落）
+            pg2.locator("#next").click()
+            pg2.wait_for_timeout(200)
+            pg2.locator(".option").first.click()
+            pg2.wait_for_timeout(400)
+            # 切页触发 hashchange → route() → DraftPaper.leave() 强制落盘。
+            # 注意：runPaper 是**内嵌渲染**（把题面塞进 #view），并不改 hash，
+            # 此刻 hash 仍是 #/settings；而给 location.hash 赋同一个值不会触发
+            # hashchange，route() 也就不会跑。所以必须切到**另一个**真实路由
+            # （#/marks 对应 /api/marks，移动 server 有该接口，渲染不会报错）。
+            pg2.evaluate("location.hash = '#/marks'")
+            pg2.wait_for_timeout(600)
+            st2 = http_get("/api/paper-draft/normal")[1].get("draft") or {}
+            ans2 = (st2.get("state") or {}).get("answers") or []
+            sel2 = (ans2[1] or {}).get("sel") if len(ans2) > 1 else None
+            record(bool(sel2) and (st2.get("state") or {}).get("cur") == 1,
+                   "N1 续做（桌面）：切页时 route() 强制落盘草稿",
+                   f"answers[1].sel={sel2!r} cur={(st2.get('state') or {}).get('cur')}")
+
+            # resumeScope 还原：题号 + 已判题着色（先回到设置页，证明离开做题页后一切正常）
+            pg2.evaluate("location.hash = '#/settings'")
+            pg2.wait_for_selector("#remindOn", timeout=20000)
+            pg2.evaluate(
+                "() => runPaper([], {resumeScope: 'normal',"
+                " container: document.getElementById('view'), title: '继续'})")
+            pg2.wait_for_selector(".option", timeout=15000)
+            prog = " ".join(pg2.locator(".paper-runner-top").first.inner_text().split())
+            dis = pg2.locator(".option.disabled").count()
+            cor = pg2.locator(".option.correct").count()
+            # 断点续做应还原到**草稿记录的题号**：本段在切页前答了 Q1+Q2，
+            # 草稿 cur=1，所以恢复后停在「第 2 / 3 题」而非第 1 题（不要照抄移动段）。
+            exp_q = int((st2.get("state") or {}).get("cur") or 0) + 1
+            problems = []
+            if f"第 {exp_q} / 3 题" not in prog:
+                problems.append(f"未还原到草稿记录的第 {exp_q} 题：{prog!r}")
+            if dis != n_opt:
+                problems.append(f"已答题选项应全部置灰：disabled={dis} opt={n_opt}")
+            if cor != 1:
+                problems.append(f"应高亮 1 个正确选项：correct={cor}")
+            record(not problems, "N1 续做（桌面）：resumeScope 还原题号与已答态",
+                   "；".join(problems) if problems else f"{prog} · 选项 {n_opt} 个")
+
+            pg2.close()
+            http_post("/api/paper-draft/clear", {"scope": "normal"})
+        except Exception as e:
+            record(False, "N1 续做（桌面）：整体流程", f"异常：{e}")
 
         browser.close()
 

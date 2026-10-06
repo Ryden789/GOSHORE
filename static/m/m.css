@@ -1312,3 +1312,7 @@ body.hint-on #view { padding-bottom: calc(150px + env(safe-area-inset-bottom)); 
 .pk-v { font-size: 19px; font-weight: 700; font-family: var(--mono, monospace); margin: 6px 0 2px; color: var(--cinnabar); }
 .pk-s { font-size: 11.5px; color: var(--ink-3); }
 .pk-x { display: flex; align-items: center; font-weight: 800; font-size: 14px; color: var(--cinnabar); }
+
+/* ===== N1 断点续做：续做卡片（.card 已有底样式，这里只加左侧朱砂条与标题） ===== */
+.draft-resume { border-left: 4px solid var(--cinnabar); }
+.draft-resume b { display: block; margin-bottom: 4px; font-family: var(--serif); font-size: 15px; }

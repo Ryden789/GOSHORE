@@ -250,7 +250,7 @@ CREATE TABLE IF NOT EXISTS _meta (
 SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
 
 # 当前 schema 版本号（每次新增迁移步骤时 +1）
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
 EBBINGHAUS_DAYS = [1, 2, 4, 7, 15, 30]
@@ -430,6 +430,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     v8：shizheng_seen URL 去重表（时政流水线 2.2）。
     v9：shared_sets / pk_records 题单分享与好友 PK 表（3.3）。
     v10：考点聚合的覆盖索引 idx_docs_kind_mod_kd / idx_docs_region。
+    v11：paper_drafts 练习草稿表（N1 断点续做）。每个 scope（'normal'/'exam'）
+    只保留最近一份，故 scope 上加 UNIQUE —— 否则「同一时刻只留一份」只能靠
+    应用层 delete+insert，并发下会留孤儿行。表落在**个人库**（与 answers 同库，
+    手机端连的是 data_<uid>.db），因此移动端同样可写。
     """
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -602,6 +606,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )
         conn.execute(
             "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','10')"
+        )
+        conn.commit()
+
+    if v < 11:
+        # v11: 练习草稿（N1 断点续做）。
+        # scope 上加 UNIQUE：每个 scope 只保留最近一份草稿，靠
+        # INSERT OR REPLACE 天然实现「覆盖」语义，不需要先查再删。
+        # 注意这是**个人数据表**（与 answers 同库）：手机端 connect() 的
+        # 主库就是 data_<uid>.db，所以这里可写；不要挪到 shared 库。
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS paper_drafts(
+                id INTEGER PRIMARY KEY,
+                scope TEXT NOT NULL UNIQUE,   -- 'normal' / 'exam'
+                title TEXT DEFAULT '',
+                ids_json TEXT NOT NULL DEFAULT '[]',
+                state_json TEXT NOT NULL DEFAULT '{}',
+                updated_at REAL DEFAULT 0)"""
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','11')"
         )
         conn.commit()
 
@@ -3803,3 +3827,149 @@ def list_pk_records(code: str, limit: int = 50) -> list[dict]:
 def pk_best(code: str) -> dict | None:
     rows = list_pk_records(code, limit=1)
     return rows[0] if rows else None
+
+
+# ---------------- 练习草稿（N1 断点续做） ----------------
+
+# 只允许这两个 scope：'normal' 普通练习 / 'exam' 考场模式。
+# 用白名单而不是透传：前端传错时不会在表里堆出一串用不到的 scope 行。
+DRAFT_SCOPES = ("normal", "exam")
+
+# 草稿体积上限（防脏数据把表撑爆）
+_DRAFT_MAX_IDS = 1000
+_DRAFT_MAX_TITLE = 200
+
+
+def normalize_draft_scope(scope) -> str:
+    """把 scope 归一到白名单内的值；未知/空值一律当 'normal'。
+
+    必须与前端 `draftScope()` 同口径：普通练习='normal'，考场='exam'。
+    """
+    s = str(scope or "").strip().lower()
+    return s if s in DRAFT_SCOPES else DRAFT_SCOPES[0]
+
+
+def _as_int_list(v) -> list[int]:
+    """把 JSON 里的 id 列表安全转成 int 列表（脏元素直接丢弃，不抛异常）。"""
+    out: list[int] = []
+    if isinstance(v, list):
+        for x in v[:_DRAFT_MAX_IDS]:
+            try:
+                out.append(int(x))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def draft_progress(ids, state) -> dict:
+    """纯函数：由草稿的 ids + state 算出「总题数 / 已答 / 还剩」。
+
+    已答只认 `sel` 非空（跳过、未答都不算）——与首页文案
+    「已答 8/15 · 还剩 7 题」的语义一致。任何脏数据按 0 计，绝不抛异常。
+    """
+    total = len(ids) if isinstance(ids, list) else 0
+    answered = 0
+    answers = state.get("answers") if isinstance(state, dict) else None
+    if isinstance(answers, list):
+        for a in answers:
+            if isinstance(a, dict) and str(a.get("sel") or "").strip():
+                answered += 1
+    answered = min(answered, total)
+    return {"total": total, "answered": answered, "left": max(0, total - answered)}
+
+
+def save_paper_draft(scope: str, title: str, ids: list, state: dict) -> None:
+    """写入/覆盖指定 scope 的草稿（每个 scope 只留最近一份）。
+
+    覆盖靠 `scope` 上的 UNIQUE + INSERT OR REPLACE 实现，不需要先删再插。
+    """
+    sc = normalize_draft_scope(scope)
+    clean_ids = _as_int_list(ids)
+    clean_state = state if isinstance(state, dict) else {}
+    try:
+        state_json = json.dumps(clean_state, ensure_ascii=False)
+    except (TypeError, ValueError):
+        state_json = "{}"
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO paper_drafts"
+            "(scope,title,ids_json,state_json,updated_at) VALUES(?,?,?,?,?)",
+            (sc, str(title or "")[:_DRAFT_MAX_TITLE],
+             json.dumps(clean_ids), state_json, time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_paper_draft(scope: str = "") -> dict | None:
+    """读取指定 scope 的完整草稿；不存在或 JSON 脏则返回 None。
+
+    脏草稿（ids_json/state_json 解析失败、类型不对）会被**顺手删掉**，
+    否则首页每次读到同一份坏数据、永远提示「继续上次」却打不开。
+    """
+    sc = normalize_draft_scope(scope)
+    conn = connect()
+    try:
+        r = conn.execute(
+            "SELECT scope,title,ids_json,state_json,updated_at "
+            "FROM paper_drafts WHERE scope=?", (sc,)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        return None
+    try:
+        ids = json.loads(r["ids_json"] or "[]")
+        state = json.loads(r["state_json"] or "{}")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        clear_paper_draft(sc)
+        return None
+    if not isinstance(ids, list) or not isinstance(state, dict):
+        clear_paper_draft(sc)
+        return None
+    return {"scope": r["scope"], "title": r["title"] or "",
+            "ids": _as_int_list(ids), "state": state,
+            "updated": r["updated_at"] or 0}
+
+
+def clear_paper_draft(scope: str) -> None:
+    """删除指定 scope 的草稿；scope 为空串则清空全部（G7 数据清空会用到）。"""
+    sc = str(scope or "").strip().lower()
+    conn = connect()
+    try:
+        if sc:
+            conn.execute("DELETE FROM paper_drafts WHERE scope=?", (sc,))
+        else:
+            conn.execute("DELETE FROM paper_drafts")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_unfinished_drafts() -> list[dict]:
+    """首页/刷题页「继续上次」提示用：返回全部草稿的精简信息。
+
+    只返回**有题目**的草稿（total>0，空卷没什么可续的）；按最近更新倒序。
+    """
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT scope,title,ids_json,state_json,updated_at FROM paper_drafts "
+            "ORDER BY updated_at DESC").fetchall()
+    finally:
+        conn.close()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            ids = json.loads(r["ids_json"] or "[]")
+            state = json.loads(r["state_json"] or "{}")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        prog = draft_progress(ids, state)
+        if prog["total"] <= 0:
+            continue
+        out.append({"scope": r["scope"], "title": r["title"] or "",
+                    "left": prog["left"], "total": prog["total"],
+                    "answered": prog["answered"], "updated": r["updated_at"] or 0})
+    return out

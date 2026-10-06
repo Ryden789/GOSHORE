@@ -570,6 +570,50 @@ def api_paper_sequential(b: PaperIn):
     return {"ids": db.sequential_paper(b.module, b.kaodian, max(1, min(50, b.n)))}
 
 
+# ---------------- 练习草稿（N1 断点续做） ----------------
+#
+# 4 条路由双端同步：桌面在这里，移动端在 goshor_server.py 的 do_GET/do_POST。
+# scope 白名单（'normal'/'exam'）由 db.normalize_draft_scope 统一收口，
+# 前端传脏值不会写出新 scope 行。
+
+class PaperDraftIn(BaseModel):
+    scope: str = "normal"
+    title: str = ""
+    # 刻意用宽松的 list 而不是 list[int]：移动端 http.server 那侧没有模型校验，
+    # 若这里严格，脏 id 会变成桌面 422 / 手机静默过滤，双端行为不一致。
+    # 过滤统一收口在 db._as_int_list()。
+    ids: list = []
+    state: dict = {}
+
+
+class DraftScopeIn(BaseModel):
+    scope: str = "normal"
+
+
+@app.get("/api/paper-drafts")
+def api_paper_drafts():
+    """草稿清单（首页「继续上次」卡片用，只含精简信息）。"""
+    return {"items": db.list_unfinished_drafts()}
+
+
+@app.get("/api/paper-draft/{scope}")
+def api_paper_draft_get(scope: str):
+    """完整草稿（点「继续」时拉取）。不存在返回 draft=null，前端当无草稿处理。"""
+    return {"draft": db.load_paper_draft(scope)}
+
+
+@app.post("/api/paper-draft/save")
+def api_paper_draft_save(b: PaperDraftIn):
+    db.save_paper_draft(b.scope, b.title, b.ids, b.state)
+    return {"ok": True}
+
+
+@app.post("/api/paper-draft/clear")
+def api_paper_draft_clear(b: DraftScopeIn):
+    db.clear_paper_draft(b.scope)
+    return {"ok": True}
+
+
 @app.get("/api/mastery")
 def api_mastery(module: str = "", only_practiced: bool = False,
                 limit: int = 0, offset: int = 0):

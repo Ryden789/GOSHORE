@@ -888,6 +888,12 @@ class _Handler(BaseHTTPRequestHandler):
                 _pkcode = urllib.parse.unquote(path[len("/api/pk/"):])
                 self._json({"records": db.list_pk_records(_pkcode, limit=50),
                             "best": db.pk_best(_pkcode)})
+            # N1 断点续做：草稿清单与完整草稿（与桌面端 /api/paper-drafts 同构）
+            elif path == "/api/paper-drafts":
+                self._json({"items": db.list_unfinished_drafts()})
+            elif path.startswith("/api/paper-draft/"):
+                _dscope = urllib.parse.unquote(path[len("/api/paper-draft/"):])
+                self._json({"draft": db.load_paper_draft(_dscope)})
             elif path == "/api/update/current":
                 self._json({"ok": True, **_shared_db_meta()})
             elif path == "/api/update/check":
@@ -1189,6 +1195,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             elif path == "/api/settings/test":
                 self._json(_run_async(_settings_test()))
+            # N1 断点续做：草稿保存 / 清除（与桌面端同构）
+            elif path == "/api/paper-draft/save":
+                with _lock:
+                    db.save_paper_draft(str(b.get("scope", "normal")),
+                                        str(b.get("title", "")),
+                                        b.get("ids") or [],
+                                        b.get("state") or {})
+                self._json({"ok": True})
+            elif path == "/api/paper-draft/clear":
+                with _lock:
+                    db.clear_paper_draft(str(b.get("scope", "normal")))
+                self._json({"ok": True})
             elif path == "/api/backup/export":
                 self._json(_mobile_backup_export(
                     bool(b.get("include_key"))))
