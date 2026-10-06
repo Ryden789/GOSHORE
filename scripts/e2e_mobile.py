@@ -529,6 +529,40 @@ def check_browser():
         except Exception as e:
             record(False, "N1 续做：整体流程（卡片→继续→回写→放弃→过期考场）", f"异常：{e}")
 
+        # ---- N5 夜间模式（移动端）：设置页三态 → 落 data-theme → 暗底真生效 → 刷新保持
+        # 断言「计算后的 body 底色」而不只是 data-theme 属性 —— 后者只证明 JS 设了属性，
+        # 前者才证明 CSS 变量覆写真的生效（这才是「没换肤」类 bug 的照妖镜）。
+        try:
+            problems = []
+            pg.goto(BASE + "/#/settings", wait_until="domcontentloaded", timeout=20000)
+            pg.wait_for_selector("#themePick .type-check", timeout=20000)
+            n_pick = pg.locator("#themePick .type-check").count()
+            if n_pick != 3:
+                problems.append(f"主题分段控件应有 3 项，实际 {n_pick}")
+            pg.locator("#themePick .type-check").nth(2).click()   # 夜间
+            pg.wait_for_timeout(250)
+            eff = pg.evaluate("document.documentElement.dataset.theme")
+            bg = pg.evaluate("getComputedStyle(document.body).backgroundColor")
+            if eff != "dark":
+                problems.append(f"点「夜间」后 data-theme 应为 dark，实际 {eff!r}")
+            if bg != "rgb(32, 29, 24)":
+                problems.append(f"夜间底色应为暖灰墨 #201d18，实际 {bg}")
+            pg.reload(wait_until="domcontentloaded")
+            pg.wait_for_timeout(500)
+            eff2 = pg.evaluate("document.documentElement.dataset.theme")
+            if eff2 != "dark":
+                problems.append(f"刷新后应保持夜间（偏好持久化 + 防闪烁脚本），实际 {eff2!r}")
+            pg.wait_for_selector("#themePick .type-check", timeout=20000)
+            pg.locator("#themePick .type-check").nth(0).click()   # 跟随系统（无头默认浅色）
+            pg.wait_for_timeout(250)
+            eff3 = pg.evaluate("document.documentElement.dataset.theme")
+            if eff3 != "light":
+                problems.append(f"「跟随系统」在无头（浅色）下应回落 light，实际 {eff3!r}")
+            record(not problems, "N5 夜间模式（移动）：三态切换 / 暗底生效 / 刷新保持",
+                   "；".join(problems) if problems else f"dark → {eff3}，夜间底色 {bg}")
+        except Exception as e:
+            record(False, "N5 夜间模式（移动）", f"异常：{e}")
+
         # ---- 全路由遍历：零 JS 错误 + 恰好一次入场动画 + 动画时 DOM 已是目标页
         routes = pg.evaluate("Object.keys(ROUTES)")
         print(f"  路由清单（{len(routes)} 个）：{' '.join(routes)}", flush=True)
@@ -710,6 +744,38 @@ def check_browser():
             http_post("/api/paper-draft/clear", {"scope": "normal"})
         except Exception as e:
             record(False, "N1 续做（桌面）：整体流程", f"异常：{e}")
+
+        # ---- N5 夜间模式（桌面端）：同一套共享块在 app.js 里也要生效（含 CSS 变量覆写）
+        try:
+            problems = []
+            pg3 = browser.new_page(viewport={"width": 1280, "height": 900})
+            pg3.add_init_script(INIT_JS)
+            pg3.goto(BASE + "/index.html#/settings", wait_until="domcontentloaded", timeout=20000)
+            pg3.wait_for_selector("#themePick .type-check", timeout=30000)
+            n3 = pg3.locator("#themePick .type-check").count()
+            if n3 != 3:
+                problems.append(f"主题分段控件应有 3 项，实际 {n3}")
+            pg3.locator("#themePick .type-check").nth(2).click()   # 夜间
+            pg3.wait_for_timeout(250)
+            eff = pg3.evaluate("document.documentElement.dataset.theme")
+            bg = pg3.evaluate("getComputedStyle(document.body).backgroundColor")
+            if eff != "dark":
+                problems.append(f"点「夜间」后 data-theme 应为 dark，实际 {eff!r}")
+            if bg != "rgb(32, 29, 24)":
+                problems.append(f"夜间底色应为暖灰墨 #201d18，实际 {bg}")
+            pg3.locator("#themePick .type-check").nth(0).click()   # 跟随系统（无头默认浅色）
+            pg3.wait_for_timeout(250)
+            eff2 = pg3.evaluate("document.documentElement.dataset.theme")
+            bg2 = pg3.evaluate("getComputedStyle(document.body).backgroundColor")
+            if eff2 != "light":
+                problems.append(f"「跟随系统」在无头（浅色）下应回落 light，实际 {eff2!r}")
+            if bg2 == bg:
+                problems.append("浅色与夜间底色相同 —— CSS 变量覆写没生效")
+            record(not problems, "N5 夜间模式（桌面）：三态切换 / 暗底生效",
+                   "；".join(problems) if problems else f"dark({bg}) → {eff2}({bg2})")
+            pg3.close()
+        except Exception as e:
+            record(False, "N5 夜间模式（桌面）", f"异常：{e}")
 
         browser.close()
 

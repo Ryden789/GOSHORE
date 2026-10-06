@@ -223,6 +223,62 @@ const Pref = {
   set(k, v) { try { localStorage.setItem("g:" + k, JSON.stringify(v)); } catch (e) {} },
 };
 
+/* N5 夜间模式 · 网页端（app.js / m.js 逐字节一致）。
+   偏好 Pref('theme') ∈ 'auto' | 'light' | 'dark'，结果落到 <html data-theme="light|dark">。
+   'auto' 跟随系统 matchMedia('(prefers-color-scheme: dark)')，系统切换即时生效。
+   颜色本身全在 CSS 变量里（html[data-theme="dark"] 覆写），JS 只负责设属性 —— 不逐元素改。
+   防闪烁：index.html 的 <head> 里有一段等价的内联脚本，先于样式表生效。 */
+const Theme = {
+  KEY: "theme",
+  PREFS: ["auto", "light", "dark"],
+  DARK_META: "#201d18",          // 夜间地址栏 / 状态栏底色（与 --paper 一致）
+  _mq: null,
+  norm(v) { return this.PREFS.indexOf(v) > -1 ? v : "auto"; },
+  sysDark() {
+    try { return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); }
+    catch (e) { return false; }
+  },
+  resolve(pref, sys) { const p = this.norm(pref); return p === "auto" ? (sys ? "dark" : "light") : p; },
+  current() { return this.norm(Pref.get(this.KEY, "auto")); },
+  /** 把当前偏好落到 <html>，并同步浏览器 UI 颜色；返回生效主题 */
+  apply() {
+    const eff = this.resolve(this.current(), this.sysDark());
+    document.documentElement.dataset.theme = eff;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", eff === "dark" ? this.DARK_META : (meta.dataset.light || "#a6342a"));
+    return eff;
+  },
+  set(v) { Pref.set(this.KEY, this.norm(v)); this.apply(); },
+  /** 启动时调用一次：应用偏好 + 订阅系统深浅变化 */
+  init() {
+    this.apply();
+    try {
+      if (!window.matchMedia) return;
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      this._mq = mq;
+      const on = () => { if (this.current() === "auto") this.apply(); };
+      if (mq.addEventListener) mq.addEventListener("change", on);
+      else if (mq.addListener) mq.addListener(on);   // 旧 WebView 兼容
+    } catch (e) {}
+  },
+  /** 设置页分段控件（两端共用同一套 .type-check 样式） */
+  pickerHtml() {
+    return [["auto", "跟随系统"], ["light", "浅色"], ["dark", "夜间"]]
+      .map(([k, v]) => `<div class="type-check ${this.current() === k ? "on" : ""}" data-theme-pick="${k}">${v}</div>`)
+      .join("");
+  },
+  bindPicker(root) {
+    const box = root || document;
+    box.querySelectorAll("[data-theme-pick]").forEach(el => {
+      el.onclick = () => {
+        this.set(el.dataset.themePick);
+        box.querySelectorAll("[data-theme-pick]").forEach(x =>
+          x.classList.toggle("on", x === el));
+      };
+    });
+  },
+};
+
 /* N1 断点续做 · 练习草稿（双端逐字节一致）。
    把「做到第几题 / 每题选了什么 / 标记 / 考场倒计时截止时间」存到服务端
    `paper_drafts`（scope 只有 'normal' 与 'exam'，各留最近一份），下次进做题页还原。
@@ -4040,6 +4096,14 @@ async function renderSettings() {
       </div>
     </div>
     <div class="panel rise rise-2">
+      <h3 style="margin:0 0 10px">外观</h3>
+      <div class="field">
+        <label>主题</label>
+        <div class="type-checks" id="themePick">${Theme.pickerHtml()}</div>
+        <div class="hint">夜间为「宣纸夜景」：暖灰墨底 + 米白文字，护眼不刺目；选「跟随系统」则随系统深浅自动切换。</div>
+      </div>
+    </div>
+    <div class="panel rise rise-3">
       <h3 style="margin:0 0 10px">题库导出 PDF</h3>
       <p class="hint" style="margin:0 0 10px">按筛选条件生成可打印页面，在浏览器里 Ctrl+P 另存为 PDF（题库在前、答案解析在后）</p>
       <div class="cfg-inline">
@@ -4051,6 +4115,8 @@ async function renderSettings() {
         <button class="btn btn-primary" id="expGo">生成导出页</button>
       </div>
     </div>`;
+
+  Theme.bindPicker($("#themePick"));
 
   $("#expGo").onclick = () => {
     const p = new URLSearchParams({
@@ -6695,4 +6761,5 @@ async function renderInterview() {
 
 /* N2 学习提醒：先水合服务端设置再启动网页版轮询；不阻塞首屏路由渲染。 */
 hydrateReminderPref().catch(() => {}).then(() => ReminderWeb.start());
+Theme.init();   // N5：把主题落到 <html>（<head> 内联脚本已先跑一次，这里是兜底 + 订阅系统切换）
 route();

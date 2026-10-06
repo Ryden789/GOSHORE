@@ -46,6 +46,62 @@ function countdownBanner(examDate, daysLeft) {
     </div>`;
 }
 
+/* N5 夜间模式 · 网页端（app.js / m.js 逐字节一致）。
+   偏好 Pref('theme') ∈ 'auto' | 'light' | 'dark'，结果落到 <html data-theme="light|dark">。
+   'auto' 跟随系统 matchMedia('(prefers-color-scheme: dark)')，系统切换即时生效。
+   颜色本身全在 CSS 变量里（html[data-theme="dark"] 覆写），JS 只负责设属性 —— 不逐元素改。
+   防闪烁：index.html 的 <head> 里有一段等价的内联脚本，先于样式表生效。 */
+const Theme = {
+  KEY: "theme",
+  PREFS: ["auto", "light", "dark"],
+  DARK_META: "#201d18",          // 夜间地址栏 / 状态栏底色（与 --paper 一致）
+  _mq: null,
+  norm(v) { return this.PREFS.indexOf(v) > -1 ? v : "auto"; },
+  sysDark() {
+    try { return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches); }
+    catch (e) { return false; }
+  },
+  resolve(pref, sys) { const p = this.norm(pref); return p === "auto" ? (sys ? "dark" : "light") : p; },
+  current() { return this.norm(Pref.get(this.KEY, "auto")); },
+  /** 把当前偏好落到 <html>，并同步浏览器 UI 颜色；返回生效主题 */
+  apply() {
+    const eff = this.resolve(this.current(), this.sysDark());
+    document.documentElement.dataset.theme = eff;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", eff === "dark" ? this.DARK_META : (meta.dataset.light || "#a6342a"));
+    return eff;
+  },
+  set(v) { Pref.set(this.KEY, this.norm(v)); this.apply(); },
+  /** 启动时调用一次：应用偏好 + 订阅系统深浅变化 */
+  init() {
+    this.apply();
+    try {
+      if (!window.matchMedia) return;
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      this._mq = mq;
+      const on = () => { if (this.current() === "auto") this.apply(); };
+      if (mq.addEventListener) mq.addEventListener("change", on);
+      else if (mq.addListener) mq.addListener(on);   // 旧 WebView 兼容
+    } catch (e) {}
+  },
+  /** 设置页分段控件（两端共用同一套 .type-check 样式） */
+  pickerHtml() {
+    return [["auto", "跟随系统"], ["light", "浅色"], ["dark", "夜间"]]
+      .map(([k, v]) => `<div class="type-check ${this.current() === k ? "on" : ""}" data-theme-pick="${k}">${v}</div>`)
+      .join("");
+  },
+  bindPicker(root) {
+    const box = root || document;
+    box.querySelectorAll("[data-theme-pick]").forEach(el => {
+      el.onclick = () => {
+        this.set(el.dataset.themePick);
+        box.querySelectorAll("[data-theme-pick]").forEach(x =>
+          x.classList.toggle("on", x === el));
+      };
+    });
+  },
+};
+
 /* N1 断点续做 · 练习草稿（双端逐字节一致）。
    把「做到第几题 / 每题选了什么 / 标记 / 考场倒计时截止时间」存到服务端
    `paper_drafts`（scope 只有 'normal' 与 'exam'，各留最近一份），下次进做题页还原。
@@ -811,6 +867,7 @@ function mountHintBar() {
 
 async function boot() {
   applyFontSize();
+  Theme.init();   // N5：把主题落到 <html>（<head> 内联脚本已先跑一次，这里是兜底 + 订阅系统切换）
   mountHintBar();
   // N2 学习提醒：先水合偏好再启动网页版轮询（APP 内 start() 会自动让位原生）
   await hydrateReminderPref();
@@ -3829,6 +3886,9 @@ async function renderSettings() {
     </div>
     <div class="card">
       <h3>学习偏好</h3>
+      <div class="cfg-label">主题</div>
+      <div class="type-checks" id="themePick">${Theme.pickerHtml()}</div>
+      <div class="muted" style="margin:6px 0 14px">夜间为「宣纸夜景」：暖灰墨底 + 米白文字；「跟随系统」随系统深浅自动切换。</div>
       <div class="cfg-label">字号</div>
       <div class="type-checks" id="fontPick">
         ${[["s", "小字"], ["m", "标准"], ["b", "大字"]].map(([k, v]) =>
@@ -3858,6 +3918,7 @@ async function renderSettings() {
       <div class="muted">有更新时下载更新包，到「导入 → 题库更新」手动安装；答题记录不受影响</div>
     </div>`;
 
+  Theme.bindPicker($("#themePick"));
   $$("#fontPick .type-check").forEach(t => t.onclick = () => {
     Pref.set("fontsize", t.dataset.f);
     $$("#fontPick .type-check").forEach(x =>

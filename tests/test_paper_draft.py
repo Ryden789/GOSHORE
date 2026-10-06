@@ -551,10 +551,20 @@ def test_draft_card_has_own_style():
 
 
 def test_static_cache_version_bumped():
-    """改了前端必须同步升缓存版本，否则用户拿到旧 JS。"""
-    for p in (INDEX, M_INDEX, SW_JS):
-        assert "20261018" in _norm(p), f"{p.name} 缓存版本未升到 20261018"
-        assert "20261017" not in _norm(p), f"{p.name} 还残留旧缓存版本"
+    """改了前端必须同步升缓存版本，否则用户拿到旧 JS。
+
+    缓存版本是**全站共享**的（后续功能还会继续往上加），所以这里不钉死某个值，
+    只校验三处（桌面 index / 移动 index / sw.js）一致且不早于 N1 的 20261018。
+    """
+    def v(p, pat):
+        m = re.search(pat, _norm(p))
+        return m.group(1) if m else None
+    vs = {v(INDEX, r"app\.js\?v=(\d+)"),
+          v(M_INDEX, r"m/m\.js\?v=(\d+)"),
+          v(SW_JS, r"goshore-(\d+)")}
+    assert None not in vs, f"缓存版本号没解析到：{vs}"
+    assert len(vs) == 1, f"三处缓存版本不一致：{vs}"
+    assert vs.pop() >= "20261018", "缓存版本疑似回退（应 >= 20261018）"
 
 
 def test_no_legacy_draft_keys():
