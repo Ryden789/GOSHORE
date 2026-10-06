@@ -18,6 +18,37 @@ if str(ROOT) not in sys.path:
 
 from app import db  # noqa: E402
 
+# 仓库里的真实库；测试绝不允许碰它
+REAL_DB = ROOT / "data" / "goshor.db"
+
+
+def _db_signature() -> list[tuple]:
+    """真实库（含 -wal/-shm）的存在性/大小/mtime 指纹。"""
+    out = []
+    for p in (REAL_DB, Path(str(REAL_DB) + "-wal"), Path(str(REAL_DB) + "-shm")):
+        if p.exists():
+            st = p.stat()
+            out.append((p.name, st.st_size, st.st_mtime_ns))
+        else:
+            out.append((p.name, None, None))
+    return out
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _guard_real_db():
+    """守卫：整套测试跑完后，真实库 `data/goshor.db` 必须一字未动。
+
+    有任何用例绕过临时库直接打到真实库，都会在这里被抓出来（这正是建议6 里
+    「确认没有用例读写真实库」那条验收）。注意快照在收集之后才取，因此模块
+    导入阶段的影响不在覆盖范围内。
+    """
+    before = _db_signature()
+    yield
+    after = _db_signature()
+    assert before == after, (
+        "有测试改动了真实库 data/goshor.db！所有用例都必须只跑在临时库上。\n"
+        f"  之前: {before}\n  之后: {after}")
+
 
 @pytest.fixture()
 def temp_db(tmp_path, monkeypatch):

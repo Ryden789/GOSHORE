@@ -557,7 +557,9 @@ def api_mastery(module: str = "", only_practiced: bool = False,
                 limit: int = 0, offset: int = 0):
     """考点级掌握度图谱（功能 1.4）。
 
-    limit=0 返回全部（兼容旧调用）；前端默认分页拉取，避免上万行一次性渲染。
+    limit 语义：不传/0 → 安全默认 MASTERY_PAGE_DEFAULT 条（防新客户端忘传参数
+    把 1.45MB 全量拉回来）；>0 → 指定条数；-1 → 显式全量。
+    前端默认分页拉取，避免上万行一次性渲染。
     """
     return db.kaodian_mastery_page(module, only_practiced=only_practiced,
                                    limit=limit, offset=offset)

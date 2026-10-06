@@ -12,7 +12,7 @@
  *   响应请求，用户看到的是上一版界面（stale-while-revalidate 的固有代价）。
  *   建议直接复用 index.html 里的 ?v= 日期号。
  */
-const VERSION = "goshore-20261013";
+const VERSION = "goshore-20261014";
 const SHELL_CACHE = VERSION + "-shell";
 const RUNTIME_CACHE = VERSION + "-runtime";
 const OFFLINE_URL = "/offline.html";

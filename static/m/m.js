@@ -892,16 +892,19 @@ async function renderInterview() {
 /* ---------- 能力雷达 & 学习计划（2.1） ---------- */
 
 function mRadarSvg(items) {
-  const S = 260, cx = S / 2, cy = S / 2, R = 84;
+  const R = 88;                                   // 雷达半径（用户单位）
   const n = items.length || 1;
   const ang = i => -Math.PI / 2 + i * 2 * Math.PI / n;
-  const pt = (i, r) => [cx + Math.cos(ang(i)) * R * r, cy + Math.sin(ang(i)) * R * r];
+  // 以原点为圆心算几何，最后按「所有元素 + 标签」的包围盒反推 viewBox。
+  // 固定 viewBox（原先 0 0 260 260）在模块名较长或小屏（<360px）时会把最外侧
+  // 标签裁掉，这里改成算出来的，从根上避免裁切。
+  const pt = (i, r) => [Math.cos(ang(i)) * R * r, Math.sin(ang(i)) * R * r];
   const rings = [0.25, 0.5, 0.75, 1].map(r =>
     `<polygon points="${items.map((_, i) => pt(i, r).map(v => v.toFixed(1)).join(",")).join(" ")}"
       fill="none" stroke="var(--line)" stroke-width="1"/>`).join("");
   const axes = items.map((_, i) => {
     const p = pt(i, 1);
-    return `<line x1="${cx}" y1="${cy}" x2="${p[0].toFixed(1)}" y2="${p[1].toFixed(1)}" stroke="var(--line-soft)" stroke-width="1"/>`;
+    return `<line x1="0" y1="0" x2="${p[0].toFixed(1)}" y2="${p[1].toFixed(1)}" stroke="var(--line-soft)" stroke-width="1"/>`;
   }).join("");
   const vals = items.map(it => (it.rate === null || it.rate === undefined) ? 0.05 : Math.max(0.05, it.rate));
   const poly = items.map((_, i) => pt(i, vals[i]).map(v => v.toFixed(1)).join(",")).join(" ");
@@ -909,14 +912,28 @@ function mRadarSvg(items) {
     const p = pt(i, vals[i]);
     return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6" fill="var(--cinnabar)"/>`;
   }).join("");
+
+  const FS = 11, PFS = 10, PAD = 6;               // 模块名字号 / 百分比字号 / 内边距
+  const boxes = [[-R, -R, R, R]];                 // 雷达本体先入包围盒
   const labels = items.map((it, i) => {
     const p = pt(i, 1.22);
-    const anchor = Math.abs(p[0] - cx) < 8 ? "middle" : (p[0] > cx ? "start" : "end");
+    const name = esc(it.module);
+    const anchor = Math.abs(p[0]) < 8 ? "middle" : (p[0] > 0 ? "start" : "end");
     const pct = (it.rate === null || it.rate === undefined) ? "未练" : Math.round(it.rate * 100) + "%";
-    return `<text x="${p[0].toFixed(1)}" y="${(p[1] + 2).toFixed(1)}" text-anchor="${anchor}" font-size="11" fill="var(--ink-2)">${esc(it.module)}</text>
-      <text x="${p[0].toFixed(1)}" y="${(p[1] + 13).toFixed(1)}" text-anchor="${anchor}" font-size="10" fill="var(--ink-3)">${pct}</text>`;
+    // 中文按 1em/字估算（偏保守），避免标签算出界
+    const w = Math.max(name.length * FS, pct.length * FS * 0.6);
+    const x0 = anchor === "start" ? p[0] : anchor === "end" ? p[0] - w : p[0] - w / 2;
+    boxes.push([x0, p[1] - FS, x0 + w, p[1] + 15]);
+    return `<text x="${p[0].toFixed(1)}" y="${(p[1] + 2).toFixed(1)}" text-anchor="${anchor}" font-size="${FS}" fill="var(--ink-2)">${name}</text>
+      <text x="${p[0].toFixed(1)}" y="${(p[1] + 13).toFixed(1)}" text-anchor="${anchor}" font-size="${PFS}" fill="var(--ink-3)">${pct}</text>`;
   }).join("");
-  return `<svg viewBox="0 0 ${S} ${S}" width="100%" style="max-width:${S}px;display:block;margin:0 auto">
+
+  const minX = Math.floor(Math.min(...boxes.map(b => b[0])) - PAD);
+  const minY = Math.floor(Math.min(...boxes.map(b => b[1])) - PAD);
+  const W = Math.ceil(Math.max(...boxes.map(b => b[2])) + PAD - minX);
+  const H = Math.ceil(Math.max(...boxes.map(b => b[3])) + PAD - minY);
+  return `<svg viewBox="${minX} ${minY} ${W} ${H}" width="100%"
+    style="max-width:${W}px;display:block;margin:0 auto" role="img" aria-label="能力雷达">
     ${rings}${axes}
     <polygon points="${poly}" fill="rgba(140,43,33,.16)" stroke="var(--cinnabar)" stroke-width="2"/>
     ${dots}${labels}</svg>`;
@@ -1944,13 +1961,14 @@ function mReasonDonut(items) {
     </div>`).join("");
   return `<div class="card">
     <h3>错因分布</h3>
-    <div style="display:flex;gap:18px;align-items:center">
-      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="错因分布圆环">
+    <div class="donut-row">
+      <svg class="donut-svg" viewBox="0 0 120 120" width="100%"
+           role="img" aria-label="错因分布圆环">
         ${arcs}
         <text x="${C}" y="${C - 1}" text-anchor="middle" font-size="19" font-weight="700" fill="var(--ink-1)">${total}</text>
         <text x="${C}" y="${C + 14}" text-anchor="middle" font-size="10" fill="var(--ink-3)">道错题</text>
       </svg>
-      <div style="flex:1;min-width:0">${legend}</div>
+      <div class="donut-legend">${legend}</div>
     </div>
   </div>`;
 }

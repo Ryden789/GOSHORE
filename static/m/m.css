@@ -683,11 +683,22 @@ h2.sec { font-family: var(--serif); font-size: 15px; color: var(--ink-3); letter
 }
 .wrong-q:last-child { border-bottom: none; }
 
+/* ---- 建议5：错因分布圆环（响应式，窄屏不溢出） ----
+   圆环用 viewBox 等比缩放，宽度随容器伸缩；图例 min-width:0 才允许被压缩。 */
+.donut-row { display: flex; gap: 16px; align-items: center; }
+.donut-svg {
+  flex: 0 1 112px; min-width: 72px; width: 100%; height: auto; display: block;
+}
+.donut-legend { flex: 1; min-width: 0; }
+
 @media (max-width: 360px) {
   .sr-item { padding: 11px 10px; gap: 7px; }
   .sr-kind { font-size: 10px; padding: 2px 5px; }
   .sr-open-hint { font-size: 11px; }
   .run-result-actions { grid-template-columns: 1fr; }
+  /* 建议5：320~360px 下再收一档，保证无横向滚动条 */
+  .donut-row { gap: 10px; }
+  .donut-svg { flex-basis: 92px; min-width: 62px; }
 }
 
 /* 词语填空 */

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 
 import pytest
@@ -217,19 +218,29 @@ def test_update_mastery_up_down(temp_db):
 
 
 def test_update_mastery_streak_bonus_and_clamp(temp_db):
+    """连对加分（含连对加成）封顶 1.0，连错扣分封底 0.0。
+
+    迭代次数刻意压到最少够用的量：从 0.5 起连对 3 次即触顶（0.65 → 0.82 → 1.0），
+    连错 4 次即触底。原先各跑 20/10 次只是重复做同样的 clamp，纯属浪费——
+    每次 update_mastery 都要单独开一次库，在这个项目上开库是最贵的操作。
+    """
     conn = temp_db.connect()
     seed_docs(conn, [_one_doc()])
     conn.close()
-    for _ in range(20):
+    for _ in range(8):                         # ≥3 次即触顶，留余量覆盖连对加成区间
         score = temp_db.update_mastery(1, True)
     assert score == 1.0                        # 连对封顶
-    for _ in range(10):
+    for _ in range(5):                         # ≥4 次即触底
         score = temp_db.update_mastery(1, False)
     assert score == 0.0                        # 连错封底
 
 
 def test_adaptive_paper_prefers_weak(temp_db):
-    """掌握度越低的题，被抽中概率越高：只放 2 题、大量重复抽样比较命中率。"""
+    """建议4：掌握度越低的题，被抽中概率越高——必须显著高于均匀基线。
+
+    直接对纯抽样函数 `weighted_sample()` 做 2000 次抽样：只建一次连接，既避开
+    上百次开库开销，又比原先 200 次抽样有强得多的统计功效。
+    """
     conn = temp_db.connect()
     seed_docs(conn, [_one_doc("weak"), _one_doc("strong")])
     conn.close()
@@ -239,11 +250,24 @@ def test_adaptive_paper_prefers_weak(temp_db):
     for _ in range(6):
         temp_db.update_mastery(1, False)
     assert temp_db.mastery_map()[1] < temp_db.mastery_map()[2]
+
+    pool = temp_db.adaptive_pool()
+    scores = dict(pool)
+    assert set(scores) == {1, 2}
+    # 权重 = max(0.05, 1 - 掌握度)：weak=1.0，strong=0.05 → P(weak) ≈ 95.2%
+    expected = 1.0 / (1.0 + 0.05)
+
+    rng = random.Random(20261006)              # 固定种子 → 结果可复现
+    trials = 2000
     hits = {1: 0, 2: 0}
-    for _ in range(200):
-        ids = temp_db.adaptive_paper(n=1)
-        hits[ids[0]] += 1
-    assert hits[1] > hits[2]                   # 弱项被抽中更多
+    for _ in range(trials):
+        hits[temp_db.weighted_sample(pool, 1, rng)[0]] += 1
+    ratio = hits[1] / trials
+
+    # 均匀随机基线是 50%。加权一旦被误写成均匀随机，下面第一条必然失败。
+    assert ratio > 0.75
+    # 同时要贴近理论值，确保权重公式本身没被改错（比如漏了 0.05 下限）
+    assert abs(ratio - expected) < 0.05
 
 
 def test_adaptive_paper_respects_filters(temp_db):
@@ -310,10 +334,36 @@ def test_kaodian_mastery_page_order_and_paging(temp_db):
     assert sum(temp_db.kaodian_mastery_page(limit=1)["levels"].values()) == 3
     assert sum(d3["levels"].values()) == 2
 
-    # limit=0 → 返回全部（兼容旧调用）
+    # 不传 limit → 取安全默认上限（本例数据不足上限，故仍全量返回）
     assert len(temp_db.kaodian_mastery_page()["items"]) == 3
     # 模块过滤同样生效
     assert temp_db.kaodian_mastery_page("判断推理")["total"] == 0
+
+
+def test_mastery_page_default_limit_is_safe(temp_db, monkeypatch):
+    """不传 limit 必须走安全默认上限，而不是把上万条考点全量吐回去。
+
+    实测裸调 /api/mastery 曾返回 1.45MB；任何新客户端忘传 limit 都会让
+    手机端一次渲染上万行卡死（首屏 4 秒以上）。
+    """
+    conn = temp_db.connect()
+    # 造 5 条考点，用「把默认上限临时调小」来验证截断逻辑
+    seed_docs(conn, [_one_doc(f"考点{i}", "资料分析", kaodian=f"资料分析 / K{i}")
+                     for i in range(5)])
+    conn.close()
+
+    monkeypatch.setattr(temp_db, "MASTERY_PAGE_DEFAULT", 2)
+    d = temp_db.kaodian_mastery_page()
+    assert d["shown"] == 2 and d["total"] == 5     # 截断但仍回报总数
+    assert d["limit"] == 0                          # 回显原始入参
+    assert len(d["items"]) <= temp_db.MASTERY_PAGE_DEFAULT
+
+    # limit=-1 → 显式全量
+    full = temp_db.kaodian_mastery_page(limit=-1)
+    assert full["shown"] == 5 and full["limit"] == -1
+
+    # limit 非法值不应炸，退化为安全默认
+    assert len(temp_db.kaodian_mastery_page(limit="oops")["items"]) == 2
 
 
 def test_decay_mastery(temp_db, monkeypatch):

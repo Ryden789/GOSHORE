@@ -3,6 +3,10 @@
 覆盖：抓取解析、期次归类、价值筛选、内容生成、AI 出题解析容错、
 URL 增量去重、以及流水线 main() 的离线优雅退出与重复运行幂等。
 
+**离线回归（建议3）**：`tests/fixtures/people_1024_sample.html` 是一份手工构造的
+人民网列表页样例，`--html-file` 走它时全程不联网，CI 也能稳定回归「链接提取 /
+噪声过滤 / 期次归档 / 去重」这些纯解析逻辑。
+
 运行：python -m pytest tests/test_shizheng_pipeline.py -q
 """
 from __future__ import annotations
@@ -17,6 +21,8 @@ import pytest
 from app import ai, db
 
 ROOT = Path(__file__).resolve().parent.parent
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
+PEOPLE_HTML = FIXTURE_DIR / "people_1024_sample.html"
 
 # 以文件路径加载 scripts/update_shizheng.py（scripts 非包）
 _spec = importlib.util.spec_from_file_location(
@@ -147,6 +153,7 @@ def test_seen_urls_and_mark(temp_db):
 def _make_db(path: Path) -> None:
     orig = db.DB_PATH
     db.DB_PATH = path
+    db.IS_MOBILE = False          # 桌面模式，避免受 mobile_db 夹具的残留状态影响
     conn = db.connect()
     db.init_db(conn)
     conn.close()
@@ -157,13 +164,11 @@ def test_main_exits_2_when_offline(tmp_path, monkeypatch):
     dbf = tmp_path / "t.db"
     _make_db(dbf)
     man = tmp_path / "man.json"
-    monkeypatch.setattr(usz, "scrape", lambda pages: None)
-    monkeypatch.setattr(sys, "argv", ["update_shizheng.py", "--db", str(dbf),
-                                      "--manifest", str(man),
-                                      "--out", str(tmp_path / "o.json")])
+    monkeypatch.setattr(usz, "scrape", lambda pages, html_file=None: None)
     orig = db.DB_PATH
     try:
-        code = usz.main()
+        code = usz.main(["--db", str(dbf), "--manifest", str(man),
+                         "--out", str(tmp_path / "o.json")])
     finally:
         db.DB_PATH = orig
     assert code == 2
@@ -173,42 +178,145 @@ def test_main_exits_2_when_offline(tmp_path, monkeypatch):
 
 
 def test_main_full_run_and_idempotent(tmp_path, monkeypatch):
+    """全链路 + 幂等。
+
+    完整流程统一由下方「建议3」小节的 fixture 版本覆盖（不联网、断言更全），
+    这里只保留一条最精简的假数据版本，用于确认不依赖 fixture 内容时主干仍成立。
+    """
     dbf = tmp_path / "t.db"
     _make_db(dbf)
     items = [
         {"date": "2026-09-24", "title": "习近平主持召开中央政治局会议并发表重要讲话",
          "url": "http://p/1"},
-        {"date": "2026-09-20", "title": "国务院常务会议部署经济工作", "url": "http://p/2"},
         {"date": "2026-09-18", "title": "某地举办群众文化活动", "url": "http://p/3"},
     ]
-    monkeypatch.setattr(usz, "scrape", lambda pages: items)
+    monkeypatch.setattr(usz, "scrape", lambda pages, html_file=None: items)
+    man = tmp_path / "man.json"
+    orig = db.DB_PATH
+    try:
+        assert usz.main(["--db", str(dbf), "--out", str(tmp_path / "o.json"),
+                         "--manifest", str(man), "--no-ai"]) == 0
+        m = json.loads(man.read_text(encoding="utf-8"))
+        assert m["new_urls"] == 2
+        assert m["updated_periods"] == ["2026年9月下半月"]
+        saved = db.get_shizheng("2026年9月下半月")
+        assert saved and "中央政治局会议" in saved["content"]
+        assert "群众文化活动" not in saved["content"]     # 无关键词 → 被过滤
+    finally:
+        db.DB_PATH = orig
+
+
+# ---------------- 建议3：离线 fixture（--html-file）全链路回归 ----------------
+
+def _no_network(monkeypatch):
+    """任何真实网络访问都应让用例失败——离线路径必须一次都不联网。"""
+    def boom(url, timeout=20):
+        raise AssertionError(f"离线路径不应发起网络请求：{url}")
+    monkeypatch.setattr(usz, "fetch", boom)
+    monkeypatch.setattr(usz.time, "sleep", lambda s: None)
+
+
+def test_html_file_parses_without_network(monkeypatch):
+    """本地 HTML 应解析出 9 条链接（2 条短文本 / 非 /n1/ 链接被忽略），且不联网。"""
+    _no_network(monkeypatch)
+    items = usz.scrape(1, html_file=str(PEOPLE_HTML))
+    assert items is not None
+    assert len(items) == 9
+    # 文本 <6 字的链接被丢弃
+    assert all(len(i["title"]) >= 6 for i in items)
+    # 非 /n1/YYYY/MMDD/ 的链接被丢弃
+    assert all("/n1/" in i["url"] for i in items)
+    # 绝对 URL 原样保留、相对 URL 补全为人民网域名
+    urls = {i["url"] for i in items}
+    assert any(u.startswith("http://www.people.com.cn/GB/1024/n1/") for u in urls)
+    assert any(u.startswith("http://politics.people.com.cn") for u in urls)
+    # 日期归一为 YYYY-MM-DD
+    assert {i["date"] for i in items} == {"2026-09-12", "2026-09-21",
+                                          "2026-09-22", "2026-09-23", "2026-09-24"}
+
+
+def test_html_file_noise_is_filtered(monkeypatch):
+    """fixture 里 2 条噪声（抵达 / 回到北京）应被 is_valuable 剔除，剩 7 条。"""
+    _no_network(monkeypatch)
+    items = usz.scrape(1, html_file=str(PEOPLE_HTML))
+    valuable = [i for i in items if usz.is_valuable(i["title"])]
+    assert len(valuable) == 7
+    noise = [i["title"] for i in items if not usz.is_valuable(i["title"])]
+    assert len(noise) == 2
+    assert any("抵达" in t for t in noise)
+    assert any("回到北京" in t for t in noise)
+
+
+def test_html_file_missing_returns_none(tmp_path, monkeypatch):
+    """文件不存在 → 返回 None（等价于无网），不抛异常。"""
+    _no_network(monkeypatch)
+    assert usz.scrape(1, html_file=str(tmp_path / "nope.html")) is None
+
+
+def test_main_offline_html_file_end_to_end(tmp_path, monkeypatch):
+    """--html-file 全链路：退出码 0、两期入库、条目数与噪声过滤都正确、二次运行幂等。"""
+    _no_network(monkeypatch)
+    dbf = tmp_path / "t.db"
+    _make_db(dbf)
     out = tmp_path / "scraped.json"
     man = tmp_path / "man.json"
-    monkeypatch.setattr(sys, "argv", [
-        "update_shizheng.py", "--db", str(dbf), "--out", str(out),
-        "--manifest", str(man), "--no-ai"])
+
+    def run():
+        return usz.main(["--db", str(dbf), "--out", str(out),
+                         "--manifest", str(man), "--no-ai",
+                         "--html-file", str(PEOPLE_HTML)])
 
     orig = db.DB_PATH
     try:
-        code = usz.main()
-        assert code == 0
+        assert run() == 0
         m = json.loads(man.read_text(encoding="utf-8"))
-        assert m["new_urls"] == 3
-        assert m["updated_periods"] == ["2026年9月下半月"]
+        assert m["scraped_total"] == 9
+        assert m["new_urls"] == 9
+        assert m["updated_periods"] == ["2026年9月下半月", "2026年9月上半月"]
         assert "ai_disabled" in m["skipped"]
-        # 归档文件按月分组
-        arch = json.loads(out.read_text(encoding="utf-8"))
-        assert "2026-09" in arch
-        # 内容已入库，且只保留高价值条目（文化活动被过滤）
-        saved = db.get_shizheng("2026年9月下半月")
-        assert saved and "中央政治局会议" in saved["content"]
-        assert "群众文化活动" not in saved["content"]
+        assert "network_unavailable" not in m["skipped"]
+        # 按月归档文件
+        assert "2026-09" in json.loads(out.read_text(encoding="utf-8"))
 
-        # 第二次运行：URL 已见 → 0 新增、0 更新（幂等）
-        code2 = usz.main()
-        assert code2 == 0
+        lower = db.get_shizheng("2026年9月下半月")
+        upper = db.get_shizheng("2026年9月上半月")
+        assert lower and upper
+        # 只保留高价值条目：下半月 5 条、上半月 2 条
+        assert lower["content"].count("- **") == 5
+        assert upper["content"].count("- **") == 2
+        # 噪声不进正文
+        assert "抵达" not in lower["content"]
+        assert "回到北京" not in lower["content"]
+
+        # 第二次运行：URL 全部已见 → 0 新增、0 更新（幂等）
+        assert run() == 0
         m2 = json.loads(man.read_text(encoding="utf-8"))
         assert m2["new_urls"] == 0
         assert m2["updated_periods"] == []
+        assert db.get_shizheng("2026年9月下半月")["content"] == lower["content"]
+    finally:
+        db.DB_PATH = orig
+
+
+def test_main_offline_html_file_no_key_exits_3(tmp_path, monkeypatch):
+    """离线 fixture + 未配置 Key → 入库照常完成，退出码 3（仅跳过 AI 出题）。"""
+    _no_network(monkeypatch)
+    dbf = tmp_path / "t.db"
+    _make_db(dbf)
+    man = tmp_path / "man.json"
+    # 不真的调用 AI：直接声明「无 Key」且出题返回空
+    monkeypatch.setattr(usz, "generate_quiz", lambda period, content: None)
+    monkeypatch.setattr(usz, "_has_api_key", lambda: False)
+
+    orig = db.DB_PATH
+    try:
+        code = usz.main(["--db", str(dbf), "--out", str(tmp_path / "o.json"),
+                         "--manifest", str(man), "--html-file", str(PEOPLE_HTML)])
+        assert code == 3
+        m = json.loads(man.read_text(encoding="utf-8"))
+        assert "no_api_key" in m["skipped"]
+        # 抓取入库并未被 AI 缺 Key 影响
+        assert m["updated_periods"] == ["2026年9月下半月", "2026年9月上半月"]
+        assert db.get_shizheng("2026年9月下半月") is not None
     finally:
         db.DB_PATH = orig

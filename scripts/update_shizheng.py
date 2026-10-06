@@ -9,6 +9,7 @@
     python scripts/update_shizheng.py --no-ai         # 只抓取入库，不调用 AI
     python scripts/update_shizheng.py --periods 3     # 只更新最近 3 期
     python scripts/update_shizheng.py --pages 6       # 只抓前 6 页
+    python scripts/update_shizheng.py --html-file x.html   # 离线：只解析本地 HTML，不联网
 
 退出码：
     0  成功（包含「本次没有新增」）
@@ -106,10 +107,41 @@ def fetch(url: str, timeout: int = 20) -> str:
     return raw.decode("utf-8", "ignore")
 
 
-def scrape(pages: int) -> list[dict] | None:
-    """抓取列表页 → 条目列表；网络不可用返回 None。"""
-    page_names = ["index.html"] + [f"index{i}.html" for i in range(2, pages + 1)]
+def _collect(parser: LinkParser) -> list[dict]:
+    """把解析出的链接按 (date, title) 去重后返回。"""
     seen: set[tuple] = set()
+    out: list[dict] = []
+    for it in parser.items:
+        key = (it["date"], it["title"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out
+
+
+def scrape(pages: int, html_file: str | None = None) -> list[dict] | None:
+    """抓取列表页 → 条目列表；网络不可用返回 None。
+
+    html_file 非空时只读该本地文件（离线 / CI 回归解析逻辑用），不发任何网络请求。
+    """
+    if html_file:
+        try:
+            html = Path(html_file).read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:                      # noqa: BLE001
+            print(f"  [warn] 读取本地 HTML 失败 {html_file}: {e}")
+            return None
+        parser = LinkParser()
+        try:
+            parser.feed(html)
+        except Exception as e:                      # noqa: BLE001
+            print(f"  [warn] 解析本地 HTML 失败 {html_file}: {e}")
+            return None
+        out = _collect(parser)
+        print(f"  [local] {Path(html_file).name}: 链接 {len(parser.items)} 条，去重后 {len(out)}")
+        return out
+
+    page_names = ["index.html"] + [f"index{i}.html" for i in range(2, pages + 1)]
     out: list[dict] = []
     ok_pages = 0
     for pg in page_names:
@@ -125,12 +157,9 @@ def scrape(pages: int) -> list[dict] | None:
         except Exception as e:                      # noqa: BLE001
             print(f"  [warn] 解析失败 {pg}: {e}")
             continue
-        for it in parser.items:
-            key = (it["date"], it["title"])
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(it)
+        merged = _collect(parser)
+        known = {(it["date"], it["title"]) for it in out}
+        out.extend(it for it in merged if (it["date"], it["title"]) not in known)
         print(f"  {pg}: 链接 {len(parser.items)} 条，累计 {len(out)}")
         time.sleep(0.4)
     if ok_pages == 0:
@@ -181,7 +210,7 @@ def generate_quiz(period: str, content: str) -> list[dict] | None:
     return ai.parse_shizheng_quiz_json(raw)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="时政内容自动化流水线")
     ap.add_argument("--db", default=str(ROOT / "data" / "goshor.db"))
     ap.add_argument("--out", default=str(ROOT / "data" / "shizheng_scraped.json"))
@@ -189,7 +218,9 @@ def main() -> int:
     ap.add_argument("--periods", type=int, default=6, help="最多更新最近 N 期")
     ap.add_argument("--pages", type=int, default=12, help="抓取页数")
     ap.add_argument("--no-ai", action="store_true", help="跳过 AI 出题")
-    args = ap.parse_args()
+    ap.add_argument("--html-file", default=None,
+                    help="从本地 HTML 读取列表页，不联网（离线 / 测试用）")
+    args = ap.parse_args(argv)
 
     # 让 app.db 指向目标库
     from app import db
@@ -203,7 +234,7 @@ def main() -> int:
                       "updated_periods": [], "quizzes": [], "skipped": []}
 
     print("[1/4] 抓取人民网高层动态…")
-    items = scrape(max(1, args.pages))
+    items = scrape(max(1, args.pages), html_file=args.html_file)
     if items is None:
         print("[exit] 网络不可用，已优雅退出（未做任何修改）")
         manifest["skipped"].append("network_unavailable")

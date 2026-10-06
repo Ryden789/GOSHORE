@@ -195,7 +195,8 @@ function pieSvg(data) {
   });
   const legend = data.map((d, i) =>
     `<div class="pie-lg"><i style="background:${PAL[i % PAL.length]}"></i>${esc(d.reason)} ${d.c}（${Math.round(d.c / total * 100)}%）</div>`).join("");
-  return `<div class="pie-flex"><svg width="160" height="160" viewBox="0 0 160 160">${paths}</svg><div>${legend}</div></div>`;
+  return `<div class="pie-flex"><svg viewBox="0 0 160 160" width="100%" role="img" aria-label="错因分布饼图"
+    style="flex:0 1 160px;min-width:96px;height:auto;display:block">${paths}</svg><div style="flex:1;min-width:0">${legend}</div></div>`;
 }
 
 /* ---------- 路由 ---------- */
@@ -1174,7 +1175,8 @@ function reasonDonut(items) {
   return `<div class="panel rise rise-1">
     <h3 style="margin:0 0 10px">错因分布</h3>
     <div style="display:flex;gap:24px;align-items:center;flex-wrap:wrap">
-      <svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label="错因分布圆环">
+      <svg viewBox="0 0 140 140" width="100%" role="img" aria-label="错因分布圆环"
+           style="flex:0 1 140px;min-width:92px;height:auto;display:block">
         ${arcs}
         <text x="${C}" y="${C - 2}" text-anchor="middle" font-size="22" font-weight="700" fill="var(--ink-1)">${total}</text>
         <text x="${C}" y="${C + 16}" text-anchor="middle" font-size="11" fill="var(--ink-3)">道错题</text>
@@ -5707,16 +5709,18 @@ async function renderZyNotes() {
 ===================================================== */
 
 function radarSvg(items) {
-  const S = 280, cx = S / 2, cy = S / 2, R = 92;
+  const R = 92;                                   // 雷达半径（用户单位）
   const n = items.length || 1;
   const ang = i => -Math.PI / 2 + i * 2 * Math.PI / n;
-  const pt = (i, r) => [cx + Math.cos(ang(i)) * R * r, cy + Math.sin(ang(i)) * R * r];
+  // 以原点为圆心算几何，viewBox 由「雷达本体 + 全部标签」的包围盒反推。
+  // 固定 viewBox（原先 0 0 280 280）在窄窗口下会把最外侧标签裁掉。
+  const pt = (i, r) => [Math.cos(ang(i)) * R * r, Math.sin(ang(i)) * R * r];
   const rings = [0.25, 0.5, 0.75, 1].map(r =>
     `<polygon points="${items.map((_, i) => pt(i, r).map(v => v.toFixed(1)).join(",")).join(" ")}"
       fill="none" stroke="var(--line)" stroke-width="1"/>`).join("");
   const axes = items.map((_, i) => {
     const p = pt(i, 1);
-    return `<line x1="${cx}" y1="${cy}" x2="${p[0].toFixed(1)}" y2="${p[1].toFixed(1)}" stroke="var(--line-soft)" stroke-width="1"/>`;
+    return `<line x1="0" y1="0" x2="${p[0].toFixed(1)}" y2="${p[1].toFixed(1)}" stroke="var(--line-soft)" stroke-width="1"/>`;
   }).join("");
   const vals = items.map(it => (it.rate === null || it.rate === undefined) ? 0.05 : Math.max(0.05, it.rate));
   const poly = items.map((_, i) => pt(i, vals[i]).map(v => v.toFixed(1)).join(",")).join(" ");
@@ -5724,14 +5728,27 @@ function radarSvg(items) {
     const p = pt(i, vals[i]);
     return `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3" fill="var(--cinnabar)"/>`;
   }).join("");
+
+  const FS = 11.5, PAD = 8;
+  const boxes = [[-R, -R, R, R]];
   const labels = items.map((it, i) => {
     const p = pt(i, 1.2);
-    const anchor = Math.abs(p[0] - cx) < 8 ? "middle" : (p[0] > cx ? "start" : "end");
+    const name = esc(it.module);
+    const anchor = Math.abs(p[0]) < 8 ? "middle" : (p[0] > 0 ? "start" : "end");
     const pct = (it.rate === null || it.rate === undefined) ? "未练" : Math.round(it.rate * 100) + "%";
-    return `<text x="${p[0].toFixed(1)}" y="${(p[1] + 2).toFixed(1)}" text-anchor="${anchor}" font-size="11.5" fill="var(--ink-2)">${esc(it.module)}</text>
+    const w = Math.max(name.length * FS, pct.length * FS * 0.6);
+    const x0 = anchor === "start" ? p[0] : anchor === "end" ? p[0] - w : p[0] - w / 2;
+    boxes.push([x0, p[1] - FS, x0 + w, p[1] + 16]);
+    return `<text x="${p[0].toFixed(1)}" y="${(p[1] + 2).toFixed(1)}" text-anchor="${anchor}" font-size="${FS}" fill="var(--ink-2)">${name}</text>
       <text x="${p[0].toFixed(1)}" y="${(p[1] + 14).toFixed(1)}" text-anchor="${anchor}" font-size="10.5" fill="var(--ink-3)">${pct}</text>`;
   }).join("");
-  return `<svg viewBox="0 0 ${S} ${S}" width="100%" style="max-width:${S}px;display:block;margin:0 auto">
+
+  const minX = Math.floor(Math.min(...boxes.map(b => b[0])) - PAD);
+  const minY = Math.floor(Math.min(...boxes.map(b => b[1])) - PAD);
+  const W = Math.ceil(Math.max(...boxes.map(b => b[2])) + PAD - minX);
+  const H = Math.ceil(Math.max(...boxes.map(b => b[3])) + PAD - minY);
+  return `<svg viewBox="${minX} ${minY} ${W} ${H}" width="100%"
+    style="max-width:${W}px;display:block;margin:0 auto" role="img" aria-label="能力雷达">
     ${rings}${axes}
     <polygon points="${poly}" fill="rgba(176,58,46,.15)" stroke="var(--cinnabar)" stroke-width="2"/>
     ${dots}${labels}</svg>`;

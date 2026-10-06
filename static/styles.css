@@ -457,6 +457,9 @@ input, select, textarea { font-family: var(--sans); }
   .question-panel .mark-btn { margin-left: 0; }
   .exam-result .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .exam-result .doc-item { align-items: flex-start; }
+  /* 建议5：窄窗口下图表等比缩小，避免挤压出横向滚动条 */
+  .pie-flex { gap: 12px; }
+  .pie-flex > svg { flex-basis: 128px; min-width: 88px; }
 }
 
 /* ============ 组卷 ============ */

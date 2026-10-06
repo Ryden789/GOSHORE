@@ -198,3 +198,80 @@ def test_export_print_uses_batch_fetch(client):
 
     r2 = client.get("/api/export/print?limit=5")
     assert r2.status_code == 200 and "题库导出" in r2.text
+
+
+def test_mastery_endpoint_default_is_bounded(client, monkeypatch):
+    """建议1：裸调 /api/mastery 必须被安全上限截断，不能全量返回。
+
+    实测旧行为返回 1.45MB（10588 条考点）；新客户端忘传 limit 会让手机端卡死。
+    """
+    monkeypatch.setattr(db, "MASTERY_PAGE_DEFAULT", 1)
+    r = client.get("/api/mastery")
+    assert r.status_code == 200
+    j = r.json()
+    assert len(j["items"]) <= 1
+    assert j["total"] >= 1          # 仍回报真实总数
+
+    # limit=-1 → 显式全量
+    r2 = client.get("/api/mastery?limit=-1")
+    assert r2.status_code == 200
+    assert len(r2.json()["items"]) == r2.json()["total"]
+
+    # 显式 limit 仍按指定条数
+    assert len(client.get("/api/mastery?limit=1").json()["items"]) == 1
+
+
+# ---------------- 建议2：AI 接口「未配置 Key」的降级路径 ----------------
+# 免费用户（不配 Key）是重要用户群。这些降级分支很容易被后续改动悄悄改坏，
+# 而线上表现为「点了没反应」，因此必须固化成测试。
+
+def _no_key(monkeypatch):
+    """把 AI 设置里的 Key 清空，其余保持真实值。"""
+    from app import ai
+    real = ai.load_settings
+    monkeypatch.setattr(ai, "load_settings",
+                        lambda: {**real(), "deepseek_api_key": ""})
+
+
+def test_wrong_reason_ai_without_key_degrades(client, monkeypatch):
+    """错因 AI 归因：无 Key 时应 200 + ok=False + 明确提示，而不是 500。"""
+    _no_key(monkeypatch)
+    r = client.post("/api/wrong-reason/ai-suggest", json={"doc_id": 1})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is False
+    assert "Key" in j.get("error", "")
+
+
+def test_essay_grade_without_key_emits_sse_error(client, monkeypatch):
+    """综应批改：无 Key 时 SSE 应推一条 error 事件并结束，不能 500。"""
+    _no_key(monkeypatch)
+    # category 必须是 essay_rubric.RUBRICS 的键名（前端下拉的 value 即取自这里），
+    # 写成中文题型名会先撞上 400「未知题型」，测不到无 Key 降级分支。
+    r = client.post("/api/essay/grade", json={
+        "category": "sl_guina",
+        "question": "请概括材料要点。",
+        "answer": "一是…二是…",
+    })
+    assert r.status_code == 200
+    body = r.text
+    assert '"type": "error"' in body or '"type":"error"' in body
+    assert "Key" in body
+    # 降级时不应产出 result/fallback（没有内容可存）
+    assert '"type": "result"' not in body
+    assert '"type": "fallback"' not in body
+
+
+def test_interview_grade_without_key_emits_sse_error(client, monkeypatch):
+    """面试点评：无 Key 时同样走 SSE error 降级路径。"""
+    _no_key(monkeypatch)
+    r = client.post("/api/interview/grade", json={
+        "question": "谈谈你对基层治理的理解。",
+        "answer": "我认为…",
+        "category": "综合分析",
+    })
+    assert r.status_code == 200
+    body = r.text
+    assert '"type": "error"' in body or '"type":"error"' in body
+    assert "Key" in body
+    assert '"type": "result"' not in body

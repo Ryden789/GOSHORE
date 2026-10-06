@@ -1614,6 +1614,12 @@ MASTERY_UP = 0.15              # 答对加分
 MASTERY_DOWN = 0.25            # 答错扣分
 MASTERY_DECAY_PER_DAY = 0.02   # 未复习衰减速度
 MASTERY_DECAY_AFTER_DAYS = 7   # 超过 N 天未复习才开始衰减
+# 自适应组卷的权重下限：已掌握的题也保留一点被抽中概率，避免"会的永远不再出现"。
+MASTERY_WEIGHT_FLOOR = 0.05
+# 考点图谱分页的安全默认上限：不传 limit 时取这么多条。
+# 题库有上万条考点（99%+ 未练），裸调 /api/mastery 会返回 ~1.45MB；
+# 任何新客户端忘记传 limit 都会让手机端一次渲染上万行直接卡死。
+MASTERY_PAGE_DEFAULT = 300
 
 
 def _ensure_mastery(conn: sqlite3.Connection) -> None:
@@ -1699,48 +1705,71 @@ def mastery_map() -> dict[int, float]:
     return {int(r["doc_id"]): float(r["score"]) for r in rows}
 
 
-def adaptive_paper(module: str = "", n: int = 15, kaodian: str = "") -> list[int]:
-    """自适应组卷：按掌握度加权抽样，掌握度越低越容易被抽中。
+def adaptive_pool(module: str = "", kaodian: str = "") -> list[tuple[int, float]]:
+    """自适应组卷的候选池 `[(doc_id, 掌握度), ...]`。
 
-    - 仅从真题（kind='真题'）中抽；module / kaodian 可选过滤。
-    - 权重 = 1 - 掌握度，设 0.05 下限避免已掌握题完全抽不到。
-    - 加权无放回抽样，返回 doc_id 列表。
+    仅取真题（kind='真题'），module / kaodian 可选过滤。抽签逻辑见
+    `weighted_sample()`——把「取数据」和「按权重抽签」拆开，是为了让加权规则
+    能用统计型测试大规模验证（抽样不必反复开库）。
     """
     conn = connect()
-    _ensure_mastery(conn)
-    where = ["d.kind='真题'"]
-    args: list = [MASTERY_DEFAULT]
-    if module:
-        where.append("d.module=?")
-        args.append(module)
-    if kaodian:
-        where.append("d.kaodian=?")
-        args.append(kaodian)
-    rows = conn.execute(
-        f"""SELECT d.id AS id, COALESCE(m.score, ?) AS score
-            FROM documents d LEFT JOIN mastery m ON m.doc_id = d.id
-            WHERE {' AND '.join(where)}""",
-        args,
-    ).fetchall()
-    conn.close()
-    pool = [(int(r["id"]), float(r["score"] or MASTERY_DEFAULT)) for r in rows]
-    if not pool:
+    try:
+        _ensure_mastery(conn)
+        where = ["d.kind='真题'"]
+        args: list = [MASTERY_DEFAULT]
+        if module:
+            where.append("d.module=?")
+            args.append(module)
+        if kaodian:
+            where.append("d.kaodian=?")
+            args.append(kaodian)
+        rows = conn.execute(
+            f"""SELECT d.id AS id, COALESCE(m.score, ?) AS score
+                FROM documents d LEFT JOIN mastery m ON m.doc_id = d.id
+                WHERE {' AND '.join(where)}""",
+            args,
+        ).fetchall()
+    finally:
+        conn.close()
+    return [(int(r["id"]), float(r["score"] or MASTERY_DEFAULT)) for r in rows]
+
+
+def weighted_sample(pool: list[tuple[int, float]], n: int,
+                    rng: random.Random | None = None) -> list[int]:
+    """按「掌握度越低权重越大」无放回抽 n 个 doc_id（纯函数，不碰数据库）。
+
+    权重 = `max(MASTERY_WEIGHT_FLOOR, 1 - 掌握度)`。抽签与数据库无关，因此可以
+    用固定种子做上万次抽样，验证加权确实生效而不是退化成均匀随机。
+    """
+    rnd = rng if rng is not None else random
+    rest = list(pool)
+    if not rest:
         return []
-    n = max(1, min(int(n), len(pool)))
+    n = max(1, min(int(n), len(rest)))
     out: list[int] = []
     for _ in range(n):
-        weights = [max(0.05, 1.0 - s) for _, s in pool]
+        weights = [max(MASTERY_WEIGHT_FLOOR, 1.0 - s) for _, s in rest]
         total = sum(weights)
-        r = random.random() * total
+        r = rnd.random() * total
         acc = 0.0
-        pick = len(pool) - 1
+        pick = len(rest) - 1
         for i, w in enumerate(weights):
             acc += w
             if r <= acc:
                 pick = i
                 break
-        out.append(pool.pop(pick)[0])
+        out.append(rest.pop(pick)[0])
     return out
+
+
+def adaptive_paper(module: str = "", n: int = 15, kaodian: str = "") -> list[int]:
+    """自适应组卷：按掌握度加权抽样，掌握度越低越容易被抽中。
+
+    - 仅从真题（kind='真题'）中抽；module / kaodian 可选过滤。
+    - 权重 = 1 - 掌握度，设 MASTERY_WEIGHT_FLOOR 下限避免已掌握题完全抽不到。
+    - 加权无放回抽样，返回 doc_id 列表。
+    """
+    return weighted_sample(adaptive_pool(module, kaodian), n)
 
 
 def _kaodian_mastery_all(module: str = "") -> list[dict]:
@@ -1818,6 +1847,11 @@ def kaodian_mastery_page(module: str = "", only_practiced: bool = False,
     题库有上万条考点、其中 99%+ 从未练习过；前端一次性渲染全部行会产生
     56 万字符 DOM、首屏 4 秒以上。此接口支持只取"练过的"与分页，
     并把总数/已练数一并返回，便于前端显示"还有 N 条"。
+
+    limit 语义（防新客户端忘传参数把 1.45MB 全量拉回来）：
+      不传 / 0  → 取 DEFAULT_LIMIT 条（安全默认）
+      > 0       → 取指定条数
+      < 0（-1） → 显式要全量
     """
     rows = _kaodian_mastery_all(module)
     practiced = sum(1 for x in rows if x["n"])
@@ -1829,11 +1863,18 @@ def kaodian_mastery_page(module: str = "", only_practiced: bool = False,
     for x in rows:
         levels[x["level"]] = levels.get(x["level"], 0) + 1
     off = max(0, int(offset or 0))
-    lim = int(limit or 0)
-    page = rows[off:off + lim] if lim > 0 else rows[off:]
+    try:
+        lim_raw = int(limit)
+    except (TypeError, ValueError):
+        lim_raw = 0
+    if lim_raw < 0:
+        page = rows[off:]                       # 显式全量（内部调用/导出场景）
+    else:
+        page = rows[off:off + (lim_raw or MASTERY_PAGE_DEFAULT)]
     return {
         "items": page, "total": total, "practiced": practiced,
         "shown": len(page), "offset": off, "levels": levels,
+        "limit": lim_raw,                       # 回显，便于调用方确认实际语义
     }
 
 
