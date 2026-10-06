@@ -41,14 +41,25 @@ async def lifespan(app: FastAPI):
         db.reindex()
     _startup_selfcheck()
     yield
+    # 退出前给后台掌握度衰减（建议9）一点时间收尾，避免留下半截批次
+    db.wait_decay_bg(2.0)
 
 
 def _startup_selfcheck() -> None:
-    """启动时自检核心数据接口，失败项用红色标注但不阻断启动。"""
+    """启动时自检核心数据接口，失败项用红色标注但不阻断启动。
+
+    逐项打印（含通过项）——这样「自检输出包含哪些项」本身是可观测的，
+    新增模块（面试 / 时政）有没有被覆盖，看启动日志即可确认（建议7）。
+    """
     checks = [
         ("题库 facets", lambda: db.facets()),
         ("试卷列表 list_exams", lambda: db.list_exams()),
         ("设置 load_settings", lambda: load_settings()),
+        # 建议7：新模块（面试 / 时政）的表可访问性，沿用 facets/list_exams 的检查模式。
+        # 空表返回 [] 不算失败——这里只验证「表存在且可查询」，不是验证「有没有内容」。
+        ("面试题库 list_interview_questions", lambda: db.list_interview_questions()),
+        ("面试分类 interview_category_counts", lambda: db.interview_category_counts()),
+        ("时政库 list_shizheng", lambda: db.list_shizheng()),
     ]
     ok, fail = 0, 0
     for name, fn in checks:
@@ -57,6 +68,7 @@ def _startup_selfcheck() -> None:
             if r is None:
                 raise RuntimeError("返回 None")
             ok += 1
+            print(f"\033[92m  [ OK ] {name}\033[0m")
         except Exception as e:
             fail += 1
             print(f"\033[91m  [FAIL] {name}: {e}\033[0m")

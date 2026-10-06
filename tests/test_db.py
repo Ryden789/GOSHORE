@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
+import time
 
 import pytest
 
@@ -379,6 +380,102 @@ def test_decay_mastery(temp_db, monkeypatch):
     conn.close()
     assert temp_db.decay_mastery(force=True) == 1
     assert temp_db.mastery_map()[1] < 0.65
+
+
+# ---------------- 建议9：衰减耗时日志 + 超预算转后台 ----------------
+
+def _seed_mastery(conn, n: int, days_old: int = 30, score: float = 0.9) -> None:
+    """造 n 条「days_old 天前练过」的掌握度记录（doc_id = 1..n）。"""
+    ts = time.time() - days_old * 86400
+    conn.executemany(
+        "INSERT OR REPLACE INTO mastery(doc_id,score,updated_at,correct_streak)"
+        " VALUES(?,?,?,0)", [(i, score, ts) for i in range(1, n + 1)])
+    conn.commit()
+
+
+def test_decay_mastery_logs_elapsed(temp_db, capsys, monkeypatch):
+    """建议9：衰减过程必须打出耗时日志（题库扩大后靠它判断是否触发后台）。"""
+    monkeypatch.setattr(temp_db, "_last_decay_at", 0.0)
+    conn = temp_db.connect()
+    temp_db._ensure_mastery(conn)
+    _seed_mastery(conn, 3)
+    conn.close()
+
+    assert temp_db.decay_mastery(force=True) == 3
+    out = capsys.readouterr().out
+    assert "[decay]" in out
+    assert "同步阶段" in out and "耗时" in out and "3/3" in out
+
+
+def test_decay_mastery_defers_to_background_over_budget(temp_db, capsys, monkeypatch):
+    """建议9：超过预算时同步阶段只处理一部分，剩余转后台且最终全部衰减完。"""
+    monkeypatch.setattr(temp_db, "DECAY_BATCH", 200)
+    monkeypatch.setattr(temp_db, "_last_decay_at", 0.0)
+    conn = temp_db.connect()
+    temp_db._ensure_mastery(conn)
+    _seed_mastery(conn, 700)
+    conn.close()
+
+    # budget_ms=0 → 处理完第一行就必然超预算
+    sync_n = temp_db.decay_mastery(force=True, budget_ms=0)
+    out = capsys.readouterr().out
+    assert 0 < sync_n < 700                  # 同步阶段没跑完
+    assert "[decay]" in out and "转后台" in out
+    assert f"剩余 {700 - sync_n} 题" in out
+
+    # 后台把剩余补齐，且打出后台日志
+    assert temp_db.wait_decay_bg(20) is True
+    assert "后台批次" in capsys.readouterr().out
+    scores = temp_db.mastery_map()
+    assert len(scores) == 700
+    assert all(s < 0.9 for s in scores.values())
+
+
+def test_decay_mastery_background_is_single_flight(temp_db, capsys, monkeypatch):
+    """同一时间只允许一个后台批次；重复调度会被拒掉，不会重复衰减。"""
+    monkeypatch.setattr(temp_db, "_last_decay_at", 0.0)
+    conn = temp_db.connect()
+    temp_db._ensure_mastery(conn)
+    _seed_mastery(conn, 4)
+    conn.close()
+
+    rows = temp_db.connect().execute(
+        "SELECT doc_id, score, updated_at FROM mastery").fetchall()
+    assert temp_db._schedule_decay_bg(rows, time.time()) is True
+    assert temp_db._schedule_decay_bg(rows, time.time()) is False   # 已有批次在跑
+    assert temp_db.wait_decay_bg(20) is True
+    assert temp_db._schedule_decay_bg(rows, time.time()) is True    # 跑完可再调度
+    assert temp_db.wait_decay_bg(20) is True
+
+
+def test_decay_mastery_throttled_without_force(temp_db, monkeypatch):
+    """不带 force 时 1 小时内只真正执行一次（原有节流语义不能丢）。"""
+    monkeypatch.setattr(temp_db, "_last_decay_at", 0.0)
+    conn = temp_db.connect()
+    temp_db._ensure_mastery(conn)
+    _seed_mastery(conn, 2)
+    conn.close()
+
+    assert temp_db.decay_mastery() == 2      # 首次执行
+    assert temp_db.decay_mastery() == 0      # 节流命中
+
+
+def test_stats_overview_not_blocked_by_large_decay(temp_db, monkeypatch):
+    """建议9：待衰减数据很多时 /api/stats 的底层仍能立即返回，剩余走后台。"""
+    monkeypatch.setattr(temp_db, "DECAY_BATCH", 100)
+    monkeypatch.setattr(temp_db, "DECAY_BUDGET_MS", 0)
+    monkeypatch.setattr(temp_db, "_last_decay_at", 0.0)
+    conn = temp_db.connect()
+    temp_db._ensure_mastery(conn)
+    _seed_mastery(conn, 400)
+    conn.close()
+
+    ov = temp_db.stats_overview()
+    assert isinstance(ov, dict) and "daily" in ov and "card_total" in ov
+
+    # 同步阶段只跑了第一批，其余交给后台；最终全部衰减完
+    assert temp_db.wait_decay_bg(20) is True
+    assert all(s < 0.9 for s in temp_db.mastery_map().values())
 
 
 def test_add_answer_updates_mastery(temp_db):

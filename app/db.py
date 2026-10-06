@@ -1620,6 +1620,11 @@ MASTERY_WEIGHT_FLOOR = 0.05
 # 题库有上万条考点（99%+ 未练），裸调 /api/mastery 会返回 ~1.45MB；
 # 任何新客户端忘记传 limit 都会让手机端一次渲染上万行直接卡死。
 MASTERY_PAGE_DEFAULT = 300
+# 掌握度衰减的执行策略（建议9）：先按批同步跑，超过预算就把剩余批次丢后台。
+# /api/stats 每次都会触发衰减（内部 1 小时节流），题库涨大后首次衰减可能很慢，
+# 不能让统计接口跟着一起卡住。
+DECAY_BATCH = 500              # 每批处理的题数
+DECAY_BUDGET_MS = 200          # 同步阶段最多占用的毫秒数，超出即转后台
 
 
 def _ensure_mastery(conn: sqlite3.Connection) -> None:
@@ -1659,40 +1664,167 @@ def update_mastery(doc_id: int, is_correct: bool) -> float:
 
 
 _last_decay_at = 0.0
+# 后台衰减批次（建议9）：同一时间只允许一个在跑，避免多次触发互相打架
+_decay_bg_lock = threading.Lock()
+_decay_bg_thread: threading.Thread | None = None
 
 
-def decay_mastery(force: bool = False, min_interval: float = 3600.0) -> int:
+def _decay_rows(conn: sqlite3.Connection, rows: list, now: float,
+                deadline: float | None = None) -> tuple[int, int]:
+    """对一批 mastery 行做衰减并写回。
+
+    返回 `(调整条数, 实际处理条数)`。`deadline` 是 `time.perf_counter()` 时间点，
+    超过它就提前收工——按行判定（而不是按批）才能真正把同步阶段的耗时框在预算内。
+    """
+    changed = 0
+    done = 0
+    for r in rows:
+        days = int((now - (r["updated_at"] or now)) // 86400)
+        if days > MASTERY_DECAY_AFTER_DAYS:
+            eff = min(days - MASTERY_DECAY_AFTER_DAYS, 60)  # 封顶，避免一次衰减到底
+            new_score = max(0.0, float(r["score"]) - eff * MASTERY_DECAY_PER_DAY)
+            if abs(new_score - float(r["score"])) >= 1e-9:
+                conn.execute(
+                    "UPDATE mastery SET score=?, updated_at=? WHERE doc_id=?",
+                    (new_score, now, r["doc_id"]),
+                )
+                changed += 1
+        done += 1
+        if deadline is not None and time.perf_counter() > deadline:
+            break
+    return changed, done
+
+
+def _log_decay(elapsed_ms: float, changed: int, total: int, *,
+               deferred: int = 0, background: bool = False,
+               budget_ms: float | None = None) -> None:
+    """衰减耗时日志（建议9）。题库扩大后能直接从日志看出是否触发后台分批。"""
+    tag = "后台批次" if background else "同步阶段"
+    msg = (f"  [decay] 掌握度衰减·{tag}：调整 {changed}/{total} 题，"
+           f"耗时 {elapsed_ms:.1f}ms")
+    if deferred:
+        b = DECAY_BUDGET_MS if budget_ms is None else budget_ms
+        msg += f"（超出 {b:g}ms 预算，剩余 {deferred} 题转后台）"
+    print(msg)
+
+
+def _decay_worker(rows: list, now: float, attempts: int = 3) -> None:
+    """后台分批跑完剩余的衰减（每次尝试都开新连接，失败可安全重试）。
+
+    为什么需要重试：WAL 下「最后一个连接关闭」会 checkpoint 并**删除** `-wal`/`-shm`。
+    如果主线程此刻正好在收尾、而后台连接还映射着已被删掉的 `-shm`，写操作会得到
+    `attempt to write a readonly database`。这是瞬时状态，换一条新连接重试即可；
+    衰减本身是幂等的（按 `updated_at` 重算），重试不会重复扣分。
+    """
+    global _decay_bg_thread
+    last_err: Exception | None = None
+    try:
+        for k in range(max(1, attempts)):
+            try:
+                t0 = time.perf_counter()
+                conn = connect()
+                try:
+                    _ensure_mastery(conn)
+                    changed = 0
+                    for i in range(0, len(rows), DECAY_BATCH):
+                        c, _done = _decay_rows(conn, rows[i:i + DECAY_BATCH], now)
+                        changed += c
+                        conn.commit()
+                finally:
+                    conn.close()
+                _log_decay((time.perf_counter() - t0) * 1000, changed, len(rows),
+                           background=True)
+                return
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if k == 0:
+                    # 让这个 WAL 竞态在日志里可见（否则会被重试悄悄掩盖）
+                    print(f"  [decay] 后台批次遇到瞬时错误，换连接重试：{e!r}")
+                time.sleep(0.15 * (k + 1))
+        print(f"  [decay] 后台衰减失败（已重试 {attempts} 次，不影响接口）："
+              f"{last_err!r} db={DB_PATH}")
+    except Exception as e:                          # noqa: BLE001
+        print(f"  [decay] 后台衰减异常（不影响接口）：{e!r} db={DB_PATH}")
+    finally:
+        # 只清理「自己这一条」：期间可能已有新批次被调度，不能把它的引用抹掉
+        with _decay_bg_lock:
+            if _decay_bg_thread is threading.current_thread():
+                _decay_bg_thread = None
+
+
+def _schedule_decay_bg(rows: list, now: float) -> bool:
+    """把剩余衰减丢到守护线程。已有批次在跑则跳过（下一小时再补）。"""
+    global _decay_bg_thread
+    with _decay_bg_lock:
+        if _decay_bg_thread is not None and _decay_bg_thread.is_alive():
+            return False
+        t = threading.Thread(target=_decay_worker, args=(rows, now),
+                             name="goshore-decay", daemon=True)
+        _decay_bg_thread = t
+        t.start()
+        return True
+
+
+def wait_decay_bg(timeout: float = 10.0) -> bool:
+    """等待后台衰减跑完（测试与优雅退出用）。返回是否已结束。"""
+    with _decay_bg_lock:
+        t = _decay_bg_thread
+    if t is None:
+        return True
+    t.join(timeout)
+    return not t.is_alive()
+
+
+def decay_mastery(force: bool = False, min_interval: float = 3600.0,
+                  budget_ms: float | None = None) -> int:
     """按天数批量衰减长期未复习题目的掌握度（幂等，可重复调用）。
 
     以每题的 updated_at 为基准，每满一天衰减 MASTERY_DECAY_PER_DAY，
     最多衰减到 0。默认 1 小时内只真正执行一次（force=True 可强制）。
-    返回本次被调整的题数。
+    返回**同步阶段**被调整的题数。
+
+    执行策略（建议9）：按 DECAY_BATCH 分批同步执行，累计耗时一旦超过
+    budget_ms（默认 DECAY_BUDGET_MS）就把剩余批次交给后台守护线程，
+    保证 /api/stats 不会被首次大批量衰减拖住。整条链路的耗时都会打进日志。
     """
     global _last_decay_at
     now = time.time()
     if not force and now - _last_decay_at < min_interval:
         return 0
     _last_decay_at = now
-    conn = connect()
-    _ensure_mastery(conn)
-    rows = conn.execute(
-        "SELECT doc_id, score, updated_at FROM mastery").fetchall()
+
+    budget = DECAY_BUDGET_MS if budget_ms is None else float(budget_ms)
+    t0 = time.perf_counter()
+    deadline = t0 + budget / 1000.0
+    rows: list = []
+    pending: list = []
     changed = 0
-    for r in rows:
-        days = int((now - (r["updated_at"] or now)) // 86400)
-        if days <= MASTERY_DECAY_AFTER_DAYS:
-            continue
-        eff = min(days - MASTERY_DECAY_AFTER_DAYS, 60)   # 封顶，避免一次衰减到底
-        new_score = max(0.0, float(r["score"]) - eff * MASTERY_DECAY_PER_DAY)
-        if abs(new_score - float(r["score"])) < 1e-9:
-            continue
-        conn.execute(
-            "UPDATE mastery SET score=?, updated_at=? WHERE doc_id=?",
-            (new_score, now, r["doc_id"]),
-        )
-        changed += 1
-    conn.commit()
-    conn.close()
+    conn = connect()
+    try:
+        _ensure_mastery(conn)
+        rows = conn.execute(
+            "SELECT doc_id, score, updated_at FROM mastery").fetchall()
+        for i in range(0, len(rows), DECAY_BATCH):
+            chunk = rows[i:i + DECAY_BATCH]
+            c, done = _decay_rows(conn, chunk, now, deadline)
+            changed += c
+            conn.commit()
+            if done < len(chunk):            # 预算用尽，批内提前收工
+                pending = rows[i + done:]
+                break
+            if time.perf_counter() > deadline:
+                pending = rows[i + len(chunk):]
+                break
+    finally:
+        conn.close()
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    if pending:
+        _log_decay(elapsed_ms, changed, len(rows), deferred=len(pending),
+                   budget_ms=budget)
+        _schedule_decay_bg(pending, now)
+    elif rows:
+        _log_decay(elapsed_ms, changed, len(rows))
     return changed
 
 

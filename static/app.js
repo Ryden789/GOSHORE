@@ -179,6 +179,21 @@ function rawHtml(s) {
   return esc(s) === "" ? "" : String(s).replace(/<script[\s\S]*?<\/script>/gi, "");
 }
 
+/* ---------- 建议7：新模块「内容建设中」统一空状态 ----------
+   新模块（面试 / 时政）的表可能是空的：被清库、迁移未完成、首次播种失败等。
+   这时页面不该只剩空白——要明确说明「不是坏了，是还没内容」，并给出可点的
+   替代入口，让用户马上有事可做。desc 传可信字面量（允许内含 <br> 等标记）。 */
+function emptyState(title, desc, links) {
+  const btns = (links || []).map(([label, href]) =>
+    `<a class="btn btn-primary" href="${href}" style="margin:4px 6px 0 0">${esc(label)}</a>`).join("");
+  return `<div class="empty-state" style="text-align:center;padding:30px 18px">
+    <div style="font-size:30px;line-height:1;margin-bottom:12px">🚧</div>
+    <h3 style="margin:0 0 10px;font-size:16px">${esc(title)}</h3>
+    <p style="color:var(--ink-2);font-size:13.5px;line-height:1.9;margin:0">${desc}</p>
+    ${btns ? `<div style="margin-top:14px">${btns}</div>` : ""}
+  </div>`;
+}
+
 /* 手绘 SVG 饼图（错因分布） */
 function pieSvg(data) {
   const total = data.reduce((s, d) => s + d.c, 0);
@@ -2198,6 +2213,35 @@ async function renderPaper(auto = "") {
   }
 }
 
+/* ---------- 建议8：考场模式「涂卡练习」统一判分 ----------
+   考场模式不逐题判分：题目区的选择与答题卡「涂卡录入」都只是**录入答案**，
+   交卷时按答题卡录入的答案一次性统一判分，符合真实考试「先做题、最后统一涂卡」
+   的习惯（资料分析尤其需要——材料读一次，答案最后一起涂）。
+
+   入参：
+     docs    [{ id, data:{ options:[{label, correct}] } }]
+     answers [{ sel, ms } | null]  —— 只认 sel；null / 无 sel 一律计入未答
+   返回：
+     items     批量落库载荷（只含已涂卡题），交卷时 POST /api/answer/batch
+     ok        答对题数
+     wrongIdx  答错题的下标
+     blankIdx  未涂卡（未答）题的下标
+     judgedN   实际判定题数 = items.length
+   副作用：把判定结果写回 answers[i].correct，供结算页复用。 */
+function settleExam(docs, answers) {
+  const items = [], wrongIdx = [], blankIdx = [];
+  let ok = 0;
+  docs.forEach((doc, i) => {
+    const a = answers[i];
+    if (!a || !a.sel) { blankIdx.push(i); return; }
+    const correctObj = (doc.data.options || []).find(o => o.correct);
+    a.correct = correctObj ? a.sel === correctObj.label : false;
+    items.push({ doc_id: doc.id, selected: a.sel, correct: a.correct, ms: a.ms || 0 });
+    if (a.correct) ok++; else wrongIdx.push(i);
+  });
+  return { items, ok, wrongIdx, blankIdx, judgedN: items.length };
+}
+
 async function runPaper(ids, opt = {}) {
   // 批量加载：1 次请求代替 N 次，消除组卷延迟
   let res;
@@ -2266,6 +2310,7 @@ async function runPaper(ids, opt = {}) {
 
   function daubPanel() {
     return `<div class="exam-daub">
+      <div style="font-size:12px;color:var(--ink-3);margin:2px 0 6px">直接点选项涂卡（题目区可只读，不强制作答）· 交卷后统一判分</div>
       ${docs.map((_, i) => {
         const a = answers[i];
         return `<div class="daub-row" data-i="${i}">
@@ -2289,7 +2334,7 @@ async function runPaper(ids, opt = {}) {
           <span class="ec-b">未答 ${st.blank}</span>
           <span class="ec-m">标记 ${st.markedN}</span>
         </span>
-        <button class="btn btn-sm ${daub ? "btn-primary" : ""}" id="daubBtn" style="margin-left:auto">涂卡录入</button>
+        <button class="btn btn-sm ${daub ? "btn-primary" : ""}" id="daubBtn" style="margin-left:auto">${daub ? "退出涂卡" : "涂卡录入"}</button>
         <button class="btn btn-sm" id="cardToggle">${cardOpen ? "收起" : "展开"}</button>
       </div>
       ${cardOpen ? (daub ? daubPanel() : `<div class="exam-card-grid">
@@ -2426,18 +2471,11 @@ async function runPaper(ids, opt = {}) {
         const go = await confirmBox(`还有 ${blank} 题未作答${extra}。实战中未答按错计分，确定交卷？`);
         if (!go) { finished = false; timerH = setInterval(tick, 1000); return; }
       }
-      // 延迟结算：逐题判定正确性 + 一次性批量落库（不再一题一判）
-      const items = [];
-      docs.forEach((doc, i) => {
-        const a = answers[i];
-        if (!a || !a.sel) return;
-        const correctObj = (doc.data.options || []).find(o => o.correct);
-        a.correct = correctObj ? a.sel === correctObj.label : false;
-        items.push({ doc_id: doc.id, selected: a.sel, correct: a.correct, ms: a.ms || 0 });
-      });
-      if (items.length) {
+      // 延迟结算（建议8）：按答题卡录入的答案统一判分 + 一次性批量落库（不再一题一判）
+      const st = settleExam(docs, answers);
+      if (st.items.length) {
         try {
-          const r = await api("/api/answer/batch", { items });
+          const r = await api("/api/answer/batch", { items: st.items });
           if (r && r.annihilated && r.annihilated.length) toast(`💥 错题歼灭 +${r.annihilated.length}`);
         } catch (e) { /* 落库失败不阻断结算展示 */ }
       }
@@ -4247,7 +4285,13 @@ async function renderShizheng() {
         </div>
       </div>` : "";
 
-    body.innerHTML = missingHtml + generated;
+    // 建议7：一期都没生成时给明确空状态，而不是只剩一排「缺失期次」按钮
+    const emptyHtml = r.items.length ? "" : emptyState(
+      "时政内容尚未生成",
+      `还没有任何已生成的时政期次（近半年共 ${(r.missing_periods || []).length} 期可生成）。<br>点下方期次即可生成；生成需要先在「设置」里配置 DeepSeek API Key。`,
+      [["去设置填 Key", "#/settings"], ["先去题库刷题", "#/paper"]]);
+
+    body.innerHTML = emptyHtml + missingHtml + generated;
 
     // 绑定生成按钮（串行队列：生成中锁定全部按钮，逐期进行）
     $$(".sz-gen-btn", body).forEach(b => {
@@ -5910,6 +5954,7 @@ async function renderInterview() {
   ]);
   let logs = (await api("/api/interview/logs")).items;
   let curCat = qdata.categories[0];
+  const noQ = !(qdata.categories || []).length;   // 建议7：题目表为空 → 渲染空状态
   let curQ = null, busy = false;
   let timerH = null, timerLeft = 0, timerPhase = "", answerTotal = qdata.answer_seconds;
 
@@ -5944,9 +5989,13 @@ async function renderInterview() {
       </div>
       <div class="panel">
         <h3>选题 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">五类结构化面试</span></h3>
-        <div class="chips" id="ivCats" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
+        ${noQ ? emptyState(
+          "面试题库建设中",
+          "内置五类结构化面试真题暂未写入数据库（正常情况下首次进入会自动播种）。<br>在恢复之前，可以先用「时政常识」积累素材，或去「题库」按模块刷题。",
+          [["去时政常识", "#/shizheng"], ["去题库刷题", "#/paper"]])
+        : `<div class="chips" id="ivCats" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
         <select id="ivSel" style="width:100%;padding:8px 10px;font-size:13.5px"></select>
-        <div style="margin-top:10px"><button class="btn btn-primary" id="ivStart">开始这道题</button></div>
+        <div style="margin-top:10px"><button class="btn btn-primary" id="ivStart">开始这道题</button></div>`}
       </div>
     </div>
     <div class="panel rise rise-2" id="ivQ" style="display:none"></div>
@@ -6109,12 +6158,16 @@ async function renderInterview() {
     busy = false; btn.disabled = false;
   }
 
-  drawStats(); drawCats(); drawSel(); drawLogs();
-  $("#ivSel").onchange = () => {
-    curQ = (qdata.items.find(q => String(q.id) === $("#ivSel").value)) || null;
-    stopTimer(); drawQ();
-  };
-  $("#ivStart").onclick = () => { stopTimer(); drawQ(); startTimer(qdata.think_seconds, "思考"); };
+  drawStats(); drawLogs();
+  // 无题目时上面渲染的是空状态，选题相关元素不存在，绑定要跳过（建议7）
+  if (!noQ) {
+    drawCats(); drawSel(); drawQ();
+    $("#ivSel").onchange = () => {
+      curQ = (qdata.items.find(q => String(q.id) === $("#ivSel").value)) || null;
+      stopTimer(); drawQ();
+    };
+    $("#ivStart").onclick = () => { stopTimer(); drawQ(); startTimer(qdata.think_seconds, "思考"); };
+  }
 }
 
 route();

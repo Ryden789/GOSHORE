@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
+import glob
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -17,6 +20,31 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app import db  # noqa: E402
+
+
+def find_node() -> str | None:
+    """优先用 PATH 里的 node，其次用 WorkBuddy 托管运行时。找不到返回 None。"""
+    exe = shutil.which("node")
+    if exe:
+        return exe
+    for pat in (
+        os.path.expanduser("~/.workbuddy-ai/binaries/node/versions/*/node.exe"),
+        os.path.expanduser("~/.workbuddy-ai/binaries/node/versions/*/bin/node"),
+    ):
+        hits = sorted(glob.glob(pat))
+        if hits:
+            return hits[-1]
+    return None
+
+
+@pytest.fixture()
+def node_exe() -> str:
+    """本机 node 可执行文件；没有就跳过（前端静态校验类用例共用）。"""
+    exe = find_node()
+    if not exe:
+        pytest.skip("本机没有 node，跳过前端静态校验")
+    return exe
+
 
 # 仓库里的真实库；测试绝不允许碰它
 REAL_DB = ROOT / "data" / "goshor.db"

@@ -8,6 +8,21 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const rawHtml = s => String(s ?? "").replace(/<script[\s\S]*?<\/script>/gi, "");
 
+/* ---------- 建议7：新模块「内容建设中」统一空状态 ----------
+   新模块（面试 / 时政）的表可能是空的：被清库、迁移未完成、首次播种失败等。
+   这时页面不该只剩空白——要明确说明「不是坏了，是还没内容」，并给出可点的
+   替代入口。desc 传可信字面量（允许内含 <br> 等标记）。 */
+function emptyState(title, desc, links) {
+  const btns = (links || []).map(([label, href]) =>
+    `<a class="btn btn-primary" href="${href}" style="margin:4px 6px 0 0">${esc(label)}</a>`).join("");
+  return `<div class="empty-state" style="text-align:center;padding:26px 14px">
+    <div style="font-size:28px;line-height:1;margin-bottom:10px">🚧</div>
+    <h3 style="margin:0 0 9px;font-size:15px">${esc(title)}</h3>
+    <p class="muted" style="font-size:13px;line-height:1.85;margin:0">${desc}</p>
+    ${btns ? `<div style="margin-top:13px">${btns}</div>` : ""}
+  </div>`;
+}
+
 /* 安全富文本：保留题面自带的白名单 HTML（公式/排序图片、表格、上下标等），
    其余全部转义；事件属性与 javascript: 协议一律剔除。 */
 const RICH_OPEN = /<(p|br|img|table|thead|tbody|tr|td|th|div|span|sub|sup)(\s[^<>]*?)?\s*\/?>/gi;
@@ -707,6 +722,7 @@ async function renderInterview() {
   ]);
   let logs = (await api("/api/interview/logs")).items;
   let curCat = qdata.categories[0];
+  const noQ = !(qdata.categories || []).length;   // 建议7：题目表为空 → 渲染空状态
   let curQ = null, busy = false;
   let timerH = null, timerLeft = 0, timerPhase = "", answerTotal = qdata.answer_seconds;
 
@@ -737,9 +753,13 @@ async function renderInterview() {
     <div class="card"><h3 class="sec">练习数据</h3><div id="ivStats"></div></div>
     <div class="card">
       <h3 class="sec">选题</h3>
-      <div class="chips" id="ivCats" style="margin-bottom:10px"></div>
+      ${noQ ? emptyState(
+        "面试题库建设中",
+        "内置五类结构化面试真题暂未写入数据库（正常情况下首次进入会自动播种）。<br>在恢复之前，可以先用「时政常识」积累素材，或去「组卷」按模块刷题。",
+        [["去时政常识", "#/shizheng"], ["去组卷刷题", "#/paper"]])
+      : `<div class="chips" id="ivCats" style="margin-bottom:10px"></div>
       <select id="ivSel" class="g-field"></select>
-      <button class="btn btn-primary btn-block" id="ivStart" style="margin-top:10px">开始这道题</button>
+      <button class="btn btn-primary btn-block" id="ivStart" style="margin-top:10px">开始这道题</button>`}
     </div>
     <div id="ivQBox"></div>
     <div id="ivOut"></div>
@@ -881,12 +901,16 @@ async function renderInterview() {
     busy = false; btn.disabled = false;
   }
 
-  drawStats(); drawCats(); drawSel(); drawQ(); drawLogs();
-  $("#ivSel").onchange = () => {
-    curQ = (qdata.items.find(q => String(q.id) === $("#ivSel").value)) || null;
-    stopTimer(); drawQ();
-  };
-  $("#ivStart").onclick = () => { stopTimer(); drawQ(); startTimer(qdata.think_seconds, "思考"); };
+  drawStats(); drawLogs();
+  // 无题目时上面渲染的是空状态，选题相关元素不存在，绑定要跳过（建议7）
+  if (!noQ) {
+    drawCats(); drawSel(); drawQ();
+    $("#ivSel").onchange = () => {
+      curQ = (qdata.items.find(q => String(q.id) === $("#ivSel").value)) || null;
+      stopTimer(); drawQ();
+    };
+    $("#ivStart").onclick = () => { stopTimer(); drawQ(); startTimer(qdata.think_seconds, "思考"); };
+  }
 }
 
 /* ---------- 能力雷达 & 学习计划（2.1） ---------- */
@@ -1501,6 +1525,24 @@ async function renderPractice(auto = "") {
 
 /* ---------- 做题流（真题组卷） ---------- */
 
+/* ---------- 建议8：考场模式「涂卡练习」统一判分（与桌面端 app.js 同源） ----------
+   考场模式不逐题判分：题目区的选择与答题卡「涂卡录入」都只是**录入答案**，
+   交卷时按答题卡录入的答案一次性统一判分（资料分析材料读一次、答案最后一起涂）。
+   返回 { items, ok, wrongIdx, blankIdx, judgedN }，并把 correct 写回 answers[i]。 */
+function settleExam(docs, answers) {
+  const items = [], wrongIdx = [], blankIdx = [];
+  let ok = 0;
+  docs.forEach((doc, i) => {
+    const a = answers[i];
+    if (!a || !a.sel) { blankIdx.push(i); return; }
+    const correctObj = (doc.data.options || []).find(o => o.correct);
+    a.correct = correctObj ? a.sel === correctObj.label : false;
+    items.push({ doc_id: doc.id, selected: a.sel, correct: a.correct, ms: a.ms || 0 });
+    if (a.correct) ok++; else wrongIdx.push(i);
+  });
+  return { items, ok, wrongIdx, blankIdx, judgedN: items.length };
+}
+
 async function runPaper(ids, opt = {}) {
   inRun = true;
   runFrom = location.hash;
@@ -1561,6 +1603,7 @@ async function runPaper(ids, opt = {}) {
         <button class="btn btn-sm ${daub ? "btn-primary" : ""}" id="daubBtn">${daub ? "退出涂卡" : "涂卡录入"}</button>
       </div>
       ${daub ? `<div class="exam-daub">
+        <div class="muted" style="font-size:12px;margin:2px 0 6px">直接点选项涂卡（题目区可只读）· 交卷后统一判分</div>
         ${docs.map((_, i) => {
           const a = answers[i];
           return `<div class="daub-row">
@@ -1705,17 +1748,11 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
           finished = false; startTimer(); return;
         }
       }
-      // 延迟结算：逐题判定 + 一次性批量落库
-      const items = [];
-      docs.forEach((doc, i) => {
-        const a = answers[i];
-        if (!a || !a.sel) return;
-        a.correct = !!(doc.data.options || []).find(o => o.label === a.sel && o.correct);
-        items.push({ doc_id: doc.id, selected: a.sel, correct: a.correct, ms: a.ms || 0 });
-      });
-      if (items.length) {
+      // 延迟结算（建议8）：按答题卡录入的答案统一判分 + 一次性批量落库
+      const st = settleExam(docs, answers);
+      if (st.items.length) {
         try {
-          const r = await api("/api/answer/batch", { items });
+          const r = await api("/api/answer/batch", { items: st.items });
           if (r && r.annihilated && r.annihilated.length) toast(`💥 错题歼灭 +${r.annihilated.length}`);
         } catch (e) { /* 落库失败不阻断结算 */ }
       }
@@ -4491,7 +4528,12 @@ async function renderShizheng() {
           : `<p class="muted">本期尚未生成（约需 1 分钟）</p>
              <button class="btn btn-primary btn-block sz-cur-btn">立即生成本期</button>`}
       </div>`;
-    body.innerHTML = curHtml + missingHtml + generated;
+    // 建议7：一期都没生成时给明确空状态（与桌面端对称），避免只剩几排按钮的「疑似坏了」
+    const emptyHtml = r.items.length ? "" : emptyState(
+      "时政内容尚未生成",
+      `还没有任何已生成的时政期次（近半年共 ${(r.missing_periods || []).length} 期可生成）。<br>点下方期次即可生成；生成需要先在「设置」里配置 DeepSeek API Key。`,
+      [["去设置填 Key", "#/settings"], ["先去题库刷题", "#/paper"]]);
+    body.innerHTML = emptyHtml + curHtml + missingHtml + generated;
     bind();
   }
 

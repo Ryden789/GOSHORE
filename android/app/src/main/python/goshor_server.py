@@ -1817,10 +1817,15 @@ def start(db_path: str, img_dir: str, web_dir: str) -> int:
 
 
 def _startup_selfcheck() -> None:
-    """启动时自检核心数据接口。"""
+    """启动时自检核心数据接口（逐项打印，含通过项，便于确认覆盖范围）。"""
     checks = [
         ("题库 facets", lambda: db.facets()),
         ("试卷列表 list_exams", lambda: db.list_exams()),
+        # 建议7：新模块（面试 / 时政）表可访问性，与桌面端 app/main.py 同源。
+        # 空表返回 [] 不算失败——只验证「表存在且可查询」。
+        ("面试题库 list_interview_questions", lambda: db.list_interview_questions()),
+        ("面试分类 interview_category_counts", lambda: db.interview_category_counts()),
+        ("时政库 list_shizheng", lambda: db.list_shizheng()),
     ]
     ok, fail = 0, 0
     for name, fn in checks:
@@ -1829,6 +1834,7 @@ def _startup_selfcheck() -> None:
             if r is None:
                 raise RuntimeError("返回 None")
             ok += 1
+            print(f"  [ OK ] {name}")
         except Exception as e:
             fail += 1
             print(f"[FAIL] {name}: {e}")
