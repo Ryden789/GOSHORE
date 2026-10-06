@@ -9,6 +9,9 @@
   --line: #ddd4c2;
   --line-soft: #e7dfd0;
   --cinnabar: #8c2b21;
+  --cinnabar-soft: #f6e3df;
+  --indigo: #2f4858;
+  --indigo-soft: #e3e9ec;
   --amber: #a26a1b;
   --green: #3f6b4f;
   --radius: 10px;
@@ -238,6 +241,33 @@ details.material .mat-body p { margin: 0 0 8px; }
 /* 结算 */
 .sum-num { font-family: var(--serif); font-size: 42px; font-weight: 900; }
 .muted { color: var(--ink-3); font-size: 13px; }
+
+/* N3 首页考试倒计时横幅（按剩余天数分区间配色，纯 CSS 不引图表） */
+.countdown {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; margin: 0 0 12px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel);
+}
+.countdown .cd-n {
+  font-family: var(--serif); font-size: 28px; font-weight: 700;
+  line-height: 1; min-width: 46px; text-align: center; color: var(--ink);
+}
+.countdown .cd-tx { flex: 1; min-width: 0; }
+.countdown .cd-tx b { font-size: 15px; }
+.countdown .cd-tx .muted { font-size: 12px; overflow-wrap: anywhere; }
+.countdown .cd-go {
+  flex: none; font-size: 13px; color: var(--indigo); text-decoration: none;
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+  white-space: nowrap;
+}
+.countdown.cd-mid { border-color: var(--indigo); background: var(--indigo-soft); }
+.countdown.cd-mid .cd-n { color: var(--indigo); }
+.countdown.cd-soon, .countdown.cd-today {
+  border-color: var(--cinnabar); background: var(--cinnabar-soft);
+}
+.countdown.cd-soon .cd-n, .countdown.cd-today .cd-n { color: var(--cinnabar); }
+.countdown.cd-over .cd-n { font-size: 17px; color: var(--ink-3); }
 
 /* 列表项 */
 .item {

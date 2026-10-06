@@ -9,6 +9,7 @@ import re as _re
 import sqlite3
 import threading
 import time
+from datetime import date as _date
 from pathlib import Path
 
 from . import parser
@@ -2192,6 +2193,22 @@ def kaodian_tree(module: str, top: int = 10) -> list[dict]:
              else s, "n": c}
             for s, c in subs[:top] if c >= 2]
     return out
+
+
+def exam_days_left(exam_date: str | None, today: _date | None = None) -> int | None:
+    """N3 首页考试倒计时：距考试还剩几天（本地日历日）。
+
+    - `exam_date` 为空 / 非法 / 非字符串 → 返回 None（首页不显示横幅）。
+    - 只取日期前 10 位，容忍 'YYYY-MM-DD HH:MM' 这类带时间的写法。
+    - 返回值：正数=还有 N 天；0=今天考试；负数=已过期 N 天。
+    """
+    if not exam_date or not isinstance(exam_date, str):
+        return None
+    try:
+        exam = _date.fromisoformat(exam_date.strip()[:10])
+    except (ValueError, TypeError):
+        return None
+    return (exam - (today or _date.today())).days
 
 
 def stats_overview() -> dict:

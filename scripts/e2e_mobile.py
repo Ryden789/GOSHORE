@@ -233,16 +233,37 @@ def check_browser():
         pg = browser.new_page(viewport={"width": 390, "height": 844})
         pg.add_init_script(INIT_JS)
         js_errors = []   # pageerror + console error（剔除资源加载失败）
-        pg.on("pageerror", lambda e: js_errors.append(str(e)))
+
+        def on_page_error(e):
+            """未捕获异常 / 未处理的 Promise 拒绝。
+
+            只留 message 的话，真凶（比如某个子渲染器往已卸载 DOM 写 onclick）会被
+            route() 的 catch 吞掉、并归到「当前正在检查的那个路由」上，根本定位不到。
+            所以这里把调用栈一起打出来。
+            """
+            js_errors.append(str(e))
+            print("  [PAGEERROR] " + str(e), flush=True)
+            for line in (getattr(e, "stack", "") or "").strip().splitlines()[:4]:
+                print("      " + line.strip(), flush=True)
+
+        pg.on("pageerror", on_page_error)
         pg.on("console", lambda m: js_errors.append(m.text)
             if m.type == "error" and "Failed to load resource" not in m.text else None)
 
         # ---- 启动：已登录（HTTP 冒烟末尾登录了 E2E 账号）→ 首页渲染，开门卡可见
         pg.goto(BASE + "/#/home", wait_until="domcontentloaded", timeout=20000)
         try:
-            pg.wait_for_selector(".stat-grid", timeout=20000)
+            # 冷启动首次 /api/stats 需要建索引连接，给足余量（机器慢时不误判）
+            pg.wait_for_selector(".stat-grid", timeout=45000)
         except Exception as e:
-            record(False, "启动首页渲染", f"异常：{e}")
+            detail = f"异常：{e}"
+            if js_errors:
+                detail += "；JS 错误：" + "；".join(js_errors[:3])
+            try:
+                detail += f"；hash={pg.evaluate('location.hash')}"
+            except Exception:
+                pass
+            record(False, "启动首页渲染", detail)
             browser.close()
             return
         daily_visible = pg.locator("#dailyGo").count() == 1
@@ -283,6 +304,50 @@ def check_browser():
             browser.close()
             return
         record(pg.evaluate("DAILY_DONE") is True, "开门后 DAILY_DONE=true")
+
+        # ---- N3 考试倒计时：设置日期 → 首页横幅（区间配色/文案）→ 清除后消失
+        try:
+            from datetime import date as _d, timedelta as _td
+            soon = (_d.today() + _td(days=5)).isoformat()
+            code, _ = http_post("/api/settings", {"exam_date": soon})
+            if code != 200:
+                raise RuntimeError(f"写入考试日期失败，HTTP {code}")
+            js_errors.clear()
+            pg.evaluate("location.hash = '#/all'")
+            pg.wait_for_timeout(300)
+            pg.evaluate("location.hash = '#/home'")
+            pg.wait_for_selector(".countdown", timeout=15000)
+            cd = pg.locator(".countdown").first
+            cls = cd.get_attribute("class") or ""
+            txt = " ".join(cd.inner_text().split())
+            big = cd.locator(".cd-n").inner_text().strip()
+            problems = []
+            if "cd-soon" not in cls:
+                problems.append(f"5 天后应为朱砂临考区间，实际 class={cls!r}")
+            if big != "5":
+                problems.append(f"大号天数应为 5，实际 {big!r}")
+            if "天后考试" not in txt:
+                problems.append("缺少「天后考试」文案")
+            if soon not in txt:
+                problems.append(f"未显示考试日期 {soon}")
+            if js_errors:
+                problems.append("JS 错误：" + "；".join(js_errors[:3]))
+            record(not problems, "N3 倒计时：设置日期后首页出现横幅",
+                   "；".join(problems) if problems else f"{cls.strip()} · {txt[:44]}")
+
+            code, _ = http_post("/api/settings", {"exam_date": ""})
+            if code != 200:
+                raise RuntimeError(f"清除考试日期失败，HTTP {code}")
+            pg.evaluate("location.hash = '#/all'")
+            pg.wait_for_timeout(300)
+            pg.evaluate("location.hash = '#/home'")
+            pg.wait_for_selector(".stat-grid", timeout=15000)
+            pg.wait_for_timeout(500)
+            left = pg.locator(".countdown").count()
+            record(left == 0, "N3 倒计时：清除日期后横幅消失",
+                   f"剩余 .countdown 数量={left}")
+        except Exception as e:
+            record(False, "N3 倒计时：设置日期后首页出现横幅", f"异常：{e}")
 
         # ---- 全路由遍历：零 JS 错误 + 恰好一次入场动画 + 动画时 DOM 已是目标页
         routes = pg.evaluate("Object.keys(ROUTES)")

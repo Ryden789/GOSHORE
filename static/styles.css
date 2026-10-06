@@ -1044,3 +1044,17 @@ body.exam-mode .view {
 .pk-v { font-size: 22px; font-weight: 700; font-family: var(--mono); margin: 6px 0 2px; color: var(--indigo); }
 .pk-s { font-size: 12px; color: var(--ink-3); }
 .pk-x { display: flex; align-items: center; font-weight: 800; font-size: 15px; color: var(--cinnabar); letter-spacing: .5px; }
+
+/* ===== N3 首页考试倒计时横幅（按剩余天数分区间配色） ===== */
+.countdown { display: flex; align-items: center; gap: 14px; padding: 13px 18px; margin-bottom: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }
+.countdown .cd-n { font-family: var(--serif); font-size: 30px; font-weight: 700; line-height: 1; min-width: 52px; text-align: center; color: var(--ink); }
+.countdown .cd-tx { flex: 1; min-width: 0; }
+.countdown .cd-tx b { font-size: 15px; }
+.countdown .cd-tx .muted { font-size: 12.5px; overflow-wrap: anywhere; }
+.countdown .cd-go { flex: none; font-size: 13px; color: var(--indigo); text-decoration: none; border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; white-space: nowrap; }
+.countdown .cd-go:hover { border-color: var(--indigo); background: var(--indigo-soft); }
+.countdown.cd-mid { border-color: var(--indigo); background: var(--indigo-soft); }
+.countdown.cd-mid .cd-n { color: var(--indigo); }
+.countdown.cd-soon, .countdown.cd-today { border-color: var(--cinnabar); background: var(--cinnabar-soft); }
+.countdown.cd-soon .cd-n, .countdown.cd-today .cd-n { color: var(--cinnabar); }
+.countdown.cd-over .cd-n { font-size: 18px; color: var(--ink-3); }

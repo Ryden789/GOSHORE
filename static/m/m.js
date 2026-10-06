@@ -4,6 +4,10 @@
 const view = document.getElementById("view");
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => [...(el || document).querySelectorAll(s)];
+/* 异步渲染守卫：请求返回时本页可能已被切走（box 脱离文档）。token 只能防
+   「同页重复进入」，防不住「离开本页」——必须同时看 box 是否还在文档里，
+   否则会向已卸载的 DOM 写 innerHTML/onclick 抛 TypeError（切页竞态）。 */
+const live = (box, tok, cur) => !!box && box.isConnected && tok === cur;
 const esc = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const rawHtml = s => String(s ?? "").replace(/<script[\s\S]*?<\/script>/gi, "");
@@ -21,6 +25,25 @@ function emptyState(title, desc, links) {
     <p class="muted" style="font-size:13px;line-height:1.85;margin:0">${desc}</p>
     ${btns ? `<div style="margin-top:13px">${btns}</div>` : ""}
   </div>`;
+}
+
+/* N3 考试倒计时横幅：日期为空 / 天数未知时不渲染（返回空串）。
+   分区间配色：>30 墨色 / 8~30 靛蓝 / 1~7 朱砂 / 当天 朱砂 / 过期 灰墨。 */
+function countdownBanner(examDate, daysLeft) {
+  if (!examDate || daysLeft === null || daysLeft === undefined) return "";
+  const n = Number(daysLeft);
+  if (!Number.isFinite(n)) return "";
+  const cls = n < 0 ? "cd-over" : n === 0 ? "cd-today" : n <= 7 ? "cd-soon" : n <= 30 ? "cd-mid" : "cd-far";
+  let big, unit, tip;
+  if (n < 0) { big = String(-n); unit = "天前已考"; tip = `${examDate} · 点右侧更新下次考试日期`; }
+  else if (n === 0) { big = "今天"; unit = "考试"; tip = `${examDate} · 沉着应考，稳住节奏`; }
+  else { big = String(n); unit = "天后考试"; tip = `${examDate} · 先完成今日任务`; }
+  const go = n < 0 ? "更新日期" : "今日任务";
+  return `<div class="countdown ${cls}">
+      <span class="cd-n">${esc(big)}</span>
+      <div class="cd-tx"><b>${unit}</b><div class="muted">${esc(tip)}</div></div>
+      <a class="cd-go" href="#/plan">${go}</a>
+    </div>`;
 }
 
 /* 安全富文本：保留题面自带的白名单 HTML（公式/排序图片、表格、上下标等），
@@ -968,6 +991,7 @@ async function renderPlan() {
   const plan = await api("/api/study-plan");
   let items = plan.items || [], todayStr = plan.today || "";
   let summary = plan.summary || { total: 0, done: 0, rate: 0 };
+  const examDate = plan.exam_date || "";   // N3：预填已保存的考试日期
 
   view.innerHTML = `
     <div class="page-head">
@@ -987,7 +1011,7 @@ async function renderPlan() {
     <div class="card">
       <h3 class="sec">生成 / 更新计划</h3>
       <label class="g-total" style="display:block;margin-bottom:8px">考试日期
-        <input type="date" id="plExam" style="width:auto"/></label>
+        <input type="date" id="plExam" value="${esc(examDate)}" style="width:auto"/></label>
       <div style="display:flex;gap:10px;margin-bottom:10px">
         <label class="g-total">天数 <input type="number" id="plDays" value="14" min="1" max="60" style="width:64px"/></label>
         <label class="g-total">每日题量 <input type="number" id="plDaily" value="30" min="10" max="200" step="5" style="width:72px"/></label>
@@ -1111,6 +1135,7 @@ async function renderHome() {
   DAILY_DONE = s.today_answers > 0 || Pref.get("dskip", "") === todayStr();
   const focusMin = Math.round((s.today_focus || 0) / 60);
   view.innerHTML = `
+    ${countdownBanner(s.exam_date, s.days_left)}
     <div class="card rank-badge">
       <div class="rank-line">
         <span class="rank-name">🏅 ${esc(rank)}</span>
@@ -1935,7 +1960,7 @@ async function renderReview() {
 async function drawDue(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
   const [r, dash] = await Promise.all([api("/api/reviews"), api("/api/review/dashboard")]);
-  if (tok !== reviewToken) return;
+  if (!live(box, tok, reviewToken)) return;
   const items = r.items || [];
   box.innerHTML = `
     <div class="card review-dashboard">
@@ -2017,7 +2042,7 @@ async function drawWrong(box, tok) {
     api("/api/wrong-reason/distribution").catch(() => ({ items: [] })),
     api("/api/wrong-reason/ai-map").catch(() => ({ items: {} })),
   ]);
-  if (tok !== reviewToken) return;
+  if (!live(box, tok, reviewToken)) return;
   const wrongs = wr.items || [];
   const ai = aiMap.items || {};
   if (!wrongs.length) {
@@ -2230,7 +2255,7 @@ ${rawHtml(String(q.analysis || "（AI 未给出解析）"))}</div>
 async function drawMarks(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
   const mk = await api("/api/marks");
-  if (tok !== reviewToken) return;
+  if (!live(box, tok, reviewToken)) return;
   const marks = mk.items || [];
   if (!marks.length) {
     box.innerHTML = `<div class="empty">暂无收藏</div>`;
@@ -2305,7 +2330,7 @@ function mRunFlip(box, tok, items) {
       </div>`;
     $$(".cd-rate-btn").forEach(b => b.onclick = async () => {
       await api("/api/card-review", { card_id: c.id, level: +b.dataset.l });
-      if (tok !== cardToken) return;
+      if (!live(box, tok, cardToken)) return;
       idx += 1;
       show();
     });
@@ -2395,7 +2420,7 @@ function mRunRecall(box, tok, cards) {
       const lv = +b.dataset.l;
       if (lv === 2) known++; else if (lv === 1) vague++; else unknown++;
       await api("/api/card-review", { card_id: c.id, level: lv });
-      if (tok !== cardToken) return;
+      if (!live(box, tok, cardToken)) return;
       idx++; showCard();
     });
   }
@@ -2462,7 +2487,7 @@ function mRunQuiz(box, tok, cards, pool) {
         const correct = btn.dataset.id === c.id;
         if (correct) okN++; else { btn.classList.add("wrong"); noN++; }
         await api("/api/card-review", { card_id: c.id, level: correct ? 2 : 0 });
-        if (tok !== cardToken) return;
+        if (!live(box, tok, cardToken)) return;
         $("#qzExp").innerHTML =
           `${correct ? "✔ 回答正确" : "✘ 回答错误"} · 正解 ${esc(c.stem)}\n${c.analysis || ""}`;
         $("#qzExpWrap").hidden = false;
@@ -2508,7 +2533,7 @@ async function renderCards() {
 async function drawDueCards(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
   const r = await api("/api/due-cards");
-  if (tok !== cardToken) return;
+  if (!live(box, tok, cardToken)) return;
   const items = r.items || [];
   if (!items.length) {
     box.innerHTML = `<div class="empty">没有到期的卡片<br>去「卡片库」浏览全部卡片</div>`;
@@ -2521,9 +2546,9 @@ async function drawDueCards(box, tok) {
 async function drawCardLibrary(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
   const facets = await api("/api/cards/facets");
-  if (tok !== cardToken) return;
+  if (!live(box, tok, cardToken)) return;
   const all = await api("/api/cards");
-  if (tok !== cardToken) return;
+  if (!live(box, tok, cardToken)) return;
   let allCards = all.items || [];
   let cards = allCards;
   const filters = { card_type: "", category: "", module: "", q: "" };
@@ -2610,7 +2635,7 @@ async function drawCardLibrary(box, tok) {
       b.addEventListener("click", async () => {
         const c = cards.find(x => String(x.id) === cardEl.dataset.id);
         await api("/api/card-review", { card_id: c.id, level: +b.dataset.l });
-        if (tok !== cardToken) return;
+        if (!live(box, tok, cardToken)) return;
         Snd.pop();
         cardEl.classList.remove("on");
         toast("已记录评分");
@@ -2624,7 +2649,7 @@ async function drawCardLibrary(box, tok) {
 async function drawRecall(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
   const facets = await api("/api/cards/facets");
-  if (tok !== cardToken) return;
+  if (!live(box, tok, cardToken)) return;
   const cats = facets.categorys || [];
   box.innerHTML = `
     <div class="card qz-cfg">
@@ -2643,7 +2668,7 @@ async function drawRecall(box, tok) {
     const n = +$("#rcN").value;
     const all = await api(
       `/api/cards?card_type=word_card${cat ? "&category=" + encodeURIComponent(cat) : ""}`);
-    if (tok !== cardToken) return;
+    if (!live(box, tok, cardToken)) return;
     mRunRecall(box, tok, shuffleCopy(all.items || []).slice(0, n));
   };
 }
@@ -2652,7 +2677,7 @@ async function drawRecall(box, tok) {
 async function drawQuiz(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
   const facets = await api("/api/cards/facets");
-  if (tok !== cardToken) return;
+  if (!live(box, tok, cardToken)) return;
   const cats = facets.categorys || [];
   box.innerHTML = `
     <div class="card qz-cfg">
@@ -2673,7 +2698,7 @@ async function drawQuiz(box, tok) {
       api(`/api/cards?card_type=word_card${cat ? "&category=" + encodeURIComponent(cat) : ""}`),
       api(`/api/cards?card_type=word_card`),
     ]);
-    if (tok !== cardToken) return;
+    if (!live(box, tok, cardToken)) return;
     const cards = shuffleCopy(all.items || []).slice(0, n);
     mRunQuiz(box, tok, cards, poolRes.items || []);
   };
@@ -2683,7 +2708,7 @@ async function drawQuiz(box, tok) {
 async function drawWeak(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
   const res = await api("/api/cards/weak");
-  if (tok !== cardToken) return;
+  if (!live(box, tok, cardToken)) return;
   const items = res.items || [];
   const unknown = items.filter(c => c.weak_level === 0);
   const vague = items.filter(c => c.weak_level === 1);
@@ -2724,7 +2749,7 @@ async function drawWeak(box, tok) {
   $("#wkRecall").onclick = () => mRunRecall(box, tok, weakItems);
   $("#wkQuiz").onclick = async () => {
     const allRes = await api(`/api/cards?card_type=word_card`);
-    if (tok !== cardToken) return;
+    if (!live(box, tok, cardToken)) return;
     mRunQuiz(box, tok, weakItems, allRes.items || []);
   };
 }
@@ -2733,7 +2758,7 @@ async function drawWeak(box, tok) {
 async function drawCardProgress(box, tok) {
   box.innerHTML = `<div class="empty">加载中…</div>`;
   const p = await api("/api/cards/progress");
-  if (tok !== cardToken) return;
+  if (!live(box, tok, cardToken)) return;
   const pct = p.total ? Math.round(p.learned / p.total * 100) : 0;
   box.innerHTML = `
     <div class="card">
@@ -2750,7 +2775,7 @@ async function drawCardProgress(box, tok) {
     <div class="empty" id="cdImportMsg" hidden></div>`;
   $("#cdImport").onclick = async () => {
     const r = await api("/api/cards/import", {});
-    if (tok !== cardToken) return;
+    if (!live(box, tok, cardToken)) return;
     $("#cdImportMsg").hidden = false;
     $("#cdImportMsg").textContent = r.ok
       ? `导入完成：新增 ${r.added} 张，共 ${r.total} 张`
@@ -3302,6 +3327,11 @@ async function renderSettings() {
         <div class="muted">Key 只保存在本机当前账号下，不会上传。不配 Key 也能用：词语填空走预置题库，批改用对照自评。</div>
       </div>
       <div class="field">
+        <label>考试日期（首页倒计时）</label>
+        <input id="setExam" type="date" class="m-input" value="${esc(s.exam_date || "")}"/>
+        <div class="muted">填写后首页顶部显示「距考试还有 N 天」；留空则不显示</div>
+      </div>
+      <div class="field">
         <label>每日学习提醒</label>
         <input id="setRemind" type="time" class="m-input"
           value="${localStorage.getItem("remind_time") || "20:00"}"/>
@@ -3375,6 +3405,7 @@ async function renderSettings() {
     };
     const k = $("#setKey").value.trim();
     if (k && !k.startsWith("***")) patch.deepseek_api_key = k;
+    patch.exam_date = $("#setExam").value.trim();   // N3：空串=清除倒计时
     localStorage.setItem("remind_time", $("#setRemind").value || "20:00");
     await api("/api/settings", patch);
     const el = $("#setStatus");

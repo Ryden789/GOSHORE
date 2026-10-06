@@ -460,7 +460,12 @@ def api_formula_history():
 
 @app.get("/api/stats")
 def api_stats():
-    return db.stats_overview()
+    out = db.stats_overview()
+    # N3 考试倒计时：顺带带上考试日期与剩余天数，首页一次请求即可渲染横幅
+    exam_date = load_settings().get("exam_date", "") or ""
+    out["exam_date"] = exam_date
+    out["days_left"] = db.exam_days_left(exam_date)
+    return out
 
 
 @app.get("/api/history")
@@ -608,21 +613,32 @@ def api_study_plan():
         "items": db.list_study_plan(),
         "summary": db.study_plan_summary(today),
         "today": today,
+        # N3：计划页需要预填已保存的考试日期
+        "exam_date": load_settings().get("exam_date", "") or "",
     }
 
 
 @app.post("/api/study-plan/generate")
 def api_study_plan_generate(b: PlanIn):
     """按能力雷达 + 考试日期生成 14 天计划并落库（覆盖同日期旧计划）。"""
+    # N3：优先用本次传入的日期；没传则回落到设置里已保存的考试日期。
+    # 非法日期一律当作「没设」——不落库、也不传给 planner，避免脏值污染设置文件。
+    exam_date = (b.exam_date or "").strip() or (
+        load_settings().get("exam_date", "") or "")
+    if db.exam_days_left(exam_date) is None:
+        exam_date = ""
+    else:
+        save_settings({"exam_date": exam_date})   # 生成计划即记住考试日期
     radar = db.ability_radar()
     items = planner.build_plan(
-        radar, exam_date=b.exam_date,
+        radar, exam_date=exam_date,
         days=max(1, min(60, b.days)), daily_n=max(10, min(200, b.daily_n)),
         kaodian_pool=_weak_kaodian_pool())
     n = db.save_study_plan(items)
     today = datetime.date.today().isoformat()
     return {"ok": True, "n": n, "items": db.list_study_plan(),
-            "summary": db.study_plan_summary(today), "today": today}
+            "summary": db.study_plan_summary(today), "today": today,
+            "exam_date": exam_date}
 
 
 class PlanToggleIn(BaseModel):
@@ -996,6 +1012,7 @@ class SettingsIn(BaseModel):
     deepseek_base_url: str | None = None
     deepseek_api_key: str | None = None
     deepseek_model: str | None = None
+    exam_date: str | None = None    # N3 考试日期 'YYYY-MM-DD'，空串=清除
 
 
 @app.post("/api/settings")

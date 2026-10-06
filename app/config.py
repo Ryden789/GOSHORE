@@ -22,6 +22,8 @@ DEFAULTS = {
     "deepseek_api_key": "",
     "deepseek_model": "deepseek-chat",
     "port": 8765,
+    # N3 考试倒计时：'YYYY-MM-DD'，空则首页不显示倒计时横幅
+    "exam_date": "",
 }
 
 # ---------------- DPAPI（Windows 凭据级加密，仅当前用户可解） ----------------

@@ -36,6 +36,8 @@ _MOBILE_SETTINGS_DEFAULTS = {
     "deepseek_base_url": "https://api.deepseek.com",
     "deepseek_api_key": "",
     "deepseek_model": "deepseek-chat",
+    # N3 考试倒计时：'YYYY-MM-DD'，空则首页不显示横幅
+    "exam_date": "",
 }
 
 
@@ -679,7 +681,12 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/auth/profiles":
                 self._json({"items": accounts.profiles()})
             elif path == "/api/stats":
-                self._json(db.stats_overview())
+                out = db.stats_overview()
+                # N3 考试倒计时：与桌面端同构，一次请求带回考试日期与剩余天数
+                exam_date = _mobile_load_settings().get("exam_date", "") or ""
+                out["exam_date"] = exam_date
+                out["days_left"] = db.exam_days_left(exam_date)
+                self._json(out)
             elif path == "/api/facets":
                 self._json(db.facets())
             elif path == "/api/exams":
@@ -739,7 +746,9 @@ class _Handler(BaseHTTPRequestHandler):
                 today = _today_str()
                 self._json({"items": db.list_study_plan(),
                             "summary": db.study_plan_summary(today),
-                            "today": today})
+                            "today": today,
+                            # N3：计划页预填已保存的考试日期
+                            "exam_date": _mobile_load_settings().get("exam_date", "") or ""})
             elif path == "/api/zy/notes":
                 self._json({"ok": True, "data": zy_notes.NOTES})
             elif path == "/api/wrong-book":
@@ -1161,10 +1170,13 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/settings":
                 patch = {}
                 for k in ("deepseek_base_url", "deepseek_model",
-                          "deepseek_api_key"):
+                          "deepseek_api_key", "exam_date"):
                     if k in b and isinstance(b[k], str):
                         v = b[k].strip()
                         if k == "deepseek_api_key" and v.startswith("***"):
+                            continue
+                        # N3：考试日期只接受空串（清除）或合法 YYYY-MM-DD
+                        if k == "exam_date" and v and db.exam_days_left(v) is None:
                             continue
                         patch[k] = v
                 _mobile_save_settings(patch)
@@ -1531,15 +1543,23 @@ class _Handler(BaseHTTPRequestHandler):
             pool[m] = [r["kaodian"] for r in rows
                        if r.get("level") in ("red", "amber")
                        and r.get("total", 0) >= 3][:8]
+        # N3：优先本次传入，否则回落到已保存的考试日期；非法值一律当「没设」
+        exam_date = (b.get("exam_date") or "").strip() or (
+            _mobile_load_settings().get("exam_date", "") or "")
+        if db.exam_days_left(exam_date) is None:
+            exam_date = ""
+        else:
+            _mobile_save_settings({"exam_date": exam_date})
         items = planner.build_plan(
-            radar, exam_date=(b.get("exam_date") or ""),
+            radar, exam_date=exam_date,
             days=max(1, min(60, days)), daily_n=max(10, min(200, daily_n)),
             kaodian_pool=pool)
         with _lock:
             n = db.save_study_plan(items)
         today = _today_str()
         return {"ok": True, "n": n, "items": db.list_study_plan(),
-                "summary": db.study_plan_summary(today), "today": today}
+                "summary": db.study_plan_summary(today), "today": today,
+                "exam_date": exam_date}
 
     # ---- 综应免 Key 对照自评（与 AI 批改同一落库路径） ----
 

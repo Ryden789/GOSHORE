@@ -194,6 +194,25 @@ function emptyState(title, desc, links) {
   </div>`;
 }
 
+/* N3 考试倒计时横幅：日期为空 / 天数未知时不渲染（返回空串）。
+   分区间配色：>30 墨色 / 8~30 靛蓝 / 1~7 朱砂 / 当天 朱砂 / 过期 灰墨。 */
+function countdownBanner(examDate, daysLeft) {
+  if (!examDate || daysLeft === null || daysLeft === undefined) return "";
+  const n = Number(daysLeft);
+  if (!Number.isFinite(n)) return "";
+  const cls = n < 0 ? "cd-over" : n === 0 ? "cd-today" : n <= 7 ? "cd-soon" : n <= 30 ? "cd-mid" : "cd-far";
+  let big, unit, tip;
+  if (n < 0) { big = String(-n); unit = "天前已考"; tip = `${examDate} · 点右侧更新下次考试日期`; }
+  else if (n === 0) { big = "今天"; unit = "考试"; tip = `${examDate} · 沉着应考，稳住节奏`; }
+  else { big = String(n); unit = "天后考试"; tip = `${examDate} · 先完成今日任务`; }
+  const go = n < 0 ? "更新日期" : "今日任务";
+  return `<div class="countdown ${cls}">
+      <span class="cd-n">${esc(big)}</span>
+      <div class="cd-tx"><b>${unit}</b><div class="muted">${esc(tip)}</div></div>
+      <a class="cd-go" href="#/plan">${go}</a>
+    </div>`;
+}
+
 /* 手绘 SVG 饼图（错因分布） */
 function pieSvg(data) {
   const total = data.reduce((s, d) => s + d.c, 0);
@@ -381,6 +400,7 @@ async function renderHome() {
 
   view.innerHTML = `
     ${remindBanner}
+    ${countdownBanner(s.exam_date, s.days_left)}
     <div class="page-head rise">
       <div class="dash-hero">
         <h1 class="page-title" style="margin:0">今日书房</h1>
@@ -3524,6 +3544,11 @@ async function renderSettings() {
           <div class="hint">deepseek-chat（速度快、成本低）/ deepseek-reasoner（带推理，更强但更慢）</div>
         </div>
         <div class="field">
+          <label>考试日期（首页倒计时）</label>
+          <input id="examDate" type="date" value="${esc(s.exam_date || "")}"/>
+          <div class="hint">填写后首页顶部显示「距考试还有 N 天」；留空则不显示</div>
+        </div>
+        <div class="field">
           <label>每日学习提醒</label>
           <input id="remindTime" type="time" value="${localStorage.getItem("remind_time") || "20:00"}"/>
           <div class="hint">到点若今日未做题，页面顶部会出现提醒条（需页面打开）</div>
@@ -3572,6 +3597,7 @@ async function renderSettings() {
     };
     const k = $("#key").value.trim();
     if (k) patch.deepseek_api_key = k;
+    patch.exam_date = $("#examDate").value.trim();   // N3：空串=清除倒计时
     localStorage.setItem("remind_time", $("#remindTime").value || "20:00");
     await api("/api/settings", patch);
     status("已保存", "ok");
@@ -5805,6 +5831,7 @@ async function renderPlan() {
   const plan = await api("/api/study-plan");
   let items = plan.items || [], todayStr = plan.today || "";
   let summary = plan.summary || { total: 0, done: 0, rate: 0 };
+  const examDate = plan.exam_date || "";   // N3：预填已保存的考试日期
 
   view.innerHTML = `
     <div class="page-head rise">
@@ -5825,7 +5852,7 @@ async function renderPlan() {
       <div class="panel">
         <h3>生成 / 更新计划</h3>
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-          <label style="font-size:13px">考试日期 <input type="date" id="plExam" style="padding:6px 8px"/></label>
+          <label style="font-size:13px">考试日期 <input type="date" id="plExam" value="${esc(examDate)}" style="padding:6px 8px"/></label>
           <label style="font-size:13px">天数 <input type="number" id="plDays" value="14" min="1" max="60" style="width:66px"/></label>
           <label style="font-size:13px">每日题量 <input type="number" id="plDaily" value="30" min="10" max="200" step="5" style="width:78px"/></label>
           <button class="btn btn-primary" id="plGen">生成计划</button>
