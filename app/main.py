@@ -1020,6 +1020,11 @@ def api_settings_set(b: SettingsIn):
     patch = {k: v for k, v in b.model_dump().items() if v is not None}
     if patch.get("deepseek_api_key", "").startswith("***"):
         patch.pop("deepseek_api_key")
+    # N3：考试日期只接受空串（清除）或合法 YYYY-MM-DD，脏值不落盘（与移动端同口径）
+    if "exam_date" in patch:
+        patch["exam_date"] = patch["exam_date"].strip()
+        if patch["exam_date"] and db.exam_days_left(patch["exam_date"]) is None:
+            patch.pop("exam_date")
     save_settings(patch)
     return {"ok": True}
 

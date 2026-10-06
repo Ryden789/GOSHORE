@@ -255,7 +255,7 @@ details.material .mat-body p { margin: 0 0 8px; }
 }
 .countdown .cd-tx { flex: 1; min-width: 0; }
 .countdown .cd-tx b { font-size: 15px; }
-.countdown .cd-tx .muted { font-size: 12px; overflow-wrap: anywhere; }
+.countdown .cd-tx .muted { color: var(--ink-3); font-size: 12px; overflow-wrap: anywhere; }
 .countdown .cd-go {
   flex: none; font-size: 13px; color: var(--indigo); text-decoration: none;
   border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;

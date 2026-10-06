@@ -48,6 +48,11 @@ body {
 
 .app { display: flex; height: 100%; position: relative; z-index: 1; }
 
+/* 通用弱化文字。移动端 m.css 早就有这条，桌面端一直缺——
+   导致 app.js 里 class="muted" 的地方（复习驾驶舱「暂无数据」、N3 倒计时副标题）
+   一直按正文墨色渲染，看着不像弱化。 */
+.muted { color: var(--ink-3); }
+
 /* ============ 侧边栏 ============ */
 .sidebar {
   width: 216px; flex-shrink: 0;
@@ -1050,7 +1055,7 @@ body.exam-mode .view {
 .countdown .cd-n { font-family: var(--serif); font-size: 30px; font-weight: 700; line-height: 1; min-width: 52px; text-align: center; color: var(--ink); }
 .countdown .cd-tx { flex: 1; min-width: 0; }
 .countdown .cd-tx b { font-size: 15px; }
-.countdown .cd-tx .muted { font-size: 12.5px; overflow-wrap: anywhere; }
+.countdown .cd-tx .muted { color: var(--ink-3); font-size: 12.5px; overflow-wrap: anywhere; }
 .countdown .cd-go { flex: none; font-size: 13px; color: var(--indigo); text-decoration: none; border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; white-space: nowrap; }
 .countdown .cd-go:hover { border-color: var(--indigo); background: var(--indigo-soft); }
 .countdown.cd-mid { border-color: var(--indigo); background: var(--indigo-soft); }

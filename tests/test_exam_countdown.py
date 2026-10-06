@@ -146,12 +146,26 @@ def test_stats_returns_days_left_ranges(client, delta, expected):
 
 
 def test_stats_ignores_invalid_exam_date(client):
-    """非法日期被写进设置也不能让 /api/stats 崩（days_left=None）。"""
+    """非法日期既不能让 /api/stats 崩，也不该被写进设置文件（脏值不落盘）。"""
     client.post("/api/settings", json={"exam_date": "不是日期"})
     r = client.get("/api/stats")
     assert r.status_code == 200
     body = r.json()
     assert body["days_left"] is None
+    assert client.get("/api/settings").json()["exam_date"] == "", \
+        "非法考试日期被落盘了（桌面端未按移动端同口径过滤）"
+
+
+def test_settings_rejects_blank_and_keeps_legal(client):
+    """两端同口径：空串=清除（允许），合法日期=写入，非法=丢弃。"""
+    client.post("/api/settings", json={"exam_date": " 2027-02-01 "})
+    assert client.get("/api/settings").json()["exam_date"] == "2027-02-01", \
+        "合法日期应去掉首尾空白后写入"
+    client.post("/api/settings", json={"exam_date": "2027-02-30"})   # 2 月没有 30 号
+    assert client.get("/api/settings").json()["exam_date"] == "2027-02-01", \
+        "非法日期应被丢弃且不覆盖已保存值"
+    client.post("/api/settings", json={"exam_date": ""})
+    assert client.get("/api/settings").json()["exam_date"] == ""
 
 
 def test_settings_api_roundtrip_exam_date(client):
@@ -328,3 +342,22 @@ def test_countdown_banner_validator(node_exe):
                        capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT))
     assert r.returncode == 0, f"倒计时校验失败：\n{r.stdout}\n{r.stderr}"
     assert "全部通过" in r.stdout
+
+
+# ---------------- 样式：横幅副标题必须真的是「弱化」的 ----------------
+
+def test_muted_class_defined_in_both_stylesheets():
+    """双端都要有 .muted 的弱化色。
+
+    桌面 `styles.css` 一直**没有**定义 `.muted`，而 app.js 里已有 3 处在用它
+    （复习驾驶舱两处「暂无数据」+ N3 倒计时副标题），此前都按正文墨色渲染。
+    """
+    def has_muted_color(css: str) -> bool:
+        return any(re.search(r"color\s*:\s*var\(--ink-3\)", m.group(1))
+                   for m in re.finditer(r"\.muted\s*\{([^}]*)\}", css))
+
+    for rel in ("static/styles.css", "static/m/m.css"):
+        css = (ROOT / rel).read_text(encoding="utf-8")
+        assert has_muted_color(css), f"{rel} 缺少 .muted 的弱化色定义"
+        assert re.search(r"\.countdown \.cd-tx \.muted\s*\{[^}]*color\s*:\s*var\(--ink-3\)", css), \
+            f"{rel} 的倒计时副标题未显式指定弱化色（依赖全局 .muted，易被误删）"
