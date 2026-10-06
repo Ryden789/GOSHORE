@@ -865,6 +865,16 @@ class _Handler(BaseHTTPRequestHandler):
                     self._json(q)
             elif path == "/api/shizheng":
                 self._json(_shizheng_overview())
+            # 分享/PK 的读取接口必须是 GET：两端前端 `api()` 助手都是
+            # 「不传 body 即 GET」，所以 api("/api/share/list")、api(`/api/pk/<code>`)
+            # 发出去的都是 GET。此前这两条只注册在 do_POST 分支里，导致移动端
+            # 「我分享过的」与 PK 榜单**永远为空**（前端 catch 把 404 吞了，静默失败）。
+            elif path == "/api/share/list":
+                self._json({"items": db.list_shared_sets()})
+            elif path.startswith("/api/pk/"):
+                _pkcode = urllib.parse.unquote(path[len("/api/pk/"):])
+                self._json({"records": db.list_pk_records(_pkcode, limit=50),
+                            "best": db.pk_best(_pkcode)})
             elif path == "/api/update/current":
                 self._json({"ok": True, **_shared_db_meta()})
             elif path == "/api/update/check":
