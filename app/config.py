@@ -2,6 +2,7 @@
 import base64
 import ctypes
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -24,10 +25,61 @@ DEFAULTS = {
     "port": 8765,
     # N3 考试倒计时：'YYYY-MM-DD'，空则首页不显示倒计时横幅
     "exam_date": "",
+    # N2 学习提醒：开关 / 每日提醒时间 'HH:mm' / 仅当天计划未完成时提醒
+    "reminder_on": False,
+    "reminder_time": "20:00",
+    "reminder_plan_only": False,
 }
 
-# ---------------- DPAPI（Windows 凭据级加密，仅当前用户可解） ----------------
+# ---------------- 设置项归一化（桌面 / 移动共用同一口径） ----------------
 
+_HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+_TRUTHY = ("1", "true", "on", "yes")
+_FALSY = ("0", "false", "off", "no", "")
+
+REMINDER_KEYS = ("reminder_on", "reminder_time", "reminder_plan_only")
+
+
+def normalize_time_hhmm(value) -> str | None:
+    """把 'H:mm' / 'HH:mm' 规范成 'HH:mm'（24 小时制）；非法返回 None。
+
+    必须与安卓端 `ReminderScheduler.normalize()` 同口径：两端都接受 '9:05'，
+    否则同一份设置在网页上被丢弃、在 APP 上却被排程，行为不一致。
+    """
+    if not isinstance(value, str):
+        return None
+    m = _HHMM_RE.match(value.strip())
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else None
+
+
+def reminder_patch(raw: dict) -> dict:
+    """N2 学习提醒：从设置入参里挑出合法的提醒字段。
+
+    开关类接受 bool，也接受 '1'/'true'/'on' 这类字符串（前端/原生传参格式不一）；
+    时间必须是 24 小时制 HH:mm，**非法一律丢弃**，不写进设置文件（避免脏值
+    让原生排程拿到一个解析不了的字符串）。
+    """
+    out: dict = {}
+    for k in ("reminder_on", "reminder_plan_only"):
+        if k not in raw:
+            continue
+        v = raw[k]
+        if isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (int, str)):
+            s = str(v).strip().lower()
+            if s in _TRUTHY:
+                out[k] = True
+            elif s in _FALSY:
+                out[k] = False
+    if "reminder_time" in raw:
+        t = normalize_time_hhmm(raw["reminder_time"])
+        if t:
+            out["reminder_time"] = t
+    return out
+
+
+# ---------------- DPAPI（Windows 凭据级加密，仅当前用户可解） ----------------
 
 if wt is not None:
     class _DATA_BLOB(ctypes.Structure):

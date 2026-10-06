@@ -21,7 +21,8 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
-from .config import STATIC_DIR, DB_PATH, SETTINGS_PATH, load_settings, save_settings
+from .config import (STATIC_DIR, DB_PATH, SETTINGS_PATH, REMINDER_KEYS,
+                     load_settings, reminder_patch, save_settings)
 
 import html as _html
 
@@ -1013,11 +1014,16 @@ class SettingsIn(BaseModel):
     deepseek_api_key: str | None = None
     deepseek_model: str | None = None
     exam_date: str | None = None    # N3 考试日期 'YYYY-MM-DD'，空串=清除
+    # N2 学习提醒
+    reminder_on: bool | None = None
+    reminder_time: str | None = None
+    reminder_plan_only: bool | None = None
 
 
 @app.post("/api/settings")
 def api_settings_set(b: SettingsIn):
-    patch = {k: v for k, v in b.model_dump().items() if v is not None}
+    raw = b.model_dump()
+    patch = {k: v for k, v in raw.items() if v is not None}
     if patch.get("deepseek_api_key", "").startswith("***"):
         patch.pop("deepseek_api_key")
     # N3：考试日期只接受空串（清除）或合法 YYYY-MM-DD，脏值不落盘（与移动端同口径）
@@ -1025,6 +1031,10 @@ def api_settings_set(b: SettingsIn):
         patch["exam_date"] = patch["exam_date"].strip()
         if patch["exam_date"] and db.exam_days_left(patch["exam_date"]) is None:
             patch.pop("exam_date")
+    # N2：提醒字段统一归一化（非法时间/开关一律丢弃，与移动端同口径）
+    for k in REMINDER_KEYS:
+        patch.pop(k, None)
+    patch.update(reminder_patch(raw))
     save_settings(patch)
     return {"ok": True}
 

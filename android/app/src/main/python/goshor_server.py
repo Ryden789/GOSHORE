@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, zy_notes
+from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -38,6 +38,10 @@ _MOBILE_SETTINGS_DEFAULTS = {
     "deepseek_model": "deepseek-chat",
     # N3 考试倒计时：'YYYY-MM-DD'，空则首页不显示横幅
     "exam_date": "",
+    # N2 学习提醒：开关 / 每日提醒时间 'HH:mm' / 仅当天计划未完成时提醒
+    "reminder_on": False,
+    "reminder_time": "20:00",
+    "reminder_plan_only": False,
 }
 
 
@@ -1179,6 +1183,8 @@ class _Handler(BaseHTTPRequestHandler):
                         if k == "exam_date" and v and db.exam_days_left(v) is None:
                             continue
                         patch[k] = v
+                # N2：提醒字段统一归一化（非法时间/开关一律丢弃，与桌面端同口径）
+                patch.update(config.reminder_patch(b))
                 _mobile_save_settings(patch)
                 self._json({"ok": True})
             elif path == "/api/settings/test":

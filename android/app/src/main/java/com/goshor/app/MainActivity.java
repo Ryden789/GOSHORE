@@ -60,6 +60,11 @@ public class MainActivity extends Activity {
 
     private ValueCallback<Uri[]> filePathCallback;
     private static final int REQ_FILE_CHOOSER = 71001;
+    private static final int REQ_NOTIFY_PERM = 71002;
+
+    /** N2：通知点进来时要落到哪个页（默认首页） */
+    static final String EXTRA_ROUTE = "goshor_route";
+    private String pendingRoute;
 
     private File dbFile, imgDir, webDir, readyMarker;
 
@@ -69,6 +74,10 @@ public class MainActivity extends Activity {
         root = new FrameLayout(this);
         setContentView(root);
 
+        // N2：提前建好通知渠道（API 26+ 必须在发通知前创建）
+        ReminderScheduler.ensureChannel(this);
+        pendingRoute = routeFrom(getIntent());
+
         dbFile = new File(getFilesDir(), "goshor.db");
         imgDir = new File(getFilesDir(), "img");
         webDir = new File(getFilesDir(), "web");
@@ -76,6 +85,28 @@ public class MainActivity extends Activity {
 
         showInit();
         new Thread(this::bootstrap).start();
+    }
+
+    /** 从启动 Intent 里取目标路由（通知点击 → 首页 / 今日任务） */
+    private static String routeFrom(Intent it) {
+        if (it == null) return null;
+        String r = it.getStringExtra(EXTRA_ROUTE);
+        return (r == null || r.isEmpty()) ? null : r;
+    }
+
+    /** 冷启动由通知拉起、或应用已在后台时点通知，都要跳到目标页 */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String r = routeFrom(intent);
+        if (r == null) return;
+        if (web != null) {
+            web.evaluateJavascript(
+                    "location.hash = '#/" + r + "'", null);
+        } else {
+            pendingRoute = r;   // 还在初始化：等 WebView 起来再跳
+        }
     }
 
     /* ================= 初始化界面 ================= */
@@ -357,7 +388,14 @@ public class MainActivity extends Activity {
         });
         web.addJavascriptInterface(new NativeBridge(this), "GoshorNative");
         root.addView(web, match());
-        web.loadUrl(url);
+        // N2：由通知冷启动时，直接落到目标路由
+        if (pendingRoute != null) {
+            final String r = pendingRoute;
+            pendingRoute = null;
+            web.loadUrl(url + "#/" + r);
+        } else {
+            web.loadUrl(url);
+        }
     }
 
     private void showError(String msg) {
@@ -485,6 +523,98 @@ public class MainActivity extends Activity {
                 return "ERROR:" + e.getMessage();
             }
         }
+
+        /* ==================== N2 学习提醒 ==================== */
+
+        /**
+         * 排程学习提醒。
+         *
+         * @param hhmm     'HH:mm'（24 小时制），非法退回 20:00
+         * @param planOnly 仅当天计划未完成时提醒
+         * @param examDate 'YYYY-MM-DD'，可为空；非空则考前 7/3/1 天额外提醒
+         * @return 可直接展示给用户的状态文案（成功 / 缺权限原因）
+         */
+        @JavascriptInterface
+        public String scheduleReminder(final String hhmm, final boolean planOnly,
+                                       final String examDate) {
+            try {
+                return ReminderScheduler.schedule(activity, true,
+                        ReminderScheduler.normalize(hhmm), planOnly, examDate);
+            } catch (Exception e) {
+                return "ERROR:" + e.getMessage();
+            }
+        }
+
+        @JavascriptInterface
+        public String cancelReminder() {
+            try {
+                return ReminderScheduler.cancel(activity);
+            } catch (Exception e) {
+                return "ERROR:" + e.getMessage();
+            }
+        }
+
+        /** 当前提醒状态文案（设置页进入时回显） */
+        @JavascriptInterface
+        public String reminderStatus() {
+            try {
+                return ReminderScheduler.status(activity);
+            } catch (Exception e) {
+                return "ERROR:" + e.getMessage();
+            }
+        }
+
+        /** 前端同步今日计划完成度：planOnly 时接收器据此决定要不要打扰 */
+        @JavascriptInterface
+        public void syncPlanState(final String day, final int done, final int total) {
+            try {
+                ReminderScheduler.setPlanState(activity, day, done, total);
+            } catch (Exception ignored) {
+            }
+        }
+
+        /** 通知是否已授权（'1'/'0'，供前端决定是否弹引导） */
+        @JavascriptInterface
+        public String notifyGranted() {
+            try {
+                return ReminderScheduler.hasNotifyPermission(activity) ? "1" : "0";
+            } catch (Exception e) {
+                return "0";
+            }
+        }
+
+        /** 精确闹钟是否已授权（'1'/'0'；'0' 时会降级为不精确提醒） */
+        @JavascriptInterface
+        public String exactAlarmGranted() {
+            try {
+                return ReminderScheduler.exactAllowed(activity) ? "1" : "0";
+            } catch (Exception e) {
+                return "0";
+            }
+        }
+
+        /** 申请通知权限（Android 13+ 才需要；低版本直接返回已授权） */
+        @JavascriptInterface
+        public String requestNotifyPermission() {
+            if (Build.VERSION.SDK_INT < 33) return "已授权（系统版本无需申请）";
+            if (ReminderScheduler.hasNotifyPermission(activity)) return "已授权";
+            activity.runOnUiThread(() -> {
+                try {
+                    activity.requestPermissions(
+                            new String[]{"android.permission.POST_NOTIFICATIONS"},
+                            REQ_NOTIFY_PERM);
+                } catch (Exception e) {
+                    android.util.Log.e("mweb", "request notify perm fail", e);
+                }
+            });
+            return "已发起授权请求，请在系统弹窗里选择「允许」";
+        }
+
+        /** 打开系统通知设置（权限被拒或渠道被关时的兜底引导） */
+        @JavascriptInterface
+        public String openNotificationSettings() {
+            return ReminderScheduler.openNotificationSettings(activity);
+        }
     }
 
     @Override
@@ -499,6 +629,16 @@ public class MainActivity extends Activity {
                 filePathCallback.onReceiveValue(results);
                 filePathCallback = null;
             }
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_NOTIFY_PERM) {
+            // 刚拿到通知权限：按已保存配置重排一次，避免此前被系统静默丢弃
+            ReminderScheduler.rescheduleFromPrefs(this);
         }
     }
 

@@ -53,6 +53,11 @@ function makeContext() {
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     requestAnimationFrame: (f) => setTimeout(f, 0),
     cancelAnimationFrame: clearTimeout,
+    // setInterval 必须桩掉：N2 学习提醒在脚本尾部会起一个 60s 常驻轮询
+    // （ReminderWeb.start），用真的 setInterval 会让 Node 事件循环永不退出，
+    // 本校验器就会挂到超时。这里只校验 SVG 几何，定时器与本工具无关。
+    setInterval: () => 0,
+    clearInterval: () => {},
     navigator: { userAgent: "node", onLine: true },
     AudioContext: undefined, webkitAudioContext: undefined,
   };
@@ -64,7 +69,9 @@ function makeContext() {
     requestAnimationFrame: win.requestAnimationFrame,
     cancelAnimationFrame: win.cancelAnimationFrame,
     fetch: async () => ({ ok: true, json: async () => ({}), text: async () => "", body: null }),
-    setTimeout, clearTimeout, setInterval, clearInterval,
+    setTimeout, clearTimeout,
+    // 同上：定时器一律桩掉，避免 N2 的常驻轮询把 Node 事件循环挂住
+    setInterval: () => 0, clearInterval: () => {},
     console, URL, URLSearchParams, TextDecoder, TextEncoder, Blob: class {},
     AbortController, AbortSignal, Event, EventTarget, CustomEvent,
     Headers, Request, Response, FormData,

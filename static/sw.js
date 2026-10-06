@@ -12,7 +12,7 @@
  *   响应请求，用户看到的是上一版界面（stale-while-revalidate 的固有代价）。
  *   建议直接复用 index.html 里的 ?v= 日期号。
  */
-const VERSION = "goshore-20261016";
+const VERSION = "goshore-20261017";
 const SHELL_CACHE = VERSION + "-shell";
 const RUNTIME_CACHE = VERSION + "-runtime";
 const OFFLINE_URL = "/offline.html";
@@ -105,4 +105,39 @@ self.addEventListener("fetch", (event) => {
       return fresh || Response.error();
     })());
   }
+});
+
+/* N2 学习提醒：点通知 → 聚焦已打开的本应用并落到首页；没开就新开一个。
+ *
+ * 提醒本身由前端定时器触发（纯网页无法在应用完全关闭后可靠定时），
+ * 但 Android Chrome 只能用 registration.showNotification() 弹通知，
+ * 弹出来的通知点击事件就落到这里。若将来接 Web Push，showNotification
+ * 之后同样走这条路径，无需改动。
+ *
+ * 目标端不写死：桌面页在 /index.html、手机页在 /m/，已打开的窗口留在它自己
+ * 那一端；没有已打开窗口时优先用通知 data.url，再退回手机页。 */
+self.addEventListener("notificationclick", (event) => {
+  const note = event.notification;
+  note.close();
+  const origin = self.location.origin;
+  event.waitUntil((async () => {
+    try {
+      const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const w of wins) {
+        if (!w.url.startsWith(origin)) continue;
+        await w.focus();
+        const base = w.url.includes("/m/") ? "/m/" : "/index.html";
+        const u = new URL(base, origin);
+        u.hash = "#/home";
+        // navigate 在部分浏览器不可用：拿不到就只聚焦，不抛
+        if (w.navigate) { try { await w.navigate(u.href); } catch (e) { /* 保持原页 */ } }
+        return;
+      }
+      const u = new URL((note.data && note.data.url) || "/m/", origin);
+      u.hash = "#/home";
+      await self.clients.openWindow(u.href);
+    } catch (e) {
+      // 极端情况（无 clients API / 被系统拦截）：不能抛，否则通知点击无响应
+    }
+  })());
 });

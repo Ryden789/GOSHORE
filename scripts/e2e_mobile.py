@@ -349,6 +349,63 @@ def check_browser():
         except Exception as e:
             record(False, "N3 倒计时：设置日期后首页出现横幅", f"异常：{e}")
 
+        # ---- N2 学习提醒：设置页 UI → 保存生效 → 本地镜像 + 网页版轮询就位 → 可关闭
+        try:
+            js_errors.clear()
+            pg.evaluate("location.hash = '#/settings'")
+            pg.wait_for_selector("#setRemindOn", timeout=15000)
+            problems = [f"缺少 {el}" for el in
+                        ("#setRemind", "#setRemindPlan", "#remindState",
+                         "#remindPerm", "#remindSys")
+                        if pg.locator(el).count() != 1]
+            state = ""
+            if not problems:
+                if not pg.locator("#setRemindOn").is_checked():
+                    pg.locator("#setRemindOn").check()
+                pg.fill("#setRemind", "07:30")
+                pg.locator("#setRemindPlan").check()
+                pg.locator("#setSave").click()
+                pg.wait_for_timeout(1000)
+                state = " ".join(pg.locator("#remindState").inner_text().split())
+                if "已保存" not in state and "已开启" not in state:
+                    problems.append(f"保存后状态文案异常：{state!r}")
+                if js_errors:
+                    problems.append("JS 错误：" + "；".join(js_errors[:3]))
+            record(not problems, "N2 提醒：设置页开关/时间/planOnly 可保存",
+                   "；".join(problems) if problems else f"状态：{state[:44]}")
+
+            # 偏好已落到服务端（换浏览器 / 换设备仍生效）
+            code, s = http_get("/api/settings")
+            got = ({k: s.get(k) for k in
+                    ("reminder_on", "reminder_time", "reminder_plan_only")}
+                   if code == 200 else {})
+            record(code == 200 and got == {"reminder_on": True,
+                                           "reminder_time": "07:30",
+                                           "reminder_plan_only": True},
+                   "N2 提醒：偏好已持久化到 /api/settings",
+                   f"HTTP {code} · {got}")
+
+            # 本地镜像 + 网页版轮询已就位（APP 内则由原生 AlarmManager 接棒）
+            mirror = pg.evaluate("JSON.stringify(Pref.get('reminder', ''))") or ""
+            # 注意：ReminderWeb 是顶层 const，不会挂到 window 上，必须用裸标识符访问
+            has_timer = pg.evaluate(
+                "typeof ReminderWeb !== 'undefined' && !!ReminderWeb.timer")
+            record("07:30" in mirror and has_timer,
+                   "N2 提醒：本地镜像 + 网页版轮询已启动",
+                   f"mirror={mirror} timer={has_timer}")
+
+            # 关掉提醒 → 状态与服务端同步回「已关闭」
+            pg.locator("#setRemindOn").uncheck()
+            pg.locator("#setSave").click()
+            pg.wait_for_timeout(800)
+            off = " ".join(pg.locator("#remindState").inner_text().split())
+            code, s = http_get("/api/settings")
+            record("已关闭" in off and s.get("reminder_on") is False,
+                   "N2 提醒：关闭后状态与服务端同步",
+                   f"状态={off!r} reminder_on={s.get('reminder_on')}")
+        except Exception as e:
+            record(False, "N2 提醒：设置页开关/时间/planOnly 可保存", f"异常：{e}")
+
         # ---- 全路由遍历：零 JS 错误 + 恰好一次入场动画 + 动画时 DOM 已是目标页
         routes = pg.evaluate("Object.keys(ROUTES)")
         print(f"  路由清单（{len(routes)} 个）：{' '.join(routes)}", flush=True)

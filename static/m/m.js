@@ -46,6 +46,169 @@ function countdownBanner(examDate, daysLeft) {
     </div>`;
 }
 
+/* N2 学习提醒 · 网页端（APP 内走原生 AlarmManager，不走这里）。
+   浏览器无法在应用完全关闭后可靠定时，所以只在页面打开期间轮询；
+   配置镜像进 localStorage，避免每次轮询都打接口。 */
+function reminderPref() {
+  try { return JSON.parse(Pref.get("reminder", "")) || {}; } catch (e) { return {}; }
+}
+function setReminderPref(o) { Pref.set("reminder", JSON.stringify(o || {})); }
+
+function ensureWebNotify() {
+  if (!("Notification" in window)) return "当前环境不支持系统通知，装 APP 后可后台提醒";
+  if (Notification.permission === "granted") return "已开启（网页版仅在应用打开时提醒）";
+  if (Notification.permission === "denied") return "通知被拒绝，请在浏览器地址栏左侧允许通知";
+  try {
+    // 某些 WebView / 隐私模式下 requestPermission 会直接 reject，
+    // 不加 catch 就是一个未处理的 Promise 拒绝（控制台报错、状态位永远停在「正在请求」）
+    return Notification.requestPermission().then(p =>
+      p === "granted" ? "已开启（网页版仅在应用打开时提醒）" : "未授权通知，无法提醒")
+      .catch(() => "通知授权失败，请在浏览器地址栏左侧允许通知");
+  } catch (e) { return "通知授权失败：" + e.message; }
+}
+
+/* 弹一条本地通知。
+   **Android Chrome 不支持 `new Notification()`**（抛 Illegal constructor），必须走
+   Service Worker 的 registration.showNotification()；桌面浏览器两者都行，优先 SW
+   是为了让 sw.js 的 notificationclick 能聚焦到已打开的本应用。
+   getRegistration() 是异步的，所以这里是「同步回落 + 异步优选」：
+   没有 SW 时立刻用构造器弹出，保证调用方同步就能看到效果。 */
+function showReminderNotify(title, body) {
+  const opts = { body, tag: "goshore-study", icon: "/icons/icon-192.png" };
+  try {
+    const sw = navigator.serviceWorker;
+    if (sw && sw.getRegistration) {
+      sw.getRegistration().then(reg => {
+        if (reg && reg.showNotification) reg.showNotification(title, opts).catch(() => {});
+        else fallbackNotify(title, opts);
+      }).catch(() => fallbackNotify(title, opts));
+      return;
+    }
+  } catch (e) { /* 无 Service Worker：直接回落 */ }
+  fallbackNotify(title, opts);
+}
+
+function fallbackNotify(title, opts) {
+  try { new Notification(title, opts); } catch (e) { /* 环境不支持：静默降级 */ }
+}
+
+/* 每分钟检查一次：到点且今天没提醒过 → 发通知。
+   跨页常驻（同番茄钟的豁免），故不登记 safeTimeout/safeInterval。 */
+const ReminderWeb = {
+  timer: null,
+  start() {
+    if (window.GoshorNative) return;      // APP 内交给原生，避免重复提醒
+    if (this.timer) return;
+    this.timer = setInterval(() => this.tick(), 60000);
+    this.tick();
+  },
+  tick() {
+    // 判定点自己也要防：APP 内一律交给原生。只靠 start() 提前返回不够稳——
+    // 谁再调一次 tick()（或未来加个「立即检查」按钮）就会和原生撞车、弹两条。
+    if (window.GoshorNative) return;
+    const p = reminderPref();
+    if (!p.on || !p.time) return;
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const d = new Date();
+    const pad = n => String(n).padStart(2, "0");
+    const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    if (hm < p.time) return;
+    const day = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+    if (Pref.get("rm_last", "") === day) return;              // 今天已提醒过
+    if (p.planOnly && Pref.get("rm_plan", "") === day) return; // 今日计划已完成
+    Pref.set("rm_last", day);
+    showReminderNotify("该学习了",
+      "今天的学习计划还没完成，花 15 分钟做几道题，保持连续学习。");
+  },
+};
+
+/* 把「今日计划完成度」同步给原生/网页提醒：
+   planOnly 时用来判断今天要不要打扰。 */
+function syncPlanState(day, done, total) {
+  const n = window.GoshorNative;
+  if (n && n.syncPlanState) {
+    try { n.syncPlanState(day || "", done | 0, total | 0); } catch (e) { /* 忽略 */ }
+    return;
+  }
+  const p = reminderPref();
+  if (p.planOnly && total > 0 && done >= total) Pref.set("rm_plan", day || "");
+  else if (Pref.get("rm_plan", "") === (day || "")) Pref.set("rm_plan", "");
+}
+
+/* 设置页「学习提醒」状态文案：APP 内直接问原生，网页版看浏览器授权。 */
+function reminderStateText() {
+  const n = window.GoshorNative;
+  if (n && n.reminderStatus) {
+    try { return n.reminderStatus(); } catch (e) { /* 回落网页版 */ }
+  }
+  const p = reminderPref();
+  if (!p.on) return "已关闭";
+  let t = "已开启 · 每日 " + (p.time || "20:00");
+  if (p.planOnly) t += "（仅当天计划未完成时）";
+  if (!("Notification" in window)) t += " · 当前环境不支持系统通知，装 APP 可后台提醒";
+  else if (Notification.permission === "granted") t += " · 网页版仅在应用打开时提醒";
+  else if (Notification.permission === "denied") t += " · 通知被拒绝，需在浏览器里允许";
+  else t += " · 尚未授权通知，点下方「检查通知权限」";
+  return t;
+}
+
+/* 保存提醒设置后立刻生效：APP 内交原生排程，网页版申请通知授权。
+   返回给用户看的状态文案。 */
+function applyReminder(on, time, planOnly, examDate) {
+  const n = window.GoshorNative;
+  if (n && n.scheduleReminder) {
+    try {
+      if (!on) return n.cancelReminder ? n.cancelReminder() : "已关闭学习提醒";
+      return n.scheduleReminder(time || "20:00", !!planOnly, examDate || "");
+    } catch (e) { return "原生排程失败：" + e.message; }
+  }
+  if (!on) return "已关闭学习提醒";
+  const r = ensureWebNotify();
+  if (r && typeof r.then === "function") {
+    // 授权是异步的：先把「已保存」回给用户，拿到结果再补一句权限状态
+    r.then(msg => { const el = $("#remindState"); if (el) el.textContent = "已保存，" + msg; });
+    return "已保存（网页版仅在应用打开时提醒）";
+  }
+  return "已保存，" + r;
+}
+
+/* 权限引导按钮：APP 内请求 POST_NOTIFICATIONS / 跳系统通知设置；
+   网页版申请 Notification 授权。 */
+function requestReminderPerm() {
+  const n = window.GoshorNative;
+  if (n && n.requestNotifyPermission) {
+    try { return n.requestNotifyPermission(); } catch (e) { /* 回落 */ }
+  }
+  const r = ensureWebNotify();
+  if (r && typeof r.then === "function") {
+    r.then(m => { const el = $("#remindState"); if (el) el.textContent = m; });
+    return "正在请求浏览器通知授权…";
+  }
+  return r;
+}
+
+function openReminderSysSettings() {
+  const n = window.GoshorNative;
+  if (n && n.openNotificationSettings) {
+    try { return n.openNotificationSettings(); } catch (e) { /* 回落 */ }
+  }
+  return "网页版请在浏览器地址栏左侧允许本站通知";
+}
+
+/* 从服务端设置水合提醒偏好：换浏览器 / 清缓存后，网页版提醒仍按设置生效。 */
+async function hydrateReminderPref() {
+  try {
+    const s = await api("/api/settings");
+    if (s && "reminder_on" in s) {
+      setReminderPref({
+        on: !!s.reminder_on,
+        time: s.reminder_time || "20:00",
+        planOnly: !!s.reminder_plan_only,
+      });
+    }
+  } catch (e) { /* 未登录 / 离线：沿用本地缓存 */ }
+}
+
 /* 安全富文本：保留题面自带的白名单 HTML（公式/排序图片、表格、上下标等），
    其余全部转义；事件属性与 javascript: 协议一律剔除。 */
 const RICH_OPEN = /<(p|br|img|table|thead|tbody|tr|td|th|div|span|sub|sup)(\s[^<>]*?)?\s*\/?>/gi;
@@ -422,6 +585,9 @@ function mountHintBar() {
 async function boot() {
   applyFontSize();
   mountHintBar();
+  // N2 学习提醒：先水合偏好再启动网页版轮询（APP 内 start() 会自动让位原生）
+  await hydrateReminderPref();
+  ReminderWeb.start();
   try {
     ME = await api("/api/auth/me");
   } catch (e) {
@@ -992,6 +1158,8 @@ async function renderPlan() {
   let items = plan.items || [], todayStr = plan.today || "";
   let summary = plan.summary || { total: 0, done: 0, rate: 0 };
   const examDate = plan.exam_date || "";   // N3：预填已保存的考试日期
+  // N2：把今日计划完成度同步给提醒（planOnly 时据此决定要不要打扰）
+  syncPlanState(todayStr, summary.done, summary.total);
 
   view.innerHTML = `
     <div class="page-head">
@@ -1062,6 +1230,7 @@ async function renderPlan() {
         { day: cb.dataset.day, module: cb.dataset.module, done: cb.checked });
       if (r && r.summary) { summary = r.summary; drawStat(); }
       draw();
+      syncPlanState(todayStr, summary.done, summary.total);   // N2：完成度变化即时同步
     });
   }
   draw();
@@ -1077,6 +1246,7 @@ async function renderPlan() {
       items = r.items || [];
       if (r.summary) summary = r.summary;
       drawStat(); draw();
+      syncPlanState(todayStr, summary.done, summary.total);   // N2：新计划即刻同步
       toast("✅ 计划已生成");
     } catch (e) { toast("生成失败：" + e.message); }
     btn.disabled = false; btn.textContent = "生成计划";
@@ -1133,6 +1303,8 @@ async function renderHome() {
   const rankPct = nextAt
     ? Math.min(100, Math.round(s.answers_total / nextAt * 100)) : 100;
   DAILY_DONE = s.today_answers > 0 || Pref.get("dskip", "") === todayStr();
+  // N2：首页也同步一次今日计划完成度（保证提醒判断不过期）
+  if (pl && pl.summary) syncPlanState(pl.today, pl.summary.done, pl.summary.total);
   const focusMin = Math.round((s.today_focus || 0) / 60);
   view.innerHTML = `
     ${countdownBanner(s.exam_date, s.days_left)}
@@ -3332,9 +3504,21 @@ async function renderSettings() {
         <div class="muted">填写后首页顶部显示「距考试还有 N 天」；留空则不显示</div>
       </div>
       <div class="field">
-        <label>每日学习提醒</label>
-        <input id="setRemind" type="time" class="m-input"
-          value="${localStorage.getItem("remind_time") || "20:00"}"/>
+        <label class="check"><input type="checkbox" id="setRemindOn"
+          ${s.reminder_on ? "checked" : ""}/> 每日学习提醒</label>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+          <span>时间 <input id="setRemind" type="time" class="m-input"
+            style="width:auto;display:inline-block"
+            value="${esc(s.reminder_time || "20:00")}"/></span>
+        </div>
+        <label class="check" style="margin-top:6px"><input type="checkbox" id="setRemindPlan"
+          ${s.reminder_plan_only ? "checked" : ""}/> 仅当今日计划未完成时提醒</label>
+        <div class="muted" id="remindState">${esc(reminderStateText())}</div>
+        <div class="guide-copy" style="margin-top:8px">
+          <button class="btn btn-sm" id="remindPerm">检查通知权限</button>
+          <button class="btn btn-sm" id="remindSys">系统通知设置</button>
+        </div>
+        <div class="muted">APP 内关闭应用也能提醒（系统闹钟）；网页版仅在页面打开时提醒。填了考试日期后，考前 7/3/1 天另有一次提醒。</div>
       </div>
       <button class="btn btn-primary btn-block" id="setSave">保存</button>
       <div class="set-status" id="setStatus"></div>
@@ -3382,6 +3566,10 @@ async function renderSettings() {
     if (!e.target.checked) Pomo.unmount();
   };
 
+  /* N2 学习提醒：权限引导按钮 */
+  $("#remindPerm").onclick = () => { $("#remindState").textContent = requestReminderPerm(); };
+  $("#remindSys").onclick = () => { $("#remindState").textContent = openReminderSysSettings(); };
+
   /* 复制接口地址 / 模型名（兼容无 clipboard 权限的 WebView） */
   const copyText = async (text, btn) => {
     try {
@@ -3406,8 +3594,17 @@ async function renderSettings() {
     const k = $("#setKey").value.trim();
     if (k && !k.startsWith("***")) patch.deepseek_api_key = k;
     patch.exam_date = $("#setExam").value.trim();   // N3：空串=清除倒计时
-    localStorage.setItem("remind_time", $("#setRemind").value || "20:00");
+    // N2 学习提醒：偏好落 settings（两端同口径），并立刻排程
+    const rOn = $("#setRemindOn").checked;
+    const rTime = $("#setRemind").value || "20:00";
+    const rPlan = $("#setRemindPlan").checked;
+    patch.reminder_on = rOn;
+    patch.reminder_time = rTime;
+    patch.reminder_plan_only = rPlan;
+    setReminderPref({ on: rOn, time: rTime, planOnly: rPlan });
     await api("/api/settings", patch);
+    const rs = $("#remindState");
+    if (rs) rs.textContent = applyReminder(rOn, rTime, rPlan, patch.exam_date);
     const el = $("#setStatus");
     el.classList.remove("ok", "err");
     // 保存后自动验证连通性（已配过 Key 或本次新填了 Key 才验证）
