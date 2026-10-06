@@ -596,6 +596,78 @@ def check_browser():
         except Exception as e:
             record(False, "N4 字号（移动）", f"异常：{e}")
 
+        # ---- G2 每日目标（移动端）：设目标 → 落服务端 → 首页出进度环 → 比例随作答变化
+        try:
+            problems = []
+            # 先把目标设为 1 题 / 0 分钟（便于「1 题即达标」，且比例可精确断言）
+            pg.goto(BASE + "/#/settings", wait_until="domcontentloaded", timeout=20000)
+            pg.wait_for_selector("#setGoalQ", timeout=20000)
+            pg.fill("#setGoalQ", "1")
+            pg.fill("#setGoalM", "0")
+            pg.click("#setSave")
+            pg.wait_for_timeout(900)
+            # 目标必须真的落到服务端设置（防「只改 UI 不落盘」）
+            _, st_all = http_get("/api/settings")
+            if int(st_all.get("daily_goal_questions", -1)) != 1:
+                problems.append(f"目标未落盘：daily_goal_questions={st_all.get('daily_goal_questions')!r}")
+            pg.goto(BASE + "/#/home", wait_until="domcontentloaded", timeout=20000)
+            pg.wait_for_selector(".goal-panel", timeout=20000)
+            ring = pg.locator(".goal-panel .goal-ring").count()
+            if ring != 1:
+                problems.append(f"首页应有 1 个目标进度环，实际 {ring}")
+            # 目标=1 题：做完每日一题（E2E 前段已答过）→ 完成度应为 100%（达标态）
+            pct0 = pg.evaluate(
+                "parseFloat(document.querySelector('.goal-ring text').textContent)")
+            sub = pg.locator(".goal-panel .goal-sub").inner_text()
+            if "题量" not in sub:
+                problems.append(f"目标文案应含「题量 今日/1」，实际 {sub!r}")
+            # 设为 0/0（关闭目标）→ 首页不再出现进度环
+            pg.goto(BASE + "/#/settings", wait_until="domcontentloaded", timeout=20000)
+            pg.wait_for_selector("#setGoalQ", timeout=20000)
+            pg.fill("#setGoalQ", "0")
+            pg.click("#setSave")
+            pg.wait_for_timeout(900)
+            pg.goto(BASE + "/#/home", wait_until="domcontentloaded", timeout=20000)
+            pg.wait_for_timeout(700)
+            off = pg.locator(".goal-panel").count()
+            if off != 0:
+                problems.append(f"目标全为 0 时首页不应出现进度环，实际 {off} 个")
+            record(not problems, "G2 每日目标（移动）：目标落盘 + 进度环渲染 + 归零隐藏",
+                   "；".join(problems) if problems else f"完成度 {pct0}% · {sub}")
+        except Exception as e:
+            record(False, "G2 每日目标（移动）", f"异常：{e}")
+
+        # ---- G6 搜题历史（移动端）：有结果才记录 → 标签出现 → 点击再搜 → 清空
+        try:
+            problems = []
+            pg.goto(BASE + "/#/search", wait_until="domcontentloaded", timeout=20000)
+            pg.wait_for_selector("#srQ", timeout=20000)
+            # 预先做一次确定有结果的搜索（用题库里必有的关键词）
+            pg.fill("#srQ", "的")
+            pg.click("#srGo")
+            pg.wait_for_timeout(1200)
+            # 历史标签应出现
+            pg.wait_for_selector("#shWrap .sh-tag", timeout=8000)
+            n_tags = pg.locator("#shWrap .sh-tag").count()
+            if n_tags < 1:
+                problems.append("有结果搜索后应出现历史标签")
+            # 点第一个标签 → 应再次发起搜索（结果数文本更新）
+            pg.locator("#shWrap .sh-tag").first.click()
+            pg.wait_for_timeout(1200)
+            cnt = (pg.locator("#srCount").inner_text() or "").strip()
+            if "找到" not in cnt:
+                problems.append(f"点历史标签应触发再搜，实际计数文案 {cnt!r}")
+            # 清空
+            pg.click("#shClear")
+            pg.wait_for_timeout(400)
+            gone = pg.locator("#shWrap").count()
+            if gone != 0:
+                problems.append("点清空后历史标签块应移除")
+            record(not problems, "G6 搜题历史（移动）：记录 / 点击再搜 / 清空",
+                   "；".join(problems) if problems else f"记录 {n_tags} 条，点击再搜 {cnt!r}")
+        except Exception as e:
+            record(False, "G6 搜题历史（移动）", f"异常：{e}")
+
         # ---- 全路由遍历：零 JS 错误 + 恰好一次入场动画 + 动画时 DOM 已是目标页
         routes = pg.evaluate("Object.keys(ROUTES)")
         print(f"  路由清单（{len(routes)} 个）：{' '.join(routes)}", flush=True)
@@ -828,6 +900,66 @@ def check_browser():
                 problems.append(f"桌面端特大档正文应大于小档：sm={d_sm} xl={d_xl}")
             record(not problems, "N4 字号（桌面）：四档切换生效",
                    "；".join(problems) if problems else f"--read-font {d_sm} → {d_xl}")
+
+            # G2 每日目标（桌面）：目标生效 → 首页进度环 → 归零隐藏
+            problems = []
+            pg3.evaluate("location.hash = '#/settings'")
+            pg3.wait_for_selector("#goalQ", timeout=20000)
+            pg3.fill("#goalQ", "1")
+            pg3.fill("#goalM", "0")
+            pg3.click("#save")
+            pg3.wait_for_timeout(900)
+            pg3.evaluate("location.hash = '#/home'")
+            # 首页为异步渲染，且面板带 .rise 入场动画（初始 opacity:0）——
+            # 这里只要求元素进 DOM（attached），再切回浅色态后读数量。
+            try:
+                pg3.wait_for_selector(".goal-panel", state="attached", timeout=20000)
+            except Exception:
+                pass
+            pg3.wait_for_timeout(700)
+            d_ring = pg3.locator(".goal-panel .goal-ring").count()
+            if d_ring != 1:
+                problems.append(f"桌面首页应有 1 个目标进度环，实际 {d_ring}")
+            pg3.evaluate("location.hash = '#/settings'")
+            pg3.wait_for_selector("#goalQ", timeout=20000)
+            pg3.fill("#goalQ", "0")
+            pg3.fill("#goalM", "0")
+            pg3.click("#save")
+            pg3.wait_for_timeout(900)
+            pg3.evaluate("location.hash = '#/home'")
+            pg3.wait_for_timeout(900)
+            d_off = pg3.locator(".goal-panel").count()
+            if d_off != 0:
+                problems.append(f"桌面端目标全 0 时不应出现进度环，实际 {d_off} 个")
+            record(not problems, "G2 每日目标（桌面）：进度环渲染 + 归零隐藏",
+                   "；".join(problems) if problems else "目标生效并可按 0 关闭")
+
+            # G6 搜题历史（桌面）：有结果才记录 → 标签出现 → 点击再搜 → 清空
+            problems = []
+            pg3.evaluate("location.hash = '#/search'")
+            pg3.wait_for_selector("#q", timeout=20000)
+            pg3.fill("#q", "的")
+            pg3.click("#go")
+            pg3.wait_for_timeout(1400)
+            try:
+                pg3.wait_for_selector("#shWrap .sh-tag", timeout=8000)
+            except Exception:
+                problems.append("桌面端有结果搜索后应出现历史标签")
+            d_tags = pg3.locator("#shWrap .sh-tag").count()
+            if d_tags < 1 and not problems:
+                problems.append("历史标签数为 0")
+            pg3.locator("#shWrap .sh-tag").first.click()
+            pg3.wait_for_timeout(1400)
+            d_cnt = (pg3.locator("#rcount").inner_text() or "").strip()
+            if "找到" not in d_cnt:
+                problems.append(f"桌面端点历史标签应触发再搜，实际 {d_cnt!r}")
+            pg3.click("#shClear")
+            pg3.wait_for_timeout(400)
+            d_gone = pg3.locator("#shWrap").count()
+            if d_gone != 0:
+                problems.append("桌面端点清空后历史标签块应移除")
+            record(not problems, "G6 搜题历史（桌面）：记录 / 点击再搜 / 清空",
+                   "；".join(problems) if problems else f"记录 {d_tags} 条，再搜 {d_cnt!r}")
             pg3.close()
         except Exception as e:
             record(False, "N5 夜间模式（桌面）", f"异常：{e}")

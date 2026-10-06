@@ -42,6 +42,9 @@ _MOBILE_SETTINGS_DEFAULTS = {
     "reminder_on": False,
     "reminder_time": "20:00",
     "reminder_plan_only": False,
+    # G2 每日目标：题量 / 专注分钟（0 表示该项不设目标）
+    "daily_goal_questions": 30,
+    "daily_goal_minutes": 30,
 }
 
 
@@ -685,14 +688,21 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/auth/profiles":
                 self._json({"items": accounts.profiles()})
             elif path == "/api/stats":
-                out = db.stats_overview()
+                _st = _mobile_load_settings()
+                # G2 每日目标：与桌面端同构，stats 顺带返回今日进度环数据
+                out = db.stats_overview(
+                    int(_st.get("daily_goal_questions") or 0),
+                    int(_st.get("daily_goal_minutes") or 0))
                 # N3 考试倒计时：与桌面端同构，一次请求带回考试日期与剩余天数
-                exam_date = _mobile_load_settings().get("exam_date", "") or ""
+                exam_date = _st.get("exam_date", "") or ""
                 out["exam_date"] = exam_date
                 out["days_left"] = db.exam_days_left(exam_date)
                 self._json(out)
             elif path == "/api/facets":
                 self._json(db.facets())
+            elif path == "/api/time-analysis":
+                # G1 单题用时分析：与桌面端同构
+                self._json(db.time_analysis())
             elif path == "/api/exams":
                 self._json({"items": db.list_exams()})
             elif path == "/api/kaodian-tree":
@@ -753,6 +763,10 @@ class _Handler(BaseHTTPRequestHandler):
                             "today": today,
                             # N3：计划页预填已保存的考试日期
                             "exam_date": _mobile_load_settings().get("exam_date", "") or ""})
+            elif path == "/api/study-time":
+                # 与桌面端同构（桌面首页 / 周报都会读它）；此前漏注册，
+                # 桌面页在移动服务上会 404 —— 顺带补齐。
+                self._json(db.study_time_stats())
             elif path == "/api/zy/notes":
                 self._json({"ok": True, "data": zy_notes.NOTES})
             elif path == "/api/wrong-book":
@@ -1191,6 +1205,8 @@ class _Handler(BaseHTTPRequestHandler):
                         patch[k] = v
                 # N2：提醒字段统一归一化（非法时间/开关一律丢弃，与桌面端同口径）
                 patch.update(config.reminder_patch(b))
+                # G2：每日目标同样归一化（0 合法=不设目标，脏值丢弃）
+                patch.update(config.goal_patch(b))
                 _mobile_save_settings(patch)
                 self._json({"ok": True})
             elif path == "/api/settings/test":

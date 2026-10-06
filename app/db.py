@@ -2235,8 +2235,37 @@ def exam_days_left(exam_date: str | None, today: _date | None = None) -> int | N
     return (exam - (today or _date.today())).days
 
 
-def stats_overview() -> dict:
-    """Dashboard 汇总数据。"""
+def _goal_progress(today_q: int, today_seconds: int, goal_q: int,
+                   goal_m: int, goal_streak: int) -> dict:
+    """G2 每日目标的今日进度（供首页进度环使用）。
+
+    `pct` 取「题量完成度」与「专注时长完成度」中**较小**的一个 —— 双目标时
+    必须两项都达标才算完成，取 min 才能让环在都满时才走到 100%。
+    单项未设目标（=0）时该项按 100% 计，不拖后腿。两项都未设 → pct=0 且
+    `enabled=False`，首页据此不渲染进度环。
+    """
+    enabled = bool(goal_q or goal_m)
+    q_pct = min(100, round(today_q / goal_q * 100)) if goal_q else 100
+    m_pct = min(100, round(today_seconds / 60 / goal_m * 100)) if goal_m else 100
+    pct = min(q_pct, m_pct) if enabled else 0
+    return {
+        "enabled": enabled,
+        "questions": today_q, "minutes": round(today_seconds / 60, 1),
+        "goal_questions": goal_q, "goal_minutes": goal_m,
+        "q_pct": q_pct if enabled else 0,
+        "m_pct": m_pct if enabled else 0,
+        "pct": pct,
+        "done": bool(enabled and pct >= 100),
+        "streak": goal_streak if enabled else 0,
+    }
+
+
+def stats_overview(goal_questions: int = 0, goal_minutes: int = 0) -> dict:
+    """Dashboard 汇总数据。
+
+    G2：入参 `goal_questions` / `goal_minutes` 为当前每日目标（0=不设目标）。
+    由接口层从设置读入后传入，db 不反向依赖 config。
+    """
     decay_mastery()   # 掌握度随时间衰减（内部节流，1 小时最多一次）
     conn = connect()
     today = time.time() - (time.time() % 86400) - 8 * 3600 + 86400  # 今天 24:00 (UTC+8 修正粗略)
@@ -2281,6 +2310,39 @@ def stats_overview() -> dict:
                 d = time.localtime(time.mktime(d) - 86400)
                 continue
             break
+
+    # G2 每日目标：今日完成度 + 连续达标天数
+    gq = max(0, int(goal_questions or 0))
+    gm = max(0, int(goal_minutes or 0))
+    # 达标日集合：当日题量≥目标 且 专注分钟≥目标（目标为 0 的那项不参与判定）
+    goal_days: set[str] = set()
+    if gq or gm:
+        per_day: dict[str, dict] = {}
+        for r in conn.execute("SELECT created_at FROM answers"):
+            k = time.strftime("%Y-%m-%d", time.localtime(r["created_at"]))
+            per_day.setdefault(k, {"q": 0, "m": 0})["q"] += 1
+        for r in conn.execute("SELECT day, seconds FROM focus_log"):
+            per_day.setdefault(r["day"], {"q": 0, "m": 0})["m"] += r["seconds"] or 0
+        for k, v in per_day.items():
+            ok_q = (v["q"] >= gq) if gq else True
+            ok_m = (v["m"] / 60 >= gm) if gm else True
+            if ok_q and ok_m:
+                goal_days.add(k)
+    goal_streak = 0
+    if gq or gm:
+        d = lt
+        while True:
+            key = time.strftime("%Y-%m-%d", d)
+            if key in goal_days:
+                goal_streak += 1
+                d = time.localtime(time.mktime(d) - 86400)
+            else:
+                # 今天尚未达标不算断（与学习连续天数同一口径）
+                if goal_streak == 0 and key == time.strftime("%Y-%m-%d", lt):
+                    d = time.localtime(time.mktime(d) - 86400)
+                    continue
+                break
+    goal = _goal_progress(today_ans["c"] or 0, today_focus, gq, gm, goal_streak)
 
     wrong_count = conn.execute(
         """SELECT COUNT(*) c FROM (
@@ -2379,6 +2441,7 @@ def stats_overview() -> dict:
         "review_due": review_due,
         "card_due": card_due,
         "card_total": card_total,
+        "goal": goal,
     }
 
 
@@ -2518,6 +2581,17 @@ def weekly_report() -> dict:
     speed_b = _drill_brief("speed_rounds")
     formula_b = _drill_brief("formula_rounds")
 
+    # G1 节奏小结：本周「会做但超时」题数（correct=1 且用时超模块阈值）
+    pace_rows = conn.execute(
+        """SELECT a.ms, a.correct, d.module
+           FROM answers a JOIN documents d ON d.id = a.doc_id
+           WHERE a.created_at>=? AND a.ms>0""",
+        (week_start,)).fetchall()
+    pace_n = len(pace_rows)
+    pace_slow_correct = sum(
+        1 for r in pace_rows
+        if r["correct"] and r["ms"] > slow_threshold(r["module"] or "") * 1000)
+
     # 复习到期
     review_due = conn.execute(
         "SELECT COUNT(*) c FROM review_plan WHERE due_at<=?", (now,)).fetchone()["c"]
@@ -2557,6 +2631,10 @@ def weekly_report() -> dict:
         w = weak[0]
         advice.append(f"薄弱考点「{w['kaodian']}」正确率 {w['rate']}%："
                       f"可在组卷页按该考点专攻。")
+    # G1 节奏：会做但太慢的题单列一条建议
+    if pace_slow_correct >= 3:
+        advice.append(f"本周有 {pace_slow_correct} 道「会做但超时」的题："
+                      f"正确率不是问题，节奏才是——去「用时分析」按超时清单限时重做。")
     if review_due:
         advice.append(f"有 {review_due} 道题到了复习时间：今天先清「复习」，再做新题。")
     if g_cur is not None and g_cur < 60:
@@ -2579,7 +2657,112 @@ def weekly_report() -> dict:
         "formula": formula_b,
         "review_due": review_due,
         "reason_top": reason_top,
+        "pace": {"n": pace_n, "slow_correct": pace_slow_correct},
         "advice": advice,
+    }
+
+
+# ---------------- G1 单题用时分析 ----------------
+
+# 各模块单题默认超时阈值（秒）。文档指定：数量 90 / 资料 60 / 言语 45；
+# 其余模块按该模块 SUGGEST_SEC（建议用时）的 1.5 倍兜底，保证任何模块都有阈值。
+SLOW_SEC_DEFAULT = {
+    "数量关系": 90, "资料分析": 60, "言语理解与表达": 45, "言语理解": 45,
+}
+
+
+def slow_threshold(module: str) -> int:
+    """某模块的「超时」阈值（秒）。显式表优先，否则由建议用时推导，最后 60 秒兜底。"""
+    if module in SLOW_SEC_DEFAULT:
+        return SLOW_SEC_DEFAULT[module]
+    sug = SUGGEST_SEC.get(module)
+    return int(round(sug * 1.5)) if sug else 60
+
+
+def _median(nums: list[int]) -> float:
+    """中位数（不依赖 statistics，避免空表/单元素边界）。毫秒。"""
+    if not nums:
+        return 0.0
+    s = sorted(nums)
+    n = len(s)
+    mid = n // 2
+    return float(s[mid]) if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def time_analysis(top_n: int = 10, slow_n: int = 30) -> dict:
+    """单题用时分析（G1）。
+
+    - `modules`：各模块 平均/中位单题用时（秒）、题量、超时题数、会做但超时题数。
+      阈值按模块给（`slow_threshold`），**只有真正超阈值的作答才计入 slow**。
+    - `top_slow`：耗时最长的作答 Top N（带 doc_id/title，可点进去重做）。
+    - `slow_correct`：correct=1 且 ms 超阈值 —— 「会做但太慢」，单独成练习清单。
+    - `overall`：全库单题均时/中位数/总作答数；无作答时 `has_data=False`。
+    """
+    conn = connect()
+    rows = conn.execute(
+        """SELECT a.id, a.doc_id, a.ms, a.correct, a.created_at,
+                  d.module, d.title, d.kaodian
+           FROM answers a JOIN documents d ON d.id = a.doc_id
+           WHERE a.ms > 0
+           ORDER BY a.id"""
+    ).fetchall()
+    conn.close()
+
+    overall_ms = [r["ms"] for r in rows]
+    per_mod: dict[str, dict] = {}
+    top_rows: list[dict] = []
+    slow_correct: list[dict] = []
+
+    for r in rows:
+        module = r["module"] or "未分类"
+        m = per_mod.setdefault(module, {"ms": [], "n": 0, "slow": 0, "slow_correct": 0})
+        m["ms"].append(r["ms"])
+        m["n"] += 1
+        thr = slow_threshold(module)
+        is_slow = r["ms"] > thr * 1000
+        if is_slow:
+            m["slow"] += 1
+        if is_slow and r["correct"]:
+            m["slow_correct"] += 1
+            slow_correct.append({
+                "doc_id": r["doc_id"], "title": r["title"] or "",
+                "module": r["module"], "kaodian": r["kaodian"] or "",
+                "ms": r["ms"], "threshold": thr,
+            })
+        top_rows.append({
+            "doc_id": r["doc_id"], "title": r["title"] or "",
+            "module": r["module"], "kaodian": r["kaodian"] or "",
+            "ms": r["ms"], "correct": bool(r["correct"]),
+            "threshold": thr, "slow": is_slow,
+        })
+
+    modules = []
+    for module, d in per_mod.items():
+        thr = slow_threshold(module)
+        modules.append({
+            "module": module, "n": d["n"],
+            "avg_s": round(sum(d["ms"]) / d["n"] / 1000, 1),
+            "median_s": round(_median(d["ms"]) / 1000, 1),
+            "slow": d["slow"], "slow_correct": d["slow_correct"],
+            "threshold": thr,
+            "suggest_s": SUGGEST_SEC.get(module),
+        })
+    modules.sort(key=lambda x: -x["n"])
+
+    top_rows.sort(key=lambda x: -x["ms"])
+    slow_correct.sort(key=lambda x: -x["ms"])
+
+    return {
+        "has_data": bool(rows),
+        "overall": {
+            "n": len(rows),
+            "avg_s": round(sum(overall_ms) / len(overall_ms) / 1000, 1) if rows else 0,
+            "median_s": round(_median(overall_ms) / 1000, 1),
+        },
+        "modules": modules,
+        "top_slow": top_rows[:top_n],
+        "slow_correct": slow_correct[:slow_n],
+        "slow_correct_total": len(slow_correct),
     }
 
 

@@ -29,6 +29,9 @@ DEFAULTS = {
     "reminder_on": False,
     "reminder_time": "20:00",
     "reminder_plan_only": False,
+    # G2 每日目标：题量 / 专注分钟（0 表示该项不设目标）
+    "daily_goal_questions": 30,
+    "daily_goal_minutes": 30,
 }
 
 # ---------------- 设置项归一化（桌面 / 移动共用同一口径） ----------------
@@ -38,6 +41,50 @@ _TRUTHY = ("1", "true", "on", "yes")
 _FALSY = ("0", "false", "off", "no", "")
 
 REMINDER_KEYS = ("reminder_on", "reminder_time", "reminder_plan_only")
+# G2 每日目标字段（题量 / 专注分钟）
+GOAL_KEYS = ("daily_goal_questions", "daily_goal_minutes")
+# 目标上限：题量最多 500/天、专注最多 1440 分钟/天，防止脏值把进度环撑爆
+GOAL_MAX = {"daily_goal_questions": 500, "daily_goal_minutes": 1440}
+
+
+def normalize_goal(value, key: str = "daily_goal_questions") -> int | None:
+    """把每日目标归一成 0~上限 的整数；非法返回 None（调用方丢弃）。
+
+    0 是合法值，表示「该项不设目标」——因此不能用 `if not value` 过滤。
+    接受 '30' 这类字符串（前端 input 传参），拒绝负数/非数字/bool。
+    上限按 key 取（题量 500 / 分钟 1440），默认按题量。
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        v = value.strip()
+        if not v:
+            return None
+        try:
+            value = int(float(v))
+        except ValueError:
+            return None
+    elif isinstance(value, float):
+        value = int(value)
+    if not isinstance(value, int):
+        return None
+    return max(0, min(GOAL_MAX.get(key, 500), value))
+
+
+def goal_patch(raw: dict) -> dict:
+    """G2：从设置入参里挑出合法的每日目标字段。
+
+    每个键按**自己的**上限夹（题量 500 / 分钟 1440）。
+    与 `reminder_patch` 同思路：非法一律丢弃，不写进设置文件。
+    """
+    out: dict = {}
+    for k in GOAL_KEYS:
+        if k not in raw:
+            continue
+        v = normalize_goal(raw[k], k)
+        if v is not None:
+            out[k] = v
+    return out
 
 
 def normalize_time_hhmm(value) -> str | None:

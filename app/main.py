@@ -22,7 +22,8 @@ from starlette.background import BackgroundTask
 
 from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
 from .config import (STATIC_DIR, DB_PATH, SETTINGS_PATH, REMINDER_KEYS,
-                     load_settings, reminder_patch, save_settings)
+                     GOAL_KEYS, load_settings, reminder_patch, goal_patch,
+                     save_settings)
 
 import html as _html
 
@@ -461,9 +462,13 @@ def api_formula_history():
 
 @app.get("/api/stats")
 def api_stats():
-    out = db.stats_overview()
+    st = load_settings()
+    # G2 每日目标：目标值从设置读入，stats 顺带返回今日进度环所需的一切
+    out = db.stats_overview(
+        int(st.get("daily_goal_questions") or 0),
+        int(st.get("daily_goal_minutes") or 0))
     # N3 考试倒计时：顺带带上考试日期与剩余天数，首页一次请求即可渲染横幅
-    exam_date = load_settings().get("exam_date", "") or ""
+    exam_date = st.get("exam_date", "") or ""
     out["exam_date"] = exam_date
     out["days_left"] = db.exam_days_left(exam_date)
     return out
@@ -473,6 +478,12 @@ def api_stats():
 def api_history(limit: int = 100, offset: int = 0):
     """做题历史记录（含题目信息）"""
     return db.answer_history(min(500, limit), offset)
+
+
+@app.get("/api/time-analysis")
+def api_time_analysis():
+    """G1 单题用时分析：各模块均时/中位/超时，最慢 Top10，会做但超时清单。"""
+    return db.time_analysis()
 
 
 @app.get("/api/report/weekly")
@@ -1062,6 +1073,9 @@ class SettingsIn(BaseModel):
     reminder_on: bool | None = None
     reminder_time: str | None = None
     reminder_plan_only: bool | None = None
+    # G2 每日目标（0=该项不设目标）
+    daily_goal_questions: int | None = None
+    daily_goal_minutes: int | None = None
 
 
 @app.post("/api/settings")
@@ -1079,6 +1093,10 @@ def api_settings_set(b: SettingsIn):
     for k in REMINDER_KEYS:
         patch.pop(k, None)
     patch.update(reminder_patch(raw))
+    # G2：每日目标同样归一化（0 合法=不设目标，脏值丢弃）
+    for k in GOAL_KEYS:
+        patch.pop(k, None)
+    patch.update(goal_patch(raw))
     save_settings(patch)
     return {"ok": True}
 

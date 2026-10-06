@@ -32,7 +32,19 @@ const SOURCES = [
   { label: "桌面 app.js", rel: "static/app.js", css: "static/styles.css", html: "static/index.html" },
   { label: "移动 m.js", rel: "static/m/m.js", css: "static/m/m.css", html: "static/m/index.html" },
 ];
+// 缓存版本必须已升过 N5/N4 那一版（>= 20261020）——后续批次继续升版时
+// 这里不该失败，故只要求「不早于」而非「等于」某个具体值。
 const VERSION = "20261020";
+
+/** 从源码里抽 ?v=YYYYMMDD 的版本号，取最大者（index.html 里 CSS/JS 两处应一致）。 */
+function assetVersions(s) {
+  return [...String(s).matchAll(/\?v=(\d{8})/g)].map(m => m[1]);
+}
+function swVersion(s) {
+  const m = String(s).match(/goshore-(\d{8})/);
+  return m ? m[1] : null;
+}
+
 
 /* ---------------- 源码抽取 ---------------- */
 
@@ -378,7 +390,10 @@ for (const s of SOURCES) {
   has(html, "g:theme", `${s.label} 的 index.html 应有防闪烁内联脚本（读 g:theme）`);
   has(html, "prefers-color-scheme: dark", `${s.label} 的 index.html 内联脚本应处理跟随系统`);
   has(html, "data-light=", `${s.label} 的 index.html 的 theme-color 应带 data-light（亮色回填）`);
-  has(html, `?v=${VERSION}`, `${s.label} 的 index.html 资源版本应升到 ${VERSION}`);
+  const vers = assetVersions(html);
+  ok(vers.length > 0, `${s.label} 的 index.html 资源应带 ?v= 版本号`);
+  ok(vers.every(v => v >= VERSION),
+    `${s.label} 的 index.html 资源版本应 >= ${VERSION}（实际 ${vers.join("/") || "无"}）`);
   has(src, "Theme.init()", `${s.label} 启动时应调用 Theme.init()`);
   has(src, "Theme.pickerHtml()", `${s.label} 设置页应渲染主题分段控件`);
   has(src, "Theme.bindPicker(", `${s.label} 设置页应绑定主题分段控件`);
@@ -394,10 +409,12 @@ for (const s of SOURCES) {
     "使用 var(--bamboo) 就必须先定义 --bamboo（否则整条声明失效）");
 }
 
-// sw.js 版本必须同步升级（否则旧壳缓存会继续发旧 JS）
+// sw.js 版本必须同步升过 N5/N4 那一版（>= 20261020），否则旧壳缓存会继续发旧 JS
 {
   const sw = fs.readFileSync(path.join(ROOT, "static/sw.js"), "utf8");
-  has(sw, `goshore-${VERSION}`, `sw.js 的 VERSION 应升到 goshore-${VERSION}`);
+  const sv = swVersion(sw);
+  ok(sv, "sw.js 里应能找到 goshore-YYYYMMDD 版本号");
+  ok(sv && sv >= VERSION, `sw.js 的 VERSION 应 >= goshore-${VERSION}（实际 ${sv || "无"}）`);
 }
 
 /* ---------------- 7. N4 字号与阅读偏好 ---------------- */

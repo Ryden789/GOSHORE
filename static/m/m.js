@@ -148,6 +148,134 @@ const FontSize = {
   },
 };
 
+/* G2 每日目标 · 进度环（app.js / m.js 逐字节一致）。
+   目标值（题量/分钟）存在**服务端设置**里，由 /api/stats 顺带算好进度
+   （`s.goal = {enabled, questions, minutes, goal_questions, goal_minutes,
+   q_pct, m_pct, pct, done, streak}`）——两端首页各画一个内联 SVG 环，
+   这里只负责把 pct 变成 stroke-dasharray，不新增请求。 */
+const GoalRing = {
+  SIZE: 92,          // 环外径（含描边）
+  STROKE: 9,         // 环线宽
+  r() { return (this.SIZE - this.STROKE) / 2; },
+  circ() { return 2 * Math.PI * this.r(); },
+  /** 内联 SVG 环；pct 0~100。返回 '' 表示该目标未启用（双目标皆为 0）。 */
+  html(goal) {
+    if (!goal || !goal.enabled) return "";
+    const pct = Math.max(0, Math.min(100, goal.pct || 0));
+    const c = this.circ();
+    const dash = (c * pct / 100).toFixed(1);
+    const cx = this.SIZE / 2;
+    const color = goal.done ? "var(--bamboo)" : "var(--cinnabar)";
+    return `<svg class="goal-ring" width="${this.SIZE}" height="${this.SIZE}"
+        viewBox="0 0 ${this.SIZE} ${this.SIZE}" role="img"
+        aria-label="今日目标完成 ${pct}%">
+      <circle cx="${cx}" cy="${cx}" r="${this.r()}" fill="none"
+        stroke="var(--line-soft)" stroke-width="${this.STROKE}"/>
+      <circle cx="${cx}" cy="${cx}" r="${this.r()}" fill="none"
+        stroke="${color}" stroke-width="${this.STROKE}" stroke-linecap="round"
+        stroke-dasharray="${dash} ${(c - +dash).toFixed(1)}"
+        transform="rotate(-90 ${cx} ${cx})"/>
+      <text x="${cx}" y="${cx + 5}" text-anchor="middle"
+        style="font:700 20px/1 var(--mono);fill:${color}">${pct}%</text>
+    </svg>`;
+  },
+  /** 环旁文案：题量/分钟双行，or 单目标；并给出连续达标天数 */
+  label(goal) {
+    if (!goal || !goal.enabled) return "";
+    const parts = [];
+    if (goal.goal_questions) parts.push(`题量 ${goal.questions}/${goal.goal_questions}`);
+    if (goal.goal_minutes) parts.push(`专注 ${Math.round(goal.minutes)}/${goal.goal_minutes} 分`);
+    const streak = goal.streak ? ` · 连续达标 ${goal.streak} 天` : "";
+    return `${parts.join(" · ")}${streak}`;
+  },
+  /** 首页「今日目标」面板整块 HTML（未设目标时返回 ''，首页不占位） */
+  panel(goal) {
+    if (!goal || !goal.enabled) return "";
+    const done = goal.done;
+    return `<div class="panel rise rise-2 goal-panel${done ? " done" : ""}">
+      <div class="goal-flex">
+        ${this.html(goal)}
+        <div class="goal-main">
+          <h3 style="margin:0 0 4px">${done ? "🎉 今日目标已达成" : "🎯 今日学习目标"}</h3>
+          <p class="goal-sub">${esc(this.label(goal))}</p>
+          <div class="goal-bars">
+            ${goal.goal_questions ? `<div class="goal-bar"><span class="gb-name">题量</span>
+              <span class="track"><span class="fill" style="display:block;width:${goal.q_pct}%"></span></span>
+              <span class="pct">${goal.q_pct}%</span></div>` : ""}
+            ${goal.goal_minutes ? `<div class="goal-bar"><span class="gb-name">专注</span>
+              <span class="track"><span class="fill" style="display:block;width:${goal.m_pct}%"></span></span>
+              <span class="pct">${goal.m_pct}%</span></div>` : ""}
+          </div>
+          <a class="btn btn-sm" href="#/settings" style="margin-top:8px">调整目标</a>
+        </div>
+      </div>
+    </div>`;
+  },
+  /** 一般化的圆环（G1 用时条等复用）：给定比例与颜色画环，不依赖 goal 结构 */
+  ring(pct, color) {
+    const p = Math.max(0, Math.min(100, pct || 0));
+    const c = this.circ();
+    const dash = (c * p / 100).toFixed(1);
+    const cx = this.SIZE / 2;
+    return `<svg class="goal-ring" width="${this.SIZE}" height="${this.SIZE}"
+        viewBox="0 0 ${this.SIZE} ${this.SIZE}">
+      <circle cx="${cx}" cy="${cx}" r="${this.r()}" fill="none"
+        stroke="var(--line-soft)" stroke-width="${this.STROKE}"/>
+      <circle cx="${cx}" cy="${cx}" r="${this.r()}" fill="none"
+        stroke="${color || "var(--cinnabar)"}" stroke-width="${this.STROKE}"
+        stroke-linecap="round" stroke-dasharray="${dash} ${(c - +dash).toFixed(1)}"
+        transform="rotate(-90 ${cx} ${cx})"/>
+      <text x="${cx}" y="${cx + 5}" text-anchor="middle"
+        style="font:700 20px/1 var(--mono);fill:${color || "var(--cinnabar)"}">${p}%</text>
+    </svg>`;
+  },
+};
+
+/* G6 搜题历史（app.js / m.js 逐字节一致）。
+   纯前端 localStorage（Pref 单键 'searchhist'，存字符串数组），最多 20 条：
+   **仅有结果**的搜索才记录，去重后把最近一次置顶。不新增后端。 */
+const SearchHistory = {
+  KEY: "searchhist",
+  MAX: 20,
+  list() {
+    const v = Pref.get(this.KEY, []);
+    return Array.isArray(v) ? v.filter(x => typeof x === "string" && x) : [];
+  },
+  /** 记录一次有效搜索（q 为非空且当次确实有结果）；返回是否真的入档 */
+  add(q) {
+    const s = String(q == null ? "" : q).trim();
+    if (!s) return false;
+    const cur = this.list().filter(x => x !== s);
+    cur.unshift(s);
+    Pref.set(this.KEY, cur.slice(0, this.MAX));
+    return true;
+  },
+  remove(q) {
+    Pref.set(this.KEY, this.list().filter(x => x !== q));
+  },
+  clear() { Pref.set(this.KEY, []); },
+  /** 历史标签 HTML；空则返回 '' */
+  html() {
+    const items = this.list();
+    if (!items.length) return "";
+    return `<div class="sh-wrap" id="shWrap">
+      <span class="sh-title">最近搜索</span>
+      ${items.map(q => `<span class="sh-tag" data-sh="${esc(q)}">${esc(q)}</span>`).join("")}
+      <span class="sh-clear" id="shClear">清空</span>
+    </div>`;
+  },
+  /** 绑定：点标签 → onPick(q)；点清空 → 清列表并隐藏整块 */
+  bind(onPick) {
+    const wrap = document.getElementById("shWrap");
+    if (!wrap) return;
+    wrap.querySelectorAll("[data-sh]").forEach(el => {
+      el.onclick = () => onPick && onPick(el.dataset.sh);
+    });
+    const clr = document.getElementById("shClear");
+    if (clr) clr.onclick = () => { this.clear(); wrap.remove(); };
+  },
+};
+
 /* N1 断点续做 · 练习草稿（双端逐字节一致）。
    把「做到第几题 / 每题选了什么 / 标记 / 考场倒计时截止时间」存到服务端
    `paper_drafts`（scope 只有 'normal' 与 'exam'，各留最近一份），下次进做题页还原。
@@ -773,6 +901,7 @@ const HUB = [
   { group: "总览", items: [
     ["home", "⌂", "今日", "学习数据总览"],
     ["report", "报", "周报", "本周诊断与建议"],
+    ["time", "时", "用时分析", "节奏诊断·会做但超时"],
     ["history", "历", "做题记录", "逐题历史明细"],
     ["ai-ask", "问", "AI 答疑", "自由提问·不做题也能问"],
   ]},
@@ -1155,6 +1284,62 @@ async function renderAll() {
 }
 
 /* ---------- 周报（独立页） ---------- */
+
+/* G1 单题用时分析（手机端）：各模块节奏 + 会做但超时 + 最慢 Top10 */
+async function renderTimeAnalysis() {
+  view.innerHTML = `<div class="card"><div class="muted">统计中…</div></div>`;
+  let d;
+  try {
+    d = await api("/api/time-analysis");
+  } catch (e) {
+    view.innerHTML = `<div class="card">统计失败：${esc(e.message)}</div>`;
+    return;
+  }
+  if (!d.has_data) {
+    view.innerHTML = `<div class="card"><div class="empty">还没有带用时的作答记录，先去做一组题</div></div>`;
+    return;
+  }
+  const fmt = s => s >= 60 ? `${Math.floor(s / 60)}分${Math.round(s % 60)}秒` : `${s}秒`;
+  view.innerHTML = `
+    <div class="card">
+      <div class="stat-grid" style="grid-template-columns:repeat(3,1fr)">
+        <div class="stat"><b>${d.overall.n}</b><span>总作答</span></div>
+        <div class="stat"><b>${fmt(d.overall.avg_s)}</b><span>平均单题</span></div>
+        <div class="stat"><b style="color:var(--cinnabar)">${d.slow_correct_total}</b><span>会做但超时</span></div>
+      </div>
+    </div>
+    <h2 class="sec">各模块节奏</h2>
+    ${d.modules.map(m => {
+      const ref = m.suggest_s || m.threshold;
+      const ratio = Math.min(100, Math.round(m.avg_s / ref * 100));
+      const over = m.avg_s > ref;
+      return `<div class="card ta-mod">
+        <div class="ta-row"><b>${esc(m.module)}</b><span class="muted">${m.n} 题 · 平均 ${fmt(m.avg_s)} · 中位 ${fmt(m.median_s)}</span></div>
+        <div class="ta-bar"><span style="width:${ratio}%;background:${over ? "var(--cinnabar)" : "var(--bamboo)"}"></span></div>
+        <div class="muted" style="font-size:12px">超时 ${m.slow} · 会做但超时 ${m.slow_correct} · 建议 ≤ ${fmt(ref)}</div>
+      </div>`;
+    }).join("")}
+    ${d.slow_correct.length ? `
+    <h2 class="sec">🐢 会做但超时</h2>
+    <div class="card">${d.slow_correct.map(t => `
+      <div class="ta-item" data-id="${t.doc_id}">
+        <div class="ta-main"><b>${esc(t.title)}</b>
+          <span class="muted">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))}</span></div>
+        <span class="ta-ms">${fmt(t.ms / 1000)}</span>
+      </div>`).join("")}</div>` : ""}
+    <h2 class="sec">⏱ 耗时最长 Top ${d.top_slow.length}</h2>
+    <div class="card">${d.top_slow.map((t, i) => `
+      <div class="ta-item" data-id="${t.doc_id}">
+        <div class="ta-main"><b>${i + 1}. ${esc(t.title)}${t.slow ? " 🐢" : ""}</b>
+          <span class="muted">${esc([t.module].filter(Boolean).join(" · "))} · ${t.correct ? "答对" : "答错"}</span></div>
+        <span class="ta-ms">${fmt(t.ms / 1000)}</span>
+      </div>`).join("")}</div>`;
+  const ids = d.top_slow.map(t => t.doc_id);
+  $$("#view .ta-item").forEach(el => {
+    const pos = ids.indexOf(+el.dataset.id);
+    el.onclick = () => runPaper(ids.slice(pos >= 0 ? pos : 0));
+  });
+}
 
 async function renderReport() {
   const rep = await api("/api/report/weekly");
@@ -1598,6 +1783,7 @@ const ROUTES = {
   home: renderHome, practice: renderPractice, review: renderReview, me: renderMe,
   login: renderLogin, register: renderRegister,
   all: renderAll, report: renderReport,
+  time: renderTimeAnalysis,
   speed: renderSpeed, wordfill: renderWordfill,
   essay: renderEssay, wenxian: renderWenxian,
   "zy-notes": renderZyNotes,
@@ -1679,6 +1865,7 @@ async function renderHome() {
       <div class="stat"><b>${s.annihilated || 0}</b><span>累计歼灭错题</span></div>
       <div class="stat"><b>${s.today_guessed || 0}</b><span>今日蒙题</span></div>
     </div>
+    ${GoalRing.panel(s.goal)}
     <h2 class="sec">开始学习</h2>
     <a class="entry" id="recGo" style="cursor:pointer"><span class="ei">🎯</span>
       <span class="et"><b>今日推荐练习</b><small>按掌握度智能组卷 15 题 · 弱项优先</small></span><span class="go">›</span></a>
@@ -3374,7 +3561,7 @@ async function renderSearch() {
     arr.map(x => `<option>${esc(x)}</option>`).join("");
 
   view.innerHTML = `
-    <div class="card">
+    <div class="card" id="srCard">
       <div class="sr-row">
         <input id="srQ" class="m-input" placeholder="搜题干/考点，如：增长量、黑白块"/>
         <button class="btn btn-primary" id="srGo">搜索</button>
@@ -3385,6 +3572,7 @@ async function renderSearch() {
         <select id="srRegion" class="m-select">${opts(f.regions)}</select>
         <select id="srYear" class="m-select">${opts(f.years)}</select>
       </div>
+      ${SearchHistory.html()}
     </div>
     <div class="sr-count muted" id="srCount" aria-live="polite"></div>
     <div id="srList"></div>
@@ -3398,6 +3586,8 @@ async function renderSearch() {
     const res = await api("/api/search", { ...st, page, page_size: 20 });
     if (seq !== reqSeq) return;  // 已被更新的搜索取代（防竞态覆盖）
     $("#srCount").textContent = `找到 ${res.total} 条结果`;
+    // G6 搜题历史：仅有结果时记录关键词
+    if (res.total > 0 && st.q) recordSearchHistory(st.q);
     const ids = res.items.map(it => it.id);
     $("#srList").innerHTML = res.items.length
       ? res.items.map(it => `
@@ -3424,6 +3614,24 @@ async function renderSearch() {
     if ($("#srPrev")) $("#srPrev").onclick = () => doSearch(page - 1);
     if ($("#srNext")) $("#srNext").onclick = () => doSearch(page + 1);
   };
+
+  // G6 搜题历史：记录 + 就地刷新标签行
+  const recordSearchHistory = q => {
+    if (!SearchHistory.add(q)) return;
+    const card = $("#srCard");
+    if (!card) return;
+    const old = $("#shWrap");
+    if (old) old.remove();
+    card.insertAdjacentHTML("beforeend", SearchHistory.html());
+    bindHistory();
+  };
+  const bindHistory = () => SearchHistory.bind(q => {
+    st.q = q;
+    const inp = $("#srQ");
+    if (inp) inp.value = q;
+    $("#srGo").click();
+  });
+  bindHistory();
 
   $("#srGo").onclick = () => {
     st.q = $("#srQ").value.trim();
@@ -3912,6 +4120,18 @@ async function renderSettings() {
         <div class="muted">填写后首页顶部显示「距考试还有 N 天」；留空则不显示</div>
       </div>
       <div class="field">
+        <label>每日目标（首页进度环）</label>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <span>题量 <input id="setGoalQ" type="number" min="0" max="500" step="5"
+            class="m-input" style="width:88px;display:inline-block"
+            value="${Number(s.daily_goal_questions) || 0}"/> 题/天</span>
+          <span>专注 <input id="setGoalM" type="number" min="0" max="1440" step="5"
+            class="m-input" style="width:88px;display:inline-block"
+            value="${Number(s.daily_goal_minutes) || 0}"/> 分/天</span>
+        </div>
+        <div class="muted">填 0 表示不设该项；首页环形进度取两项中较低者，都达标才算完成</div>
+      </div>
+      <div class="field">
         <label class="check"><input type="checkbox" id="setRemindOn"
           ${s.reminder_on ? "checked" : ""}/> 每日学习提醒</label>
         <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
@@ -4009,6 +4229,9 @@ async function renderSettings() {
     patch.reminder_time = rTime;
     patch.reminder_plan_only = rPlan;
     setReminderPref({ on: rOn, time: rTime, planOnly: rPlan });
+    // G2 每日目标：0 合法（不设目标）
+    patch.daily_goal_questions = Math.max(0, parseInt($("#setGoalQ").value, 10) || 0);
+    patch.daily_goal_minutes = Math.max(0, parseInt($("#setGoalM").value, 10) || 0);
     await api("/api/settings", patch);
     const rs = $("#remindState");
     if (rs) rs.textContent = applyReminder(rOn, rTime, rPlan, patch.exam_date);
@@ -4714,6 +4937,7 @@ async function renderMe() {
     <div class="card">
       <h3>本周建议</h3>
       ${(rep.advice || []).map(a => `<div style="padding:7px 0;border-top:1px solid var(--line-soft);font-size:14px">${esc(a)}</div>`).join("")}
+      <a class="btn btn-sm btn-block" href="#/time" style="margin-top:10px">查看用时分析 →</a>
     </div>
     ${mode === "browser" ? `
     <div class="card">

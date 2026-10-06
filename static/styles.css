@@ -1136,3 +1136,28 @@ body.exam-mode .view {
 .option { font-size: var(--read-font); }
 /* 分段控件（设置页主题 + 字号共用一套样式，见 app.js 的 Theme.pickerHtml / FontSize.pickerHtml） */
 .type-check.on { border-color: var(--indigo); background: var(--indigo-soft); color: var(--indigo); }
+
+/* ===== G2 每日目标 · 进度环（首页面板；与移动端同构） ===== */
+.goal-panel .goal-flex { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.goal-panel .goal-ring { flex: none; }
+.goal-panel .goal-main { flex: 1; min-width: 200px; }
+.goal-panel .goal-sub { margin: 0 0 8px; font-size: 13px; color: var(--ink-2); overflow-wrap: anywhere; }
+.goal-panel .goal-bars { display: flex; flex-direction: column; gap: 6px; }
+.goal-panel .goal-bar { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.goal-panel .goal-bar .gb-name { flex: none; width: 30px; color: var(--ink-3); }
+.goal-panel .goal-bar .track { flex: 1; height: 8px; background: var(--line-soft); border-radius: 5px; overflow: hidden; }
+.goal-panel .goal-bar .fill { height: 100%; background: var(--cinnabar); border-radius: 5px; transition: width .4s ease; }
+.goal-panel .goal-bar .pct { flex: none; width: 36px; text-align: right; font-family: var(--mono); color: var(--ink-2); }
+.goal-panel.done { border-left: 4px solid var(--bamboo); }
+.goal-panel.done .goal-bar .fill { background: var(--bamboo); }
+/* 达成动效：环与面板各来一次轻微起伏（不阻塞交互，2s 后自然结束） */
+@keyframes goalPop { 0% { transform: scale(1); } 40% { transform: scale(1.06); } 100% { transform: scale(1); } }
+.goal-panel.done .goal-ring { animation: goalPop .8s ease 1; }
+
+/* ===== G6 搜题历史：输入框下方历史标签（与移动端同构） ===== */
+.sh-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line-soft); }
+.sh-wrap .sh-title { font-size: 12px; color: var(--ink-3); flex: none; }
+.sh-wrap .sh-tag { font-size: 12.5px; color: var(--ink-2); background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 14px; padding: 3px 11px; cursor: pointer; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-wrap .sh-tag:hover { border-color: var(--cinnabar); color: var(--cinnabar); }
+.sh-wrap .sh-clear { font-size: 12px; color: var(--ink-3); cursor: pointer; margin-left: auto; }
+.sh-wrap .sh-clear:hover { color: var(--cinnabar); }

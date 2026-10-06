@@ -325,6 +325,134 @@ const FontSize = {
   },
 };
 
+/* G2 每日目标 · 进度环（app.js / m.js 逐字节一致）。
+   目标值（题量/分钟）存在**服务端设置**里，由 /api/stats 顺带算好进度
+   （`s.goal = {enabled, questions, minutes, goal_questions, goal_minutes,
+   q_pct, m_pct, pct, done, streak}`）——两端首页各画一个内联 SVG 环，
+   这里只负责把 pct 变成 stroke-dasharray，不新增请求。 */
+const GoalRing = {
+  SIZE: 92,          // 环外径（含描边）
+  STROKE: 9,         // 环线宽
+  r() { return (this.SIZE - this.STROKE) / 2; },
+  circ() { return 2 * Math.PI * this.r(); },
+  /** 内联 SVG 环；pct 0~100。返回 '' 表示该目标未启用（双目标皆为 0）。 */
+  html(goal) {
+    if (!goal || !goal.enabled) return "";
+    const pct = Math.max(0, Math.min(100, goal.pct || 0));
+    const c = this.circ();
+    const dash = (c * pct / 100).toFixed(1);
+    const cx = this.SIZE / 2;
+    const color = goal.done ? "var(--bamboo)" : "var(--cinnabar)";
+    return `<svg class="goal-ring" width="${this.SIZE}" height="${this.SIZE}"
+        viewBox="0 0 ${this.SIZE} ${this.SIZE}" role="img"
+        aria-label="今日目标完成 ${pct}%">
+      <circle cx="${cx}" cy="${cx}" r="${this.r()}" fill="none"
+        stroke="var(--line-soft)" stroke-width="${this.STROKE}"/>
+      <circle cx="${cx}" cy="${cx}" r="${this.r()}" fill="none"
+        stroke="${color}" stroke-width="${this.STROKE}" stroke-linecap="round"
+        stroke-dasharray="${dash} ${(c - +dash).toFixed(1)}"
+        transform="rotate(-90 ${cx} ${cx})"/>
+      <text x="${cx}" y="${cx + 5}" text-anchor="middle"
+        style="font:700 20px/1 var(--mono);fill:${color}">${pct}%</text>
+    </svg>`;
+  },
+  /** 环旁文案：题量/分钟双行，or 单目标；并给出连续达标天数 */
+  label(goal) {
+    if (!goal || !goal.enabled) return "";
+    const parts = [];
+    if (goal.goal_questions) parts.push(`题量 ${goal.questions}/${goal.goal_questions}`);
+    if (goal.goal_minutes) parts.push(`专注 ${Math.round(goal.minutes)}/${goal.goal_minutes} 分`);
+    const streak = goal.streak ? ` · 连续达标 ${goal.streak} 天` : "";
+    return `${parts.join(" · ")}${streak}`;
+  },
+  /** 首页「今日目标」面板整块 HTML（未设目标时返回 ''，首页不占位） */
+  panel(goal) {
+    if (!goal || !goal.enabled) return "";
+    const done = goal.done;
+    return `<div class="panel rise rise-2 goal-panel${done ? " done" : ""}">
+      <div class="goal-flex">
+        ${this.html(goal)}
+        <div class="goal-main">
+          <h3 style="margin:0 0 4px">${done ? "🎉 今日目标已达成" : "🎯 今日学习目标"}</h3>
+          <p class="goal-sub">${esc(this.label(goal))}</p>
+          <div class="goal-bars">
+            ${goal.goal_questions ? `<div class="goal-bar"><span class="gb-name">题量</span>
+              <span class="track"><span class="fill" style="display:block;width:${goal.q_pct}%"></span></span>
+              <span class="pct">${goal.q_pct}%</span></div>` : ""}
+            ${goal.goal_minutes ? `<div class="goal-bar"><span class="gb-name">专注</span>
+              <span class="track"><span class="fill" style="display:block;width:${goal.m_pct}%"></span></span>
+              <span class="pct">${goal.m_pct}%</span></div>` : ""}
+          </div>
+          <a class="btn btn-sm" href="#/settings" style="margin-top:8px">调整目标</a>
+        </div>
+      </div>
+    </div>`;
+  },
+  /** 一般化的圆环（G1 用时条等复用）：给定比例与颜色画环，不依赖 goal 结构 */
+  ring(pct, color) {
+    const p = Math.max(0, Math.min(100, pct || 0));
+    const c = this.circ();
+    const dash = (c * p / 100).toFixed(1);
+    const cx = this.SIZE / 2;
+    return `<svg class="goal-ring" width="${this.SIZE}" height="${this.SIZE}"
+        viewBox="0 0 ${this.SIZE} ${this.SIZE}">
+      <circle cx="${cx}" cy="${cx}" r="${this.r()}" fill="none"
+        stroke="var(--line-soft)" stroke-width="${this.STROKE}"/>
+      <circle cx="${cx}" cy="${cx}" r="${this.r()}" fill="none"
+        stroke="${color || "var(--cinnabar)"}" stroke-width="${this.STROKE}"
+        stroke-linecap="round" stroke-dasharray="${dash} ${(c - +dash).toFixed(1)}"
+        transform="rotate(-90 ${cx} ${cx})"/>
+      <text x="${cx}" y="${cx + 5}" text-anchor="middle"
+        style="font:700 20px/1 var(--mono);fill:${color || "var(--cinnabar)"}">${p}%</text>
+    </svg>`;
+  },
+};
+
+/* G6 搜题历史（app.js / m.js 逐字节一致）。
+   纯前端 localStorage（Pref 单键 'searchhist'，存字符串数组），最多 20 条：
+   **仅有结果**的搜索才记录，去重后把最近一次置顶。不新增后端。 */
+const SearchHistory = {
+  KEY: "searchhist",
+  MAX: 20,
+  list() {
+    const v = Pref.get(this.KEY, []);
+    return Array.isArray(v) ? v.filter(x => typeof x === "string" && x) : [];
+  },
+  /** 记录一次有效搜索（q 为非空且当次确实有结果）；返回是否真的入档 */
+  add(q) {
+    const s = String(q == null ? "" : q).trim();
+    if (!s) return false;
+    const cur = this.list().filter(x => x !== s);
+    cur.unshift(s);
+    Pref.set(this.KEY, cur.slice(0, this.MAX));
+    return true;
+  },
+  remove(q) {
+    Pref.set(this.KEY, this.list().filter(x => x !== q));
+  },
+  clear() { Pref.set(this.KEY, []); },
+  /** 历史标签 HTML；空则返回 '' */
+  html() {
+    const items = this.list();
+    if (!items.length) return "";
+    return `<div class="sh-wrap" id="shWrap">
+      <span class="sh-title">最近搜索</span>
+      ${items.map(q => `<span class="sh-tag" data-sh="${esc(q)}">${esc(q)}</span>`).join("")}
+      <span class="sh-clear" id="shClear">清空</span>
+    </div>`;
+  },
+  /** 绑定：点标签 → onPick(q)；点清空 → 清列表并隐藏整块 */
+  bind(onPick) {
+    const wrap = document.getElementById("shWrap");
+    if (!wrap) return;
+    wrap.querySelectorAll("[data-sh]").forEach(el => {
+      el.onclick = () => onPick && onPick(el.dataset.sh);
+    });
+    const clr = document.getElementById("shClear");
+    if (clr) clr.onclick = () => { this.clear(); wrap.remove(); };
+  },
+};
+
 /* N1 断点续做 · 练习草稿（双端逐字节一致）。
    把「做到第几题 / 每题选了什么 / 标记 / 考场倒计时截止时间」存到服务端
    `paper_drafts`（scope 只有 'normal' 与 'exam'，各留最近一份），下次进做题页还原。
@@ -814,6 +942,7 @@ function route() {
   else if (name === "wenxian") dispatch(renderWenxian);
   else if (name === "zy-notes") dispatch(renderZyNotes);
   else if (name === "report") dispatch(renderReport);
+  else if (name === "time") dispatch(renderTimeAnalysis);
   else if (name === "history") dispatch(renderHistory);
   else if (name === "ai-ask") dispatch(renderAiAsk);
   else if (name === "exam") dispatch(renderExam);
@@ -930,6 +1059,8 @@ async function renderHome() {
       <div class="stat-card link" data-go="wrong" style="--accent:var(--cinnabar)"><div class="v">${s.wrong_count}<small>道</small></div><div class="k">待消灭错题</div></div>
       <div class="stat-card link" data-go="review" style="--accent:var(--amber)"><div class="v">${s.review_due + s.card_due}<small>项</small></div><div class="k">今日待复习（题 ${s.review_due} + 卡 ${s.card_due}）</div></div>
     </div>
+
+    ${GoalRing.panel(s.goal)}
 
     <div class="panel rise rise-2" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <div>
@@ -1053,6 +1184,7 @@ async function renderSearch() {
         <select id="region">${opts(f.regions, searchState.region)}</select>
         <select id="year">${opts(f.years, searchState.year)}</select>
       </div>
+      ${SearchHistory.html()}
     </div>
     <div class="result-meta rise rise-2"><span id="rcount" aria-live="polite"></span><span id="searchPageMeta"></span></div>
     <div class="doc-list rise rise-2" id="list"></div>
@@ -1064,6 +1196,8 @@ async function renderSearch() {
     $("#rcount").textContent = "正在检索…";
     const res = await api("/api/search", { ...searchState, page, page_size: 20 });
     $("#rcount").textContent = `找到 ${res.total} 条结果`;
+    // G6 搜题历史：仅有结果时记录关键词（去重置顶，最多 20 条）
+    if (res.total > 0 && searchState.q) recordSearchHistory(searchState.q);
     $("#searchPageMeta").textContent = res.total ? `第 ${page} 页 · 每页 20 条` : "";
     $("#list").innerHTML = res.items.length
       ? res.items.map(it => `
@@ -1093,6 +1227,24 @@ async function renderSearch() {
     if (pv) pv.onclick = () => doSearch(page - 1);
     if (nx) nx.onclick = () => doSearch(page + 1);
   };
+
+  // G6 搜题历史：记录 + 就地刷新标签行（避免整页重渲染丢焦点）
+  const recordSearchHistory = q => {
+    if (!SearchHistory.add(q)) return;
+    const card = $(".search-card");
+    if (!card) return;
+    const old = $("#shWrap");
+    if (old) old.remove();
+    card.insertAdjacentHTML("beforeend", SearchHistory.html());
+    bindHistory();
+  };
+  const bindHistory = () => SearchHistory.bind(q => {
+    searchState.q = q;
+    const inp = $("#q");
+    if (inp) inp.value = q;
+    doSearch(1);
+  });
+  bindHistory();
 
   for (const k of ["q", "module", "daclass", "region", "year"]) {
     $("#" + k).addEventListener("change", e => {
@@ -4120,6 +4272,16 @@ async function renderSettings() {
           <div class="hint">填写后首页顶部显示「距考试还有 N 天」；留空则不显示</div>
         </div>
         <div class="field">
+          <label>每日目标（首页进度环）</label>
+          <div style="display:flex;gap:14px;align-items:center;margin:6px 0;flex-wrap:wrap">
+            <span>题量 <input id="goalQ" type="number" min="0" max="500" step="5"
+              style="width:80px" value="${Number(s.daily_goal_questions) || 0}"/> 题/天</span>
+            <span>专注 <input id="goalM" type="number" min="0" max="1440" step="5"
+              style="width:80px" value="${Number(s.daily_goal_minutes) || 0}"/> 分钟/天</span>
+          </div>
+          <div class="hint">填 0 表示该项不设目标；只填一项也可以。首页环形进度按两项中较低的一项计算，两项都达标才算完成。</div>
+        </div>
+        <div class="field">
           <label style="display:flex;align-items:center;gap:8px">
             <input type="checkbox" id="remindOn" ${s.reminder_on ? "checked" : ""}/> 每日学习提醒</label>
           <div style="display:flex;gap:14px;align-items:center;margin:8px 0;flex-wrap:wrap">
@@ -4209,6 +4371,9 @@ async function renderSettings() {
     patch.reminder_time = rTime;
     patch.reminder_plan_only = rPlan;
     setReminderPref({ on: rOn, time: rTime, planOnly: rPlan });
+    // G2 每日目标：0 合法（不设目标），负数/空按 0 处理（服务端仍会归一化）
+    patch.daily_goal_questions = Math.max(0, parseInt($("#goalQ").value, 10) || 0);
+    patch.daily_goal_minutes = Math.max(0, parseInt($("#goalM").value, 10) || 0);
     await api("/api/settings", patch);
     const rs = $("#remindState");
     if (rs) rs.textContent = applyReminder(rOn, rTime, rPlan, patch.exam_date);
@@ -5925,6 +6090,118 @@ async function renderMastery(module = "") {
   });
 }
 
+/* G1 单题用时分析：各模块节奏 + 最慢 Top10 + 「会做但超时」清单 */
+async function renderTimeAnalysis() {
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">用时分析</h1>
+      <p class="page-desc">用时与正确率同等重要：这里找出「会做但太慢」的题，把节奏提上来</p>
+    </div>
+    <div id="taBody" class="rise rise-1"></div>`;
+  const body = $("#taBody");
+  body.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">统计中…</div></div>`;
+
+  let d;
+  try {
+    d = await api("/api/time-analysis");
+  } catch (e) {
+    body.innerHTML = `<div class="panel">统计失败：${esc(e.message)}</div>`;
+    return;
+  }
+
+  if (!d.has_data) {
+    body.innerHTML = `<div class="panel"><div class="empty" style="padding:28px">
+      还没有带用时的作答记录——先去做一组题吧</div></div>`;
+    return;
+  }
+
+  const secs = ms => (ms / 1000).toFixed(1);
+  const fmt = s => s >= 60 ? `${Math.floor(s / 60)}分${Math.round(s % 60)}秒` : `${s}秒`;
+
+  body.innerHTML = `
+    <div class="panel" style="display:flex;gap:22px;flex-wrap:wrap">
+      <div><div class="rp-label">总作答（含用时）</div>
+        <div class="rp-num">${d.overall.n}<span class="rp-sub"> 题</span></div></div>
+      <div><div class="rp-label">平均单题用时</div>
+        <div class="rp-num">${fmt(d.overall.avg_s)}</div>
+        <div class="rp-sub2">中位数 ${fmt(d.overall.median_s)}</div></div>
+      <div><div class="rp-label">会做但超时</div>
+        <div class="rp-num" style="color:var(--cinnabar)">${d.slow_correct_total}<span class="rp-sub"> 题</span></div>
+        <div class="rp-sub2">答对但用时超阈值</div></div>
+    </div>
+
+    <div class="panel">
+      <h3 style="margin:0 0 10px">各模块节奏 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">超时阈值按模块给（数量 90s / 资料 60s / 言语 45s，其余按建议用时推）</span></h3>
+      <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+        <tr style="color:var(--ink-3)">
+          <th style="text-align:left;padding:6px 8px">模块</th>
+          <th style="text-align:right;padding:6px 8px">题量</th>
+          <th style="text-align:right;padding:6px 8px">平均</th>
+          <th style="text-align:right;padding:6px 8px">中位</th>
+          <th style="text-align:right;padding:6px 8px">超时</th>
+          <th style="text-align:right;padding:6px 8px">会做但超时</th>
+          <th style="text-align:left;padding:6px 8px;width:26%">对比建议用时</th>
+        </tr>
+        ${d.modules.map(m => {
+          // 条形：平均用时 / 参考上限（阈值），超 100% 截断显示为红
+          const ref = m.suggest_s || m.threshold;
+          const ratio = Math.min(100, Math.round(m.avg_s / ref * 100));
+          const over = m.avg_s > ref;
+          return `<tr style="border-top:1px solid var(--line-soft)">
+            <td style="padding:7px 8px"><b>${esc(m.module)}</b></td>
+            <td style="padding:7px 8px;text-align:right">${m.n}</td>
+            <td style="padding:7px 8px;text-align:right">${fmt(m.avg_s)}</td>
+            <td style="padding:7px 8px;text-align:right">${fmt(m.median_s)}</td>
+            <td style="padding:7px 8px;text-align:right;color:${m.slow ? "var(--cinnabar)" : "var(--ink-1)"}">${m.slow}</td>
+            <td style="padding:7px 8px;text-align:right;color:${m.slow_correct ? "var(--cinnabar)" : "var(--ink-3)"};font-weight:${m.slow_correct ? 700 : 400}">${m.slow_correct}</td>
+            <td style="padding:7px 8px">
+              <span class="track" style="display:inline-block;width:80%;height:8px;background:var(--line-soft);border-radius:5px;overflow:hidden;vertical-align:middle">
+                <span style="display:block;height:100%;width:${ratio}%;background:${over ? "var(--cinnabar)" : "var(--bamboo)"}"></span>
+              </span>
+              <span style="font-size:11.5px;color:var(--ink-3);margin-left:6px">建议 ${fmt(ref)}</span>
+            </td>
+          </tr>`;
+        }).join("")}
+      </table>
+    </div>
+
+    ${d.slow_correct.length ? `
+    <div class="panel">
+      <h3 style="margin:0 0 10px">🐢 会做但超时（Top ${d.slow_correct.length}）<span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">正确率没问题，节奏才是——点进去限时重做</span></h3>
+      <div class="doc-list">
+        ${d.slow_correct.map(t => `
+          <div class="doc-item" data-id="${t.doc_id}">
+            <div class="doc-main">
+              <div class="doc-title">${esc(t.title)}</div>
+              <div class="doc-sub">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))}</div>
+            </div>
+            <div class="doc-side"><span style="color:var(--cinnabar);font-weight:700">${fmt(secs(t.ms) * 1)}</span>
+              <span style="color:var(--ink-3);font-size:12px"> / 阈值 ${fmt(t.threshold)}</span></div>
+          </div>`).join("")}
+      </div>
+    </div>` : ""}
+
+    <div class="panel">
+      <h3 style="margin:0 0 10px">⏱ 耗时最长 Top ${d.top_slow.length}</h3>
+      <div class="doc-list">
+        ${d.top_slow.map((t, i) => `
+          <div class="doc-item" data-id="${t.doc_id}">
+            <div class="doc-main">
+              <div class="doc-title">${i + 1}. ${esc(t.title)} ${t.slow ? "🐢" : ""}</div>
+              <div class="doc-sub">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))} · ${t.correct ? "答对" : "答错"}</div>
+            </div>
+            <div class="doc-side"><span style="font-family:var(--mono);font-weight:700">${fmt(t.ms / 1000)}</span></div>
+          </div>`).join("")}
+      </div>
+    </div>`;
+
+  // 点题 → 进入做题队列（与首页高频错题同一交互）
+  const ids = d.top_slow.map(t => t.doc_id);
+  $$("#taBody .doc-item").forEach(el =>
+    el.onclick = () => { setQueue([+el.dataset.id]); location.hash = `#/doc/${el.dataset.id}`; }
+  );
+}
+
 async function renderReport() {
   view.innerHTML = `
     <div class="page-head rise">
@@ -5976,6 +6253,11 @@ async function renderReport() {
         <div class="rp-label">申论批改</div>
         <div class="rp-num">${d.grades.cur === null ? "—" : d.grades.cur + "%"}</div>
         <div class="rp-sub2">本周 ${d.grades.n} 次 · 上周 ${d.grades.last === null ? "—" : d.grades.last + "%"}</div>
+      </div>
+      <div class="panel rp-card">
+        <div class="rp-label">节奏</div>
+        <div class="rp-num">${(d.pace && d.pace.slow_correct) || 0}<span class="rp-sub"> 题</span></div>
+        <div class="rp-sub2">会做但超时（本周 ${(d.pace && d.pace.n) || 0} 次作答）· <a href="#/time">查看用时分析</a></div>
       </div>
     </div>
 
