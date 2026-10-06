@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -138,12 +139,22 @@ def test_random_paper_respects_module(temp_db):
 
 # ---------------- 掌握度 / 自适应推题（1.1）与图谱（1.4） ----------------
 
-def test_schema_version_is_9(temp_db):
+def test_schema_version_is_10(temp_db):
     conn = temp_db.connect()
     row = conn.execute(
         "SELECT value FROM _meta WHERE key='schema_version'").fetchone()
     conn.close()
-    assert int(row["value"]) == 9
+    assert int(row["value"]) == 10
+
+
+def test_v10_creates_kaodian_covering_indexes(temp_db):
+    """v10：考点聚合与地域筛选走覆盖索引，避免回表扫 208MB 的 documents。"""
+    conn = temp_db.connect()
+    names = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='documents'")}
+    conn.close()
+    assert "idx_docs_kind_mod_kd" in names
+    assert "idx_docs_region" in names
 
 
 def test_mastery_tables_and_columns(temp_db):
@@ -270,6 +281,41 @@ def test_kaodian_mastery_levels(temp_db):
     assert temp_db.kaodian_mastery("判断推理") == []
 
 
+def test_kaodian_mastery_page_order_and_paging(temp_db):
+    """掌握度图谱分页：练过的排最前（最弱优先），未练沉底；limit/offset/only_practiced 生效。"""
+    conn = temp_db.connect()
+    seed_docs(conn, [
+        _one_doc("A", "资料分析", kaodian="资料分析 / 未练"),
+        _one_doc("B", "资料分析", kaodian="资料分析 / 练过弱"),
+        _one_doc("C", "资料分析", kaodian="资料分析 / 练过强"),
+    ])
+    conn.close()
+    temp_db.add_answer(2, "A", correct=False, ms=900)    # 练过弱：1 错
+    temp_db.add_answer(3, "A", correct=True, ms=900)     # 练过强：1 对
+
+    d = temp_db.kaodian_mastery_page(limit=2)
+    assert d["total"] == 3 and d["practiced"] == 2 and d["shown"] == 2
+    # 练过的排在前，且掌握度低的更靠前；未练的沉底
+    assert [x["kaodian"] for x in d["items"]] == ["资料分析 / 练过弱", "资料分析 / 练过强"]
+
+    d2 = temp_db.kaodian_mastery_page(limit=2, offset=2)
+    assert d2["shown"] == 1 and d2["items"][0]["kaodian"] == "资料分析 / 未练"
+
+    d3 = temp_db.kaodian_mastery_page(only_practiced=True)
+    assert d3["total"] == 2 and d3["practiced"] == 2
+    assert all(x["n"] > 0 for x in d3["items"])
+
+    # levels 统计的是"筛选后全量"，与 total 对齐、不随 limit 变化
+    assert sum(d["levels"].values()) == d["total"] == 3
+    assert sum(temp_db.kaodian_mastery_page(limit=1)["levels"].values()) == 3
+    assert sum(d3["levels"].values()) == 2
+
+    # limit=0 → 返回全部（兼容旧调用）
+    assert len(temp_db.kaodian_mastery_page()["items"]) == 3
+    # 模块过滤同样生效
+    assert temp_db.kaodian_mastery_page("判断推理")["total"] == 0
+
+
 def test_decay_mastery(temp_db, monkeypatch):
     conn = temp_db.connect()
     seed_docs(conn, [_one_doc()])
@@ -292,3 +338,142 @@ def test_add_answer_updates_mastery(temp_db):
     temp_db.add_answer(1, "B", correct=False, ms=1000)
     assert temp_db.mastery_map()[1] == pytest.approx(0.25)   # 0.5 - 0.25
 
+
+
+# ---------------- 连接调优与备份一致性（打磨轮） ----------------
+
+class _FakeConn:
+    """记录 execute 过的 SQL，用于断言连接初始化都做了什么。"""
+
+    def __init__(self):
+        self.sql = []
+        self.row_factory = None
+
+    def execute(self, sql, *a):
+        self.sql.append(sql)
+        return self
+
+    def fetchone(self):
+        return ("wal",)
+
+
+def test_tune_does_not_touch_journal_mode(temp_db):
+    """每次建连都不该设 journal_mode：WAL 是文件级持久属性。
+
+    实测 430MB 库上 `PRAGMA journal_mode=WAL` 单次 137ms（读取也要 53ms），
+    而每个 API 请求都会新建连接——放进 _tune 等于全站请求平白慢上百毫秒。
+    """
+    c = _FakeConn()
+    temp_db._tune(c)
+    assert any("busy_timeout" in s for s in c.sql)
+    assert not any("journal_mode" in s for s in c.sql)
+
+
+def test_ensure_wal_sets_only_once_per_file(temp_db):
+    """同一个库文件在进程内只设一次 WAL，第二次直接短路。"""
+    temp_db._WAL_READY.clear()
+    try:
+        c1, c2 = _FakeConn(), _FakeConn()
+        temp_db._ensure_wal(c1, "unit-test-key")
+        temp_db._ensure_wal(c2, "unit-test-key")
+        assert sum("journal_mode" in s for s in c1.sql) == 1
+        assert c2.sql == []          # 已就绪 → 一次 SQL 都不发
+        # 换个 key（另一个库文件）应各自设一次
+        c3 = _FakeConn()
+        temp_db._ensure_wal(c3, "another-key")
+        assert sum("journal_mode" in s for s in c3.sql) == 1
+    finally:
+        temp_db._WAL_READY.clear()
+
+
+def test_ensure_wal_swallows_errors(temp_db):
+    """设置失败（如只读库）不应抛异常，退化为回滚日志模式即可。"""
+    class _Boom(_FakeConn):
+        def execute(self, sql, *a):
+            super().execute(sql, *a)
+            raise sqlite3.OperationalError("readonly")
+
+    temp_db._WAL_READY.clear()
+    try:
+        temp_db._ensure_wal(_Boom(), "boom-key")   # 不抛
+    finally:
+        temp_db._WAL_READY.clear()
+
+
+def test_snapshot_to_produces_consistent_copy(temp_db):
+    """备份走在线快照：内容齐全、可独立打开、完整性检查通过。"""
+    conn = temp_db.connect()
+    seed_docs(conn, [_one_doc(), _one_doc(title="增长率比较")])
+    conn.close()
+
+    dest = temp_db.DB_PATH.parent / "snap.db"
+    temp_db.snapshot_to(dest)
+    assert dest.exists()
+
+    c = sqlite3.connect(dest)
+    assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert c.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 2
+    c.close()
+
+
+def test_get_docs_brief_batches_and_parses(temp_db):
+    """批量取题：一次拿回全部、data 已解析、缺失 id 自动跳过、保持入参顺序。"""
+    conn = temp_db.connect()
+    seed_docs(conn, [_one_doc(), _one_doc(title="增长率比较")])
+    conn.close()
+
+    got = temp_db.get_docs_brief([2, 1, 999])
+    assert list(got) == [2, 1] or set(got) == {1, 2}
+    assert got[1]["title"] == "增长量计算"
+    assert isinstance(got[1]["data"], dict)
+    assert 999 not in got
+    assert temp_db.get_docs_brief([]) == {}
+
+
+def test_get_docs_brief_handles_bad_json(temp_db):
+    """data 列脏数据不应炸掉整个导出，退化为空 dict。"""
+    conn = temp_db.connect()
+    conn.execute(
+        """INSERT INTO documents(id,path,kind,title,module,data,search_text)
+           VALUES(7,'p7','真题','坏数据','判断推理','{oops','坏数据')""")
+    conn.commit()
+    conn.close()
+    assert temp_db.get_docs_brief([7])[7]["data"] == {}
+
+
+def test_doc_ids_by_qids_batches(temp_db):
+    """qid → doc_id 批量查询：一次拿回、缺失跳过、空入参安全。"""
+    conn = temp_db.connect()
+    for i, qid in ((1, "Q-1"), (2, "Q-2")):
+        conn.execute(
+            """INSERT INTO documents(id,path,kind,qid,title,module,data,search_text)
+               VALUES(?,?,'真题',?,?,'资料分析','{}',?)""",
+            (i, f"p{i}", qid, f"题{i}", f"题{i}"))
+    conn.commit()
+    conn.close()
+
+    got = temp_db.doc_ids_by_qids(["Q-2", "Q-1", "Q-404"])
+    assert got == {"Q-1": 1, "Q-2": 2}
+    assert temp_db.doc_ids_by_qids([]) == {}
+    assert temp_db.doc_ids_by_qids(["", None]) == {}
+
+
+def test_doubts_endpoint_attaches_doc_id(temp_db, monkeypatch):
+    """疑问题列表的 doc_id 应批量解析出来（回归：原先逐条建连接，30 条 7.3s）。"""
+    conn = temp_db.connect()
+    temp_db._ensure_doubt(conn)
+    for i, qid in ((1, "Q-1"), (2, "Q-2")):
+        conn.execute(
+            """INSERT INTO documents(id,path,kind,qid,title,module,data,search_text)
+               VALUES(?,?,'真题',?,?,'资料分析','{}',?)""",
+            (i, f"p{i}", qid, f"题{i}", f"题{i}"))
+    conn.execute("INSERT INTO doubts(qid,status,ts) VALUES('Q-1','pending',1)")
+    conn.execute("INSERT INTO doubts(qid,status,ts) VALUES('Q-404','pending',2)")
+    conn.commit()
+    conn.close()
+
+    items, total, counts = temp_db.list_doubts("", 1)
+    idmap = temp_db.doc_ids_by_qids([it["qid"] for it in items])
+    resolved = {it["qid"]: idmap.get(str(it["qid"])) for it in items}
+    assert resolved["Q-1"] == 1
+    assert resolved["Q-404"] is None

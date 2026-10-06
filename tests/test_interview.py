@@ -189,3 +189,42 @@ def test_interview_grade_rejects_empty(client):
     r = client.post("/api/interview/grade", json={
         "category": "综合分析", "question": "", "answer": ""})
     assert r.status_code == 400
+
+
+# ---------------- 首次播种的并发安全（回归） ----------------
+
+def test_interview_seed_is_concurrency_safe(temp_db):
+    """首次访问面试页时前端并行发 questions + stats，两个连接会同时播种。
+
+    历史缺陷：未加锁的"查空 → DDL + 批量 INSERT"并发执行，实测出现过
+    `attempt to write a readonly database`，导致整个请求 500。
+    这里用 16 线程同时首访，断言零异常且题库恰好灌入一次。
+    """
+    import threading
+
+    errs, ok = [], []
+    barrier = threading.Barrier(16)
+
+    def worker(i):
+        try:
+            barrier.wait()
+            if i % 2:
+                temp_db.interview_stats()
+            else:
+                temp_db.list_interview_questions()
+            ok.append(i)
+        except Exception as e:            # noqa: BLE001 - 测试需捕获全部异常类型
+            errs.append(f"{type(e).__name__}: {e}")
+
+    ts = [threading.Thread(target=worker, args=(i,)) for i in range(16)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+
+    assert not errs, errs
+    assert len(ok) == 16
+    conn = temp_db.connect()
+    n = conn.execute("SELECT COUNT(*) FROM interview_questions").fetchone()[0]
+    conn.close()
+    assert n == len(interview.BUILTIN_QUESTIONS)      # 幂等：不重复播种

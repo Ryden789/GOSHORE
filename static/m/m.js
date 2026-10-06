@@ -2868,33 +2868,51 @@ async function renderMyDocs() {
 const M_LEVEL_COLOR = { green: "var(--green)", amber: "var(--amber)", red: "var(--cinnabar)" };
 const M_LEVEL_LABEL = { green: "已掌握", amber: "待巩固", red: "薄弱/未练" };
 
+/* 掌握度图谱：题库上万条考点（99%+ 从未练过），全量渲染会产出 56 万字符 DOM、
+   首屏 4 秒以上。改为服务端分页 + 「只看已练」，默认每页 60 条。 */
+const MST_PAGE = 60;
+
 async function renderMastery() {
-  let module = "";
-  let items = [];
+  const st = { module: "", onlyPracticed: false, limit: MST_PAGE };
   let mods = [];
   try {
     const f = await api("/api/facets");
     mods = (f.modules || []).filter(m => m && m !== "未分类");
-    items = (await api("/api/mastery")).items || [];
   } catch (e) {
     view.innerHTML = `<div class="card">加载失败：${esc(e.message)}</div>`;
     return;
   }
 
-  const draw = () => {
-    const list = module ? items.filter(it => it.module === module) : items;
-    const cnt = { green: 0, amber: 0, red: 0 };
-    for (const it of list) cnt[it.level] = (cnt[it.level] || 0) + 1;
+  const draw = async () => {
+    let d;
+    try {
+      d = await api(`/api/mastery?module=${encodeURIComponent(st.module)}`
+        + `&only_practiced=${st.onlyPracticed ? 1 : 0}&limit=${st.limit}`);
+    } catch (e) {
+      toast("加载失败：" + e.message);
+      return;
+    }
+    const list = d.items || [];
+    const rest = Math.max(0, (d.total || 0) - list.length);
+    // 分档计数取后端按"筛选后全量"统计的值（不是当页），避免图例随翻页跳动
+    const cnt = d.levels || { green: 0, amber: 0, red: 0 };
     $("#mstBody").innerHTML = `
       <div class="card">
         <div class="chips" id="mstMods">
-          <span class="chip ${module === "" ? "on" : ""}" data-m="">全部</span>
-          ${mods.map(m => `<span class="chip ${module === m ? "on" : ""}" data-m="${esc(m)}">${esc(m)}</span>`).join("")}
+          <span class="chip ${st.module === "" ? "on" : ""}" data-m="">全部</span>
+          ${mods.map(m => `<span class="chip ${st.module === m ? "on" : ""}" data-m="${esc(m)}">${esc(m)}</span>`).join("")}
+        </div>
+        <div class="chips" id="mstScope" style="margin-top:8px">
+          <span class="chip ${st.onlyPracticed ? "" : "on"}" data-only="0">全部考点</span>
+          <span class="chip ${st.onlyPracticed ? "on" : ""}" data-only="1">只看已练</span>
         </div>
         <div style="display:flex;gap:14px;margin-top:10px;font-size:12.5px;flex-wrap:wrap">
           <span><b style="color:${M_LEVEL_COLOR.green}">●</b> 已掌握 ${cnt.green || 0}</span>
           <span><b style="color:${M_LEVEL_COLOR.amber}">●</b> 待巩固 ${cnt.amber || 0}</span>
           <span><b style="color:${M_LEVEL_COLOR.red}">●</b> 薄弱/未练 ${cnt.red || 0}</span>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:6px">
+          已练 ${d.practiced || 0} 个 · 当前筛选 ${d.total || 0} 个 · 显示 ${list.length} 个${rest ? `（还有 ${rest} 个）` : ""}
         </div>
       </div>
       ${list.length ? list.map(it => `
@@ -2909,8 +2927,18 @@ async function renderMastery() {
             ${it.rate === null ? '<span class="muted">未练</span>' : `<b>${it.rate}%</b>`}
             <span class="muted" style="display:block">${M_LEVEL_LABEL[it.level]} · 掌握 ${it.mastery.toFixed(2)}</span>
           </span>
-        </div>`).join("") : `<div class="card"><div class="empty">暂无考点数据，先去题库做几道题吧</div></div>`}`;
-    $$("#mstMods .chip").forEach(c => c.onclick = () => { module = c.dataset.m; draw(); });
+        </div>`).join("") + (rest ? `<button class="btn btn-block" id="mstMore" style="margin-top:12px">显示更多（还有 ${rest} 个）</button>` : "")
+        : `<div class="card"><div class="empty">${
+            st.onlyPracticed ? "还没有练过的考点，先去题库做几道题吧" : "暂无考点数据，先去题库做几道题吧"
+          }</div></div>`}`;
+    $$("#mstMods .chip").forEach(c => c.onclick = () => {
+      st.module = c.dataset.m; st.limit = MST_PAGE; draw();
+    });
+    $$("#mstScope .chip").forEach(c => c.onclick = () => {
+      st.onlyPracticed = c.dataset.only === "1"; st.limit = MST_PAGE; draw();
+    });
+    const more = $("#mstMore");
+    if (more) more.onclick = () => { st.limit += MST_PAGE * 2; draw(); };
     $$(".mst-row").forEach(row => row.onclick = async () => {
       const r = await api("/api/paper", {
         module: row.dataset.module, kaodian: row.dataset.kaodian, n: 10,
@@ -2923,7 +2951,7 @@ async function renderMastery() {
   view.innerHTML = `
     <div class="page-head">
       <h2>掌握度图谱</h2>
-      <p class="muted">按考点聚合 · 共 ${items.length} 个考点 · 点任一行直接开练</p>
+      <p class="muted">按考点聚合 · 练过的排前面（最弱的最先）· 点任一行直接开练</p>
     </div>
     <div id="mstBody"></div>`;
   draw();

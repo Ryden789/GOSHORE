@@ -687,7 +687,18 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/kaodian-tree":
                 self._json({"items": db.kaodian_tree(q("module", "判断推理"))})
             elif path == "/api/mastery":
-                self._json({"items": db.kaodian_mastery(q("module"))})
+                try:
+                    _lim = int(q("limit", "0") or 0)
+                except ValueError:
+                    _lim = 0
+                try:
+                    _off = int(q("offset", "0") or 0)
+                except ValueError:
+                    _off = 0
+                self._json(db.kaodian_mastery_page(
+                    q("module"),
+                    only_practiced=q("only_practiced") in ("1", "true", "True"),
+                    limit=_lim, offset=_off))
             elif path == "/api/ability/radar":
                 self._json({"items": db.ability_radar()})
             elif path == "/api/interview/questions":
@@ -789,8 +800,9 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/doubts":
                 items, total, counts = db.list_doubts(
                     q("status"), int(q("page") or "1"))
+                idmap = db.doc_ids_by_qids([it["qid"] for it in items])
                 for it in items:
-                    it["doc_id"] = db.doc_id_by_qid(it["qid"])
+                    it["doc_id"] = idmap.get(str(it["qid"]))
                 self._json({"items": items, "total": total, "counts": counts})
             elif path == "/api/history":
                 self._json(db.answer_history(

@@ -5143,17 +5143,26 @@ async function renderWenxian() {
 const MASTERY_COLOR = { green: "var(--bamboo)", amber: "var(--amber)", red: "var(--cinnabar)" };
 const MASTERY_LABEL = { green: "已掌握", amber: "待巩固", red: "薄弱/未练" };
 
+/* 掌握度图谱：题库有上万条考点（99%+ 从未练过），一次性渲染会产出 56 万字符
+   DOM、首屏 4 秒以上。改为服务端分页 + 「只看已练」筛选，默认每页 80 条。 */
+const MST_PAGE = 80;
+const mstState = { module: "", onlyPracticed: false, limit: MST_PAGE };
+
 async function renderMastery(module = "") {
+  if (module !== mstState.module) mstState.limit = MST_PAGE;   // 换模块回到第一页
+  mstState.module = module;
   const facets = await api("/api/facets");
-  const d = await api(`/api/mastery?module=${encodeURIComponent(module)}`);
+  const d = await api(`/api/mastery?module=${encodeURIComponent(module)}`
+    + `&only_practiced=${mstState.onlyPracticed ? 1 : 0}&limit=${mstState.limit}`);
   const items = d.items || [];
-  const cnt = { green: 0, amber: 0, red: 0 };
-  for (const it of items) cnt[it.level] = (cnt[it.level] || 0) + 1;
+  // 分档计数取后端按"筛选后全量"统计的值（不是当页），避免图例随翻页跳动
+  const cnt = d.levels || { green: 0, amber: 0, red: 0 };
+  const rest = Math.max(0, (d.total || 0) - items.length);
 
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">知识掌握度图谱</h1>
-      <p class="page-desc">按考点聚合正确率与掌握度 · 共 ${items.length} 个考点 · 点任一行直接开练</p>
+      <p class="page-desc">按考点聚合正确率与掌握度 · 练过的排前面（最弱的最先）· 点任一行直接开练</p>
     </div>
     <div class="panel rise rise-1">
       <div class="cfg-inline" style="flex-wrap:wrap;gap:8px">
@@ -5162,11 +5171,19 @@ async function renderMastery(module = "") {
           ${(facets.modules || []).map(m =>
             `<div class="type-check ${module === m ? "on" : ""}" data-m="${esc(m)}">${esc(m)}</div>`).join("")}
         </span>
+        <span class="type-checks" id="mScope" style="margin-left:auto">
+          <div class="type-check ${mstState.onlyPracticed ? "" : "on"}" data-only="0">全部考点</div>
+          <div class="type-check ${mstState.onlyPracticed ? "on" : ""}" data-only="1">只看已练</div>
+        </span>
       </div>
-      <div style="display:flex;gap:18px;margin-top:12px;font-size:13.5px">
+      <div style="display:flex;gap:18px;margin-top:12px;font-size:13.5px;flex-wrap:wrap">
         <span><b style="color:${MASTERY_COLOR.green}">●</b> 已掌握 ${cnt.green || 0}</span>
         <span><b style="color:${MASTERY_COLOR.amber}">●</b> 待巩固 ${cnt.amber || 0}</span>
         <span><b style="color:${MASTERY_COLOR.red}">●</b> 薄弱/未练 ${cnt.red || 0}</span>
+        <span style="color:var(--ink-3);margin-left:auto">
+          已练 ${d.practiced || 0} 个考点 · 当前筛选共 ${d.total || 0} 个 ·
+          显示 ${items.length} 个${rest ? `（还有 ${rest} 个）` : ""}
+        </span>
       </div>
     </div>
     <div class="panel rise rise-2">
@@ -5195,10 +5212,22 @@ async function renderMastery(module = "") {
               <span style="font-size:12px;color:var(--ink-3)">${MASTERY_LABEL[it.level]}</span>
             </td>
           </tr>`).join("")}
-      </table>` : `<div class="empty">暂无考点数据，先去题库做几道题吧</div>`}
+      </table>
+      ${rest ? `<div style="text-align:center;margin-top:14px">
+        <button class="btn btn-sm" id="mstMore">显示更多（还有 ${rest} 个）</button>
+      </div>` : ""}` : `<div class="empty">${
+        mstState.onlyPracticed ? "还没有练过的考点，先去题库做几道题吧" : "暂无考点数据，先去题库做几道题吧"
+      }</div>`}
     </div>`;
 
   $$("#mMods .type-check").forEach(t => t.onclick = () => renderMastery(t.dataset.m));
+  $$("#mScope .type-check").forEach(t => t.onclick = () => {
+    mstState.onlyPracticed = t.dataset.only === "1";
+    mstState.limit = MST_PAGE;
+    renderMastery(mstState.module);
+  });
+  const more = $("#mstMore");
+  if (more) more.onclick = () => { mstState.limit += MST_PAGE * 2; renderMastery(mstState.module); };
   $$(".mst-row").forEach(tr => tr.onclick = async () => {
     const res = await api("/api/paper", {
       module: tr.dataset.module, kaodian: tr.dataset.kaodian, n: 10,

@@ -7,6 +7,7 @@ import os
 import random
 import re as _re
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -248,7 +249,7 @@ CREATE TABLE IF NOT EXISTS _meta (
 SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
 
 # 当前 schema 版本号（每次新增迁移步骤时 +1）
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
 EBBINGHAUS_DAYS = [1, 2, 4, 7, 15, 30]
@@ -277,25 +278,88 @@ def current_user() -> int | None:
     return _current_uid.get()
 
 
+def _tune(conn: sqlite3.Connection) -> None:
+    """连接统一调优：行工厂 + 忙等待。
+
+    多线程 FastAPI 下每个请求各持一个连接，写操作会互相竞争；默认 5 秒忙等待
+    在批量落库/播种时可能不够，放宽到 15 秒，避免把短暂的锁竞争暴露成 500。
+
+    **注意：这里刻意不设 `journal_mode`。** WAL 是数据库文件的持久属性，只需在
+    建库时设一次（见 `init_db`）。每次连接都执行 `PRAGMA journal_mode=WAL` 会
+    触发加锁/checkpoint，本机实测 430MB 库上单次连接从 2ms 涨到 137ms（连"读取"
+    journal_mode 都要 53ms）；而每个 API 请求都会新建连接，等于全站请求平白多出
+    上百毫秒。
+    """
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=15000")
+
+
+# 已确认处于 WAL 的库文件（进程内去重）；见 _tune() 的说明
+_WAL_READY: set[str] = set()
+_WAL_LOCK = threading.Lock()
+
+
+def _ensure_wal(conn: sqlite3.Connection, key: str) -> None:
+    """把 journal_mode 设为 WAL —— 每个库文件在进程内只做一次。
+
+    WAL 是数据库文件的**持久属性**，一旦设置就写入文件头，后续所有连接自动沿用，
+    因此完全没必要每次连接都设。重复设置会触发加锁/checkpoint，本机实测 430MB
+    库上单次代价 137ms，而每个 API 请求都会新建连接 —— 不缓存会让全站请求平白
+    慢上百毫秒。失败不致命（退化为回滚日志模式），因此吞掉异常。
+    """
+    if key in _WAL_READY:
+        return
+    with _WAL_LOCK:
+        if key in _WAL_READY:
+            return
+        try:
+            conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        except sqlite3.OperationalError:
+            pass
+        _WAL_READY.add(key)
+
+
+def snapshot_to(dest: Path | str) -> None:
+    """用 SQLite 在线备份 API 导出一份**一致**的数据库快照。
+
+    WAL 模式下直接复制 `goshor.db` 是不安全的：未 checkpoint 的已提交事务还留在
+    `-wal` 里，复制主库会丢掉这部分数据；写入进行中时还可能复制到撕裂的页。
+    `Connection.backup()` 会拿一致性快照（自动包含 WAL 中的内容），即使此时
+    有别的连接正在写也安全，因此备份接口应当用它而不是 `shutil.copy`。
+    """
+    dest = str(dest)
+    src = sqlite3.connect(DB_PATH, timeout=15)
+    try:
+        out = sqlite3.connect(dest, timeout=15)
+        try:
+            src.backup(out)
+            out.commit()
+        finally:
+            out.close()
+    finally:
+        src.close()
+
+
 def connect() -> sqlite3.Connection:
     uid = _current_uid.get()
     if not IS_MOBILE or uid is None:
         # 桌面端 / 未设置身份：原路径，单库直连
         DB_PATH.parent.mkdir(exist_ok=True)
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=15)
+        _tune(conn)
+        _ensure_wal(conn, str(DB_PATH))
         return conn
 
     # 手机多身份：个人库为主库，共享题库只读附加
     users_dir = DB_PATH.parent / "users"
     users_dir.mkdir(exist_ok=True)
     # uri=True：连接级开启 URI 识别，ATTACH 的只读 file: URI 才生效
-    own_uri = (users_dir / f"data_{uid}.db").resolve().as_uri()
-    conn = sqlite3.connect(own_uri, check_same_thread=False, uri=True)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    # 共享库以只读 URI 附加（file URI 自动识别）
+    own_path = users_dir / f"data_{uid}.db"
+    # uri=True：连接级开启 URI 识别，ATTACH 的只读 file: URI 才生效
+    own_uri = own_path.resolve().as_uri()
+    conn = sqlite3.connect(own_uri, check_same_thread=False, uri=True, timeout=15)
+    _tune(conn)
+    _ensure_wal(conn, str(own_path))    # 共享库以只读 URI 附加（file URI 自动识别）
     shared_uri = DB_PATH.resolve().as_uri() + "?mode=ro"
     conn.execute("ATTACH DATABASE ? AS shared", (shared_uri,))
     conn.executescript(PERSONAL_SCHEMA)
@@ -364,6 +428,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     v7：interview_questions / interview_logs 面试模块表（2.3）。
     v8：shizheng_seen URL 去重表（时政流水线 2.2）。
     v9：shared_sets / pk_records 题单分享与好友 PK 表（3.3）。
+    v10：考点聚合的覆盖索引 idx_docs_kind_mod_kd / idx_docs_region。
     """
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -511,6 +576,31 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         conn.execute(
             "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','9')"
+        )
+        conn.commit()
+
+    if v < 10:
+        # v10: 考点聚合的覆盖索引。
+        # 「考点分布 / 掌握度图谱 / 考点树」都跑同一条聚合：
+        #   WHERE kind='真题' AND kaodian!='' GROUP BY module,kaodian
+        # 只有 idx_docs_kind 时，SQLite 命中索引后还要按 rowid 回表取
+        # module/kaodian —— documents 表 208MB，回表读上万行是主要成本。
+        # 建 (kind,module,kaodian) 后变成纯覆盖索引扫描，不再碰主表
+        # （限缓存对照实测 47ms → 9ms）。region 同理，供 facets 的
+        # SELECT DISTINCT region 走覆盖索引。
+        row = conn.execute(
+            "SELECT type FROM sqlite_master WHERE name='documents'"
+        ).fetchone()
+        if row and row["type"] == "table":     # 手机端 documents 是只读附加表 → 跳过
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_docs_kind_mod_kd "
+                "ON documents(kind,module,kaodian)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_docs_region ON documents(region)"
+            )
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','10')"
         )
         conn.commit()
 
@@ -735,6 +825,41 @@ def search_docs(
     return rows, total
 
 
+def get_docs_brief(ids: list[int]) -> dict[int, dict]:
+    """按 id 批量取题（只含导出/预览需要的字段），一次查询返回 dict。
+
+    导出接口原先对每道题各调一次 `get_doc`，而 `get_doc` 每次都新建连接并额外查
+    marks/answers。实测 100 题 16.3s，改成单条 `IN (...)` 后 0.31s（53×）。
+    只取 title/module/exam/data 四个字段——`documents.data` 是整库最大的一列，
+    少取列也能省下不少 I/O。
+    """
+    ids = [int(i) for i in ids]
+    if not ids:
+        return {}
+    conn = connect()
+    out: dict[int, dict] = {}
+    try:
+        # SQLite 变量上限默认 999，分批查询兜底
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            ph = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT id,title,module,exam,data FROM documents WHERE id IN ({ph})",
+                tuple(chunk),
+            ).fetchall():
+                try:
+                    data = json.loads(r["data"] or "{}")
+                except json.JSONDecodeError:
+                    data = {}
+                out[r["id"]] = {
+                    "id": r["id"], "title": r["title"], "module": r["module"],
+                    "exam": r["exam"], "data": data,
+                }
+    finally:
+        conn.close()
+    return out
+
+
 def get_doc(doc_id: int) -> dict | None:
     conn = connect()
     row = conn.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
@@ -800,6 +925,31 @@ def doc_id_by_qid(qid: str) -> int | None:
     ).fetchone()
     conn.close()
     return row["id"] if row else None
+
+
+def doc_ids_by_qids(qids: list[str]) -> dict[str, int]:
+    """按 qid 批量查内部 doc_id，一次查询返回 {qid: doc_id}。
+
+    疑问题列表原先对每一条各调一次 `doc_id_by_qid`，每次都新建连接：本机实测
+    新建连接本身约 56ms（新连接页缓存是冷的），一页 30 条就要多花 1.5s 以上，
+    HTTP 层实测 /api/doubts 达 7.3s。改成单条 IN 查询后只建 1 个连接。
+    """
+    want = [str(q) for q in qids if q]
+    if not want:
+        return {}
+    conn = connect()
+    out: dict[str, int] = {}
+    try:
+        for i in range(0, len(want), 500):      # SQLite 变量上限 999，分批兜底
+            chunk = want[i:i + 500]
+            ph = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT qid,id FROM documents WHERE qid IN ({ph})", tuple(chunk)
+            ).fetchall():
+                out[r["qid"]] = r["id"]
+    finally:
+        conn.close()
+    return out
 
 
 def get_docs_batch(doc_ids: list[int]) -> list[dict]:
@@ -1593,8 +1743,8 @@ def adaptive_paper(module: str = "", n: int = 15, kaodian: str = "") -> list[int
     return out
 
 
-def kaodian_mastery(module: str = "") -> list[dict]:
-    """考点级掌握度图谱：正确率、题量、最近练习时间、平均掌握度。
+def _kaodian_mastery_all(module: str = "") -> list[dict]:
+    """考点级掌握度图谱全量计算：正确率、题量、最近练习时间、平均掌握度。
 
     未练过的考点也会返回（rate=None），便于前端标红提示。
     """
@@ -1649,10 +1799,42 @@ def kaodian_mastery(module: str = "") -> list[dict]:
             "last_at": (s or {}).get("last_at"),
             "mastery": avg_m, "level": level,
         })
-    # 红→黄→绿，同级按题量降序
-    order = {"red": 0, "amber": 1, "green": 2}
-    out.sort(key=lambda x: (order.get(x["level"], 3), -x["total"]))
+    # 排序：练过的优先（掌握度低的排最前，最需要补），未练过的沉底并按题量降序。
+    # 旧版按 红→黄→绿 排序时，上万条"未练"（恒为红）会占满首页，用户看不到
+    # 自己真正练过、真正薄弱的考点——这是 #/mastery 首屏 4 秒的根因之一。
+    out.sort(key=lambda x: (0 if x["n"] else 1, x["mastery"], -x["total"]))
     return out
+
+
+def kaodian_mastery(module: str = "") -> list[dict]:
+    """考点级掌握度图谱全量列表（供 planner 等内部调用）。"""
+    return _kaodian_mastery_all(module)
+
+
+def kaodian_mastery_page(module: str = "", only_practiced: bool = False,
+                         limit: int = 0, offset: int = 0) -> dict:
+    """考点级掌握度图谱分页版。
+
+    题库有上万条考点、其中 99%+ 从未练习过；前端一次性渲染全部行会产生
+    56 万字符 DOM、首屏 4 秒以上。此接口支持只取"练过的"与分页，
+    并把总数/已练数一并返回，便于前端显示"还有 N 条"。
+    """
+    rows = _kaodian_mastery_all(module)
+    practiced = sum(1 for x in rows if x["n"])
+    if only_practiced:
+        rows = [x for x in rows if x["n"]]
+    total = len(rows)
+    # 分档统计按"筛选后的全量"算，而不是按当页算——否则图例数字会随翻页跳动、误导用户
+    levels = {"green": 0, "amber": 0, "red": 0}
+    for x in rows:
+        levels[x["level"]] = levels.get(x["level"], 0) + 1
+    off = max(0, int(offset or 0))
+    lim = int(limit or 0)
+    page = rows[off:off + lim] if lim > 0 else rows[off:]
+    return {
+        "items": page, "total": total, "practiced": practiced,
+        "shown": len(page), "offset": off, "levels": levels,
+    }
 
 
 def review_dashboard() -> dict:
@@ -3118,8 +3300,19 @@ def study_plan_summary(today: str = "") -> dict:
 
 # ---------------- 面试模块（功能 2.3） ----------------
 
+# 播种串行锁：首次访问面试页时，前端会并行发出 /api/interview/questions 与
+# /api/interview/stats，两个连接会同时走到"查空→灌数据"。若不加锁，二者会并发
+# 执行 DDL + 批量 INSERT，实测出现过 `attempt to write a readonly database`
+# 导致整个请求 500。锁 + 二次确认把这条路径变成幂等且不会失败。
+_SEED_LOCK = threading.Lock()
+
+
 def _ensure_interview_seed(conn: sqlite3.Connection) -> None:
-    """建表（兜底）并在首次使用时灌入内置五类真题。"""
+    """建表（兜底）并在首次使用时灌入内置五类真题。
+
+    快路径只读（表非空即返回，不取锁、不写库）；慢路径加锁后二次确认再写，
+    且写入失败不向上抛——读取方拿到的数据是对的，不该因为播种失败而 500。
+    """
     conn.execute(
         """CREATE TABLE IF NOT EXISTS interview_questions(
             id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT DEFAULT '',
@@ -3133,14 +3326,21 @@ def _ensure_interview_seed(conn: sqlite3.Connection) -> None:
             express_score REAL DEFAULT 0, comment TEXT DEFAULT '',
             think_ms INTEGER DEFAULT 0, answer_ms INTEGER DEFAULT 0,
             created_at REAL DEFAULT 0)""")
-    n = conn.execute("SELECT COUNT(*) c FROM interview_questions").fetchone()["c"]
-    if n == 0:
+    if conn.execute("SELECT COUNT(*) c FROM interview_questions").fetchone()["c"]:
+        return
+    with _SEED_LOCK:
+        # 二次确认：等锁期间可能已被其他连接灌好
+        if conn.execute("SELECT COUNT(*) c FROM interview_questions").fetchone()["c"]:
+            return
         from . import interview as _iv
-        conn.executemany(
-            "INSERT INTO interview_questions(category,question,reference,source,created_at)"
-            " VALUES(?,?,?,'builtin',?)",
-            [(c, q, r, time.time()) for c, q, r in _iv.BUILTIN_QUESTIONS])
-        conn.commit()
+        try:
+            conn.executemany(
+                "INSERT INTO interview_questions(category,question,reference,source,created_at)"
+                " VALUES(?,?,?,'builtin',?)",
+                [(c, q, r, time.time()) for c, q, r in _iv.BUILTIN_QUESTIONS])
+            conn.commit()
+        except sqlite3.OperationalError:
+            conn.rollback()   # 只读/锁定等异常：放弃播种，读取路径照常返回
 
 
 def list_interview_questions(category: str = "") -> list[dict]:
