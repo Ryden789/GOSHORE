@@ -1,19 +1,21 @@
-// GOSHORE · N5 夜间模式（宣纸夜景）行为校验
+// GOSHORE · N5 夜间模式 + N4 字号与阅读偏好 行为校验
 //
-// 为什么需要它：N5 的主题逻辑是一段纯前端代码（偏好归一 / 跟随系统解析 /
-// 落到 <html data-theme> / 同步地址栏颜色 / 设置页分段控件），住在两个前端脚本里
-// （桌面 app.js / 移动 m.js），而浏览器不在 CI 里。解析写反（auto 时该暗却给亮）、
-// 忘了同步 theme-color、系统深浅变化没订阅、两端改得不一致——都不会有任何测试变红。
+// 为什么需要它：N5/N4 的逻辑都是纯前端代码（偏好归一 / 跟随系统解析 /
+// 落到 <html data-theme|data-fontsize> / 同步地址栏颜色 / 设置页分段控件），
+// 住在两个前端脚本里（桌面 app.js / 移动 m.js），而浏览器不在 CI 里。
+// 解析写反（auto 时该暗却给亮）、旧字号值没迁移、忘了同步 theme-color、
+// 系统深浅变化没订阅、两端改得不一致——都不会有任何测试变红。
 //
-// 这里把两端真实的 N5 块（连同各自的 Pref 实现）抽出来，塞进一个假的
+// 这里把两端真实的 N5/N4 块（连同各自的 Pref 实现）抽出来，塞进一个假的
 // window / document / localStorage / matchMedia 沙箱里**真跑**，断言：
 //   1) norm 白名单归一；resolve 三态解析（含 auto 跟随系统）；
 //   2) sysDark 在 matchMedia 缺失 / 抛错时安全降级为浅色；
 //   3) apply 落到 documentElement.dataset.theme，并同步 <meta theme-color>；
 //   4) set 写偏好 + 立即生效；init 订阅系统变化（仅 auto 时响应）与旧 addListener 兼容；
 //   5) pickerHtml 三选项 / 当前项高亮 / data-* 钩子；bindPicker 点击切换 + 互斥高亮；
-//   6) 双端块源码逐字节一致（防漂移）；
-//   7) 两端 CSS 都有夜间覆写块与语义变量、index.html 有防闪烁脚本与 data-light、
+//   6) N4 四档字号 + 旧 U-7 三档（s/m/b）迁移、行高宽松开关、data-* 落位；
+//   7) 双端块源码逐字节一致（防漂移）；
+//   8) 两端 CSS 都有夜间覆写块与语义变量、字号档位变量、index.html 有防闪烁脚本、
 //      缓存版本已升级、设置页已接线。
 //
 // 用法：node tools/check_appearance.mjs
@@ -25,11 +27,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const BLOCK_START = "/* N5 夜间模式";
 const BLOCK_END = "/* N1 断点续做";
+const N4_START = "/* N4 字号与阅读偏好";
 const SOURCES = [
   { label: "桌面 app.js", rel: "static/app.js", css: "static/styles.css", html: "static/index.html" },
   { label: "移动 m.js", rel: "static/m/m.js", css: "static/m/m.css", html: "static/m/index.html" },
 ];
-const VERSION = "20261019";
+const VERSION = "20261020";
 
 /* ---------------- 源码抽取 ---------------- */
 
@@ -42,6 +45,15 @@ function extractBlock(src) {
   if (i < 0) throw new Error("找不到 N5 主题块（块头注释被改名？请同步更新本校验）");
   const j = src.indexOf(BLOCK_END, i);
   if (j < 0) throw new Error(`找不到 N5 主题块的结束标记 ${JSON.stringify(BLOCK_END)}`);
+  return norm(src.slice(i, j));
+}
+
+/** N4 字号块：从 N4 头到 N1 头（N5 在前，所以从后往前找最近的 N4）。 */
+function extractFontBlock(src) {
+  const i = src.indexOf(N4_START);
+  if (i < 0) throw new Error("找不到 N4 字号块（块头注释被改名？请同步更新本校验）");
+  const j = src.indexOf(BLOCK_END, i);
+  if (j < 0) throw new Error(`找不到 N4 字号块的结束标记 ${JSON.stringify(BLOCK_END)}`);
   return norm(src.slice(i, j));
 }
 
@@ -129,6 +141,35 @@ function buildSandbox(code, env) {
   return { sandbox, win, listeners };
 }
 
+/** 把真实的 Pref + 给定块拼成沙箱，暴露 FontSize 及其断言所需的取值接口。 */
+function buildPlain(fontBlock, prefCode, opt) {
+  const storage = makeStorage();
+  const doc = makeDoc(makeMeta(opt.light || "#a6342a"));
+  const make = new Function(
+    "window", "document", "localStorage",
+    `
+    ${prefCode}
+    ${fontBlock}
+    const __S = localStorage;
+    return {
+      Pref, FontSize,
+      sizeKeys: () => FontSize.SIZES.map(s => s[0]),
+      norm: v => FontSize.norm(v),
+      current: () => FontSize.current(),
+      apply: () => FontSize.apply(),
+      set: v => FontSize.set(v),
+      setLoose: v => FontSize.setLoose(v),
+      pickerHtml: () => FontSize.pickerHtml(),
+      effFontsize: () => document.documentElement.dataset.fontsize,
+      effLineheight: () => document.documentElement.dataset.lineheight,
+      hasLineheight: () => "lineheight" in document.documentElement.dataset,
+      storageGet: k => __S.getItem(k),
+    };
+    `,
+  );
+  return make({ matchMedia: () => makeMMQ(false) }, doc, storage);
+}
+
 /* ---------------- 断言收集 ---------------- */
 
 const problems = [];
@@ -153,9 +194,10 @@ const IMPLS = {};
 for (const s of SOURCES) {
   const src = fs.readFileSync(path.join(ROOT, s.rel), "utf8");
   const block = extractBlock(src);
+  const font = extractFontBlock(src);
   const pref = extractBraced(src, "const Pref = {");
   if (!pref) throw new Error(`${s.rel} 里找不到 const Pref = {...}（N5 主题块依赖它）`);
-  IMPLS[s.label] = { pref, block, src, css: fs.readFileSync(path.join(ROOT, s.css), "utf8"),
+  IMPLS[s.label] = { pref, block, font, src, css: fs.readFileSync(path.join(ROOT, s.css), "utf8"),
                      html: fs.readFileSync(path.join(ROOT, s.html), "utf8") };
 }
 console.log(`抽取到 ${Object.keys(IMPLS).length} 份 N5 主题块：${Object.keys(IMPLS).join("、")}`);
@@ -326,7 +368,6 @@ const mkEnv = (opt = {}) => {
 }
 
 /* ---------------- 6. 静态接线：CSS / HTML / 缓存版本 ---------------- */
-
 for (const s of SOURCES) {
   const { css, html, src } = IMPLS[s.label];
   has(css, 'html[data-theme="dark"]', `${s.label} 的 CSS 应有夜间覆写块`);
@@ -359,8 +400,82 @@ for (const s of SOURCES) {
   has(sw, `goshore-${VERSION}`, `sw.js 的 VERSION 应升到 goshore-${VERSION}`);
 }
 
-/* ---------------- 7. 自检：篡改必须被抓到 ---------------- */
+/* ---------------- 7. N4 字号与阅读偏好 ---------------- */
 
+// 7.1 双端字号块逐字节一致
+{
+  const fb = Object.values(IMPLS).map(x => x.font);
+  for (let i = 1; i < fb.length; i++) {
+    ok(fb[0] === fb[i],
+      `双端 N4 字号块不一致（${SOURCES[0].label} vs ${SOURCES[i].label}）——两端必须逐字节相同`);
+  }
+}
+
+// 7.2 纯函数：四档 + 旧值迁移
+{
+  const F = buildPlain(IMPLS[HOST].font, IMPLS[HOST].pref, {});
+  eq(JSON.stringify(F.sizeKeys()), JSON.stringify(["sm", "md", "lg", "xl"]), "四档键值");
+  eq(F.norm("sm"), "sm", "norm 保留 sm");
+  eq(F.norm("md"), "md", "norm 保留 md");
+  eq(F.norm("lg"), "lg", "norm 保留 lg");
+  eq(F.norm("xl"), "xl", "norm 保留 xl");
+  eq(F.norm("bogus"), "md", "非法值归一为 md");
+  eq(F.norm(""), "md", "空串归一为 md");
+  eq(F.norm(undefined), "md", "undefined 归一为 md");
+  // 旧移动端 U-7 三档 s/m/b 必须迁移，不能降级
+  eq(F.norm("s"), "sm", "旧值 s → sm");
+  eq(F.norm("m"), "md", "旧值 m → md");
+  eq(F.norm("b"), "lg", "旧值 b → lg（大字，不得降级为 md）");
+
+  eq(F.current(), "md", "默认字号应为 md");
+  eq(F.apply(), "md", "apply 应返回生效档位");
+  eq(F.effFontsize(), "md", "apply 应把 data-fontsize 落到 <html>");
+  eq(F.hasLineheight(), false, "默认不应设 data-lineheight");
+
+  F.set("xl");
+  eq(F.storageGet("g:fontsize"), '"xl"', "set 应写入偏好（Pref.set 内部会 JSON 序列化）");
+  eq(F.effFontsize(), "xl", "set 应立即生效");
+
+  F.setLoose(true);
+  eq(F.effLineheight(), "loose", "setLoose(true) 应设 data-lineheight=loose");
+  eq(F.storageGet("g:lhloose"), "true", "行高开关应持久化");
+  F.setLoose(false);
+  eq(F.hasLineheight(), false, "setLoose(false) 应移除 data-lineheight");
+}
+
+// 7.3 分段控件
+{
+  const F = buildPlain(IMPLS[HOST].font, IMPLS[HOST].pref, {});
+  const html = F.pickerHtml();
+  has(html, 'data-font-pick="sm"', "字号控件应含 sm 项");
+  has(html, 'data-font-pick="xl"', "字号控件应含 xl 项");
+  has(html, "小", "sm 项文案");
+  has(html, "标准", "md 项文案");
+  has(html, "大", "lg 项文案");
+  has(html, "特大", "xl 项文案");
+  eq((html.match(/type-check on/g) || []).length, 1, "默认 md 时恰好 1 项高亮");
+  F.set("lg");
+  has(F.pickerHtml(), 'class="type-check on" data-font-pick="lg"', "lg 时应高亮 lg 项");
+}
+
+// 7.4 静态接线：CSS 变量 / HTML 内联脚本 / 缓存版本
+for (const s of SOURCES) {
+  const { css, html, src } = IMPLS[s.label];
+  has(css, "--base-font:", `${s.label} 的 CSS 应定义 --base-font`);
+  has(css, "--read-font:", `${s.label} 的 CSS 应定义 --read-font`);
+  has(css, 'html[data-fontsize="sm"]', `${s.label} 的 CSS 应有 sm 档覆写`);
+  has(css, 'html[data-fontsize="lg"]', `${s.label} 的 CSS 应有 lg 档覆写`);
+  has(css, 'html[data-fontsize="xl"]', `${s.label} 的 CSS 应有 xl 档覆写`);
+  has(css, 'html[data-lineheight="loose"]', `${s.label} 的 CSS 应有行高宽松档`);
+  has(html, "g:fontsize", `${s.label} 的 index.html 应有字号防闪脚本（读 g:fontsize）`);
+  has(html, 'map = { s: "sm", m: "md", b: "lg" }', `${s.label} 的内联脚本应做旧值迁移`);
+  has(src, "FontSize.init()", `${s.label} 启动时应调用 FontSize.init()`);
+  has(src, "FontSize.pickerHtml()", `${s.label} 设置页应渲染字号控件`);
+  has(src, "FontSize.bindPicker(", `${s.label} 设置页应绑定字号控件`);
+  ok(!/body\.bigfont|body\.smallfont/.test(css), `${s.label} 不该再依赖 body.bigfont/smallfont`);
+}
+
+/* ---------------- 8. 自检：篡改必须被抓到 ---------------- */
 {
   // 把 resolve 的 auto 分支故意写反，同样的断言应当失败 —— 证明上面不是空断言
   const broken = IMPLS[HOST].block.replace(
@@ -384,4 +499,4 @@ if (problems.length) {
   for (const p of problems) console.log("  - " + p);
   process.exit(1);
 }
-console.log("✓ N5 夜间模式校验全部通过：三态解析、跟随系统、防闪烁脚本、双端一致。");
+console.log("✓ N5/N4 外观偏好校验全部通过：主题三态、跟随系统、字号四档与旧值迁移、双端一致。");

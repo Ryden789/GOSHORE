@@ -102,6 +102,52 @@ const Theme = {
   },
 };
 
+/* N4 字号与阅读偏好 · 网页端（app.js / m.js 逐字节一致）。
+   四档 Pref('fontsize') ∈ 'sm' | 'md' | 'lg' | 'xl'，结果落到 <html data-fontsize>，
+   另有一个可选「行高宽松」开关 Pref('lhloose') → <html data-lineheight="loose">。
+   CSS 只缩放**正文**基数（--base-font / --read-font），UI 不受影响；
+   桌面端页面内联脚本会先跑一次防闪，这里是兜底 + 设置页接线。 */
+const FontSize = {
+  KEY: "fontsize",
+  LH_KEY: "lhloose",
+  SIZES: [["sm", "小"], ["md", "标准"], ["lg", "大"], ["xl", "特大"]],
+  // 旧 U-7 移动端键值是 s/m/b（三档），升级到四档时做一次映射，避免老用户偏好被降级。
+  LEGACY: { s: "sm", m: "md", b: "lg" },
+  norm(v) {
+    if (this.LEGACY[v]) return this.LEGACY[v];
+    return this.SIZES.some(s => s[0] === v) ? v : "md";
+  },
+  current() { return this.norm(Pref.get(this.KEY, "md")); },
+  loose() { return Pref.get(this.LH_KEY, false) === true; },
+  /** 把字号与行高偏好落到 <html>；返回生效档位 */
+  apply() {
+    const z = this.current();
+    document.documentElement.dataset.fontsize = z;
+    if (this.loose()) document.documentElement.dataset.lineheight = "loose";
+    else delete document.documentElement.dataset.lineheight;
+    return z;
+  },
+  set(v) { Pref.set(this.KEY, this.norm(v)); this.apply(); },
+  setLoose(on) { Pref.set(this.LH_KEY, !!on); this.apply(); },
+  init() { this.apply(); },
+  /** 设置页分段控件（与主题共用 .type-check 样式） */
+  pickerHtml() {
+    return this.SIZES
+      .map(([k, v]) => `<div class="type-check ${this.current() === k ? "on" : ""}" data-font-pick="${k}">${v}</div>`)
+      .join("");
+  },
+  bindPicker(root) {
+    const box = root || document;
+    box.querySelectorAll("[data-font-pick]").forEach(el => {
+      el.onclick = () => {
+        this.set(el.dataset.fontPick);
+        box.querySelectorAll("[data-font-pick]").forEach(x =>
+          x.classList.toggle("on", x === el));
+      };
+    });
+  },
+};
+
 /* N1 断点续做 · 练习草稿（双端逐字节一致）。
    把「做到第几题 / 每题选了什么 / 标记 / 考场倒计时截止时间」存到服务端
    `paper_drafts`（scope 只有 'normal' 与 'exam'，各留最近一份），下次进做题页还原。
@@ -666,11 +712,11 @@ const Pomo = {
   },
 };
 
-/* ---- U-7 大字模式：开机即应用 ---- */
+/* ---- U-7 大字模式（已并入 N4 字号四档）：开机即应用 ----
+   保留此函数名是为了兼容既有调用点；真正的档位逻辑在 FontSize 块里，
+   CSS 也从 body.bigfont/.smallfont 类改成 <html data-fontsize> + 变量。 */
 function applyFontSize() {
-  const z = Pref.get("fontsize", "m");
-  document.body.classList.toggle("bigfont", z === "b");
-  document.body.classList.toggle("smallfont", z === "s");
+  FontSize.apply();
 }
 
 function toast(msg, ms = 1800) {
@@ -868,6 +914,7 @@ function mountHintBar() {
 async function boot() {
   applyFontSize();
   Theme.init();   // N5：把主题落到 <html>（<head> 内联脚本已先跑一次，这里是兜底 + 订阅系统切换）
+  FontSize.init();   // N4：把字号/行高偏好落到 <html>
   mountHintBar();
   // N2 学习提醒：先水合偏好再启动网页版轮询（APP 内 start() 会自动让位原生）
   await hydrateReminderPref();
@@ -3890,10 +3937,9 @@ async function renderSettings() {
       <div class="type-checks" id="themePick">${Theme.pickerHtml()}</div>
       <div class="muted" style="margin:6px 0 14px">夜间为「宣纸夜景」：暖灰墨底 + 米白文字；「跟随系统」随系统深浅自动切换。</div>
       <div class="cfg-label">字号</div>
-      <div class="type-checks" id="fontPick">
-        ${[["s", "小字"], ["m", "标准"], ["b", "大字"]].map(([k, v]) =>
-          `<div class="type-check ${Pref.get("fontsize", "m") === k ? "on" : ""}" data-f="${k}">${v}</div>`).join("")}
-      </div>
+      <div class="type-checks" id="fontPick">${FontSize.pickerHtml()}</div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="prefLoose"
+        ${FontSize.loose() ? "checked" : ""}/> 行高宽松（长文更透气）</label>
       <label class="check" style="margin-top:12px"><input type="checkbox" id="prefSound"
         ${Pref.get("sound", true) ? "checked" : ""}/> 考场音效（答对、翻页、提醒）</label>
       <label class="check"><input type="checkbox" id="prefPomo"
@@ -3919,12 +3965,8 @@ async function renderSettings() {
     </div>`;
 
   Theme.bindPicker($("#themePick"));
-  $$("#fontPick .type-check").forEach(t => t.onclick = () => {
-    Pref.set("fontsize", t.dataset.f);
-    $$("#fontPick .type-check").forEach(x =>
-      x.classList.toggle("on", x === t));
-    applyFontSize();
-  });
+  FontSize.bindPicker($("#fontPick"));
+  $("#prefLoose").onchange = e => FontSize.setLoose(e.target.checked);
   $("#prefSound").onchange = e => Pref.set("sound", e.target.checked);
   $("#prefPomo").onchange = e => {
     Pref.set("pomo", e.target.checked);

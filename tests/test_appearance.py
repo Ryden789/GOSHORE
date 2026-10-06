@@ -1,20 +1,26 @@
-"""N5 夜间模式（宣纸夜景）（docs/补充功能详细设计.md 批次3）。
+"""N5 夜间模式（宣纸夜景）+ N4 字号与阅读偏好（docs/补充功能详细设计.md 批次3）。
 
-验收（文档 N5）：
+N5 验收：
   1. 三种模式（跟随系统 / 浅色 / 夜间）切换正确，跟随系统在系统深浅变化时自动切换；
   2. 暗底无大面积刺眼白底、正文清晰；
   3. 偏好持久化、刷新不闪烁；
   4. `pytest tests -q` 全绿。
 
+N4 验收：
+  1. 四档切换即时生效并持久化；双端表现一致；
+  2. 特大档下无横向溢出（表格/公式区可滚动）；
+  3. 测试可断言根属性被设置；
+  4. `pytest tests -q` 全绿。
+
 分层覆盖：
-  - 前端块：双端 N5 主题块逐字节一致 + 不引重型库 + 只用一个偏好键；
-    行为（三态解析 / 跟随系统 / 防闪烁 / meta 同步 / 分段控件）由
+  - 前端块：双端 N5 主题块 / N4 字号块逐字节一致 + 不引重型库；
+    行为（三态解析 / 跟随系统 / 四档 + 旧值迁移 / 防闪烁 / 分段控件）由
     `tools/check_appearance.mjs` 在假沙箱里真跑校验；
-  - 样式：两端 CSS 都有 `html[data-theme="dark"]` 覆写块与语义表面变量；
+  - 样式：两端 CSS 都有 `html[data-theme="dark"]` 覆写块与语义表面变量、字号档位变量；
     写死的 `background: #fff` 已收敛到变量；顺带修掉移动端 `--bamboo/--mono`
     从未定义的缺陷（否则 `.arg-*` 论证评价配色整条失效）；
-  - 壳：两端 index.html 都有防闪烁内联脚本 + theme-color 的 data-light + 缓存版本升级；
-    `sw.js` 的 VERSION 同步升级（否则旧壳缓存继续发旧 JS）。
+  - 壳：两端 index.html 都有防闪烁内联脚本（主题 + 字号）+ theme-color 的 data-light
+    + 缓存版本升级；`sw.js` 的 VERSION 同步升级（否则旧壳缓存继续发旧 JS）。
 
 运行：python -m pytest tests/test_appearance.py -q
 """
@@ -34,7 +40,7 @@ M_INDEX = ROOT / "static" / "m" / "index.html"
 SW_JS = ROOT / "static" / "sw.js"
 CHECK_APPEARANCE = ROOT / "tools" / "check_appearance.mjs"
 
-VERSION = "20261019"
+VERSION = "20261020"
 
 
 def _norm(p: Path) -> str:
@@ -43,6 +49,12 @@ def _norm(p: Path) -> str:
 
 def _theme_block(src: str) -> str:
     i = src.index("/* N5 夜间模式")
+    j = src.index("/* N1 断点续做")
+    return src[i:j]
+
+
+def _font_block(src: str) -> str:
+    i = src.index("/* N4 字号与阅读偏好")
     j = src.index("/* N1 断点续做")
     return src[i:j]
 
@@ -204,15 +216,100 @@ def test_static_cache_version_bumped():
 # ============================================================
 
 def test_node_appearance_validator(node_exe):
-    """在假沙箱里真跑双端主题逻辑（三态解析 / 跟随系统 / meta 同步 / 分段控件）。"""
+    """在假沙箱里真跑双端外观逻辑（N5 主题三态 + N4 字号四档）。"""
     r = subprocess.run([node_exe, str(CHECK_APPEARANCE)],
                        capture_output=True, text=True, encoding="utf-8")
-    assert r.returncode == 0, f"主题校验器失败：\n{r.stdout}\n{r.stderr}"
+    assert r.returncode == 0, f"外观校验器失败：\n{r.stdout}\n{r.stderr}"
     assert "全部通过" in r.stdout
 
 
 def test_validator_has_tamper_self_check():
     """回归守卫：校验器必须自带「篡改必须被抓到」的自检，否则断言可能是空的。"""
     src = CHECK_APPEARANCE.read_text(encoding="utf-8")
-    assert "自检" in src, "主题校验器缺少篡改自检"
+    assert "自检" in src, "外观校验器缺少篡改自检"
     assert 'sys ? "light" : "dark"' in src, "自检没有真正改掉 resolve 的 auto 分支"
+
+
+# ============================================================
+# E. N4 字号与阅读偏好
+# ============================================================
+
+def test_font_block_identical_across_clients():
+    """双端字号块必须逐字节一致（与 N1/N2/N5 同一规矩）。"""
+    a = _font_block(_norm(APP_JS))
+    b = _font_block(_norm(M_JS))
+    assert a == b, "双端 N4 字号块不一致"
+    assert len(a) > 1200, "字号块疑似被删空"
+
+
+def test_font_block_has_no_heavy_lib():
+    for p in (APP_JS, M_JS):
+        blk = _font_block(_norm(p))
+        assert "require(" not in blk and "import " not in blk, f"{p.name} 字号块引入了模块"
+        assert "http://" not in blk and "https://" not in blk, f"{p.name} 字号块引了外部资源"
+
+
+def test_font_block_migrates_legacy_keys():
+    """旧移动端 U-7 用 s/m/b 三档；升级到四档后必须迁移，否则老用户偏好被降级。"""
+    for p in (APP_JS, M_JS):
+        blk = _font_block(_norm(p))
+        assert 'LEGACY: { s: "sm", m: "md", b: "lg" }' in blk, f"{p.name} 字号块缺少旧值迁移表"
+        for key in ('["sm"', '"md"', '"lg"', '"xl"'):
+            assert key in blk, f"{p.name} 字号块四档白名单缺失（{key}）"
+
+
+def test_font_block_exposes_loose_lineheight():
+    for p in (APP_JS, M_JS):
+        blk = _font_block(_norm(p))
+        assert 'dataset.lineheight = "loose"' in blk, f"{p.name} 字号块未实现行高宽松开关"
+        assert "delete document.documentElement.dataset.lineheight" in blk, \
+            f"{p.name} 字号块未实现行高宽松的关闭（应删除属性）"
+
+
+def test_font_css_vars_in_both():
+    """字号靠 CSS 变量缩放正文；UI 不跟随。"""
+    for p in (STYLES, M_CSS):
+        css = _norm(p)
+        assert "--base-font:" in css, f"{p.name} 缺 --base-font"
+        assert "--read-font:" in css, f"{p.name} 缺 --read-font"
+        for z in ("sm", "lg", "xl"):
+            assert f'html[data-fontsize="{z}"]' in css, f"{p.name} 缺 {z} 档覆写"
+        assert 'html[data-lineheight="loose"]' in css, f"{p.name} 缺行高宽松档"
+
+
+def test_font_css_no_legacy_body_classes():
+    """旧的 body.bigfont/.smallfont 方案已并入四档，不该再残留。"""
+    for p in (STYLES, M_CSS):
+        css = _norm(p)
+        assert "body.bigfont" not in css, f"{p.name} 仍残留 body.bigfont"
+        assert "body.smallfont" not in css, f"{p.name} 仍残留 body.smallfont"
+
+
+def test_font_no_horizontal_overflow_protection():
+    """文档边界要求：特大档下长文换行、表格横向滚动，不横向溢出。"""
+    for p in (STYLES, M_CSS):
+        css = _norm(p)
+        assert "overflow-wrap" in css, f"{p.name} 缺 overflow-wrap（特大档长文会溢出）"
+        assert "overflow-x: auto" in css, f"{p.name} 缺表格横向滚动兜底"
+
+
+def test_font_index_has_no_flash_script():
+    for p in (INDEX, M_INDEX):
+        html = _norm(p)
+        assert "g:fontsize" in html, f"{p.name} 缺字号防闪烁脚本"
+        assert 'map = { s: "sm", m: "md", b: "lg" }' in html, f"{p.name} 内联脚本未做旧值迁移"
+        assert html.index("g:fontsize") < html.index("</head>"), f"{p.name} 字号脚本必须在 <head> 内"
+
+
+def test_font_init_called_on_boot():
+    for p in (APP_JS, M_JS):
+        assert "FontSize.init()" in _norm(p), f"{p.name} 启动时未初始化字号"
+
+
+def test_font_settings_picker_wired():
+    for p in (APP_JS, M_JS):
+        src = _norm(p)
+        assert "FontSize.pickerHtml()" in src, f"{p.name} 设置页未渲染字号控件"
+        assert "FontSize.bindPicker(" in src, f"{p.name} 设置页未绑定字号控件"
+        assert 'id="fontPick"' in src, f"{p.name} 设置页缺少 #fontPick 容器"
+

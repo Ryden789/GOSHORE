@@ -27,6 +27,10 @@
   --green-tint: #eef4ee;
   --amber-tint: #f4e4c8;
   --bamboo-ink: #2f4a33;
+  /* N4 字号与阅读偏好：正文基数（html[data-fontsize] 覆写），UI 不跟随 */
+  --base-font: 16px;
+  --read-font: 16px;
+  --read-lh: 1.6;
   --radius: 10px;
   --shadow: 0 1px 3px rgba(60, 50, 30, .12);
   --serif: "Songti SC", "Noto Serif SC", "SimSun", serif;
@@ -62,6 +66,17 @@ html[data-theme="dark"] {
   color-scheme: dark;         /* 原生控件（滚动条 / 输入光标）跟着变暗 */
 }
 html[data-theme="light"] { color-scheme: light; }
+
+/* N4 字号四档：只缩放正文基数，UI（tabbar / 按钮 / 表格）不受影响。 */
+html[data-fontsize="sm"] { --base-font: 14.5px; --read-font: 14.5px; }
+html[data-fontsize="lg"] { --base-font: 18.5px; --read-font: 18.5px; }
+html[data-fontsize="xl"] { --base-font: 20.5px; --read-font: 20.5px; }
+html[data-lineheight="loose"] { --read-lh: 1.95; }
+/* 特大档下长文允许换行、表格横向滚动，但不横向溢出（文档边界要求） */
+.stem, .opt, .sz-content, .f-ctx, .f-explain, .muted, .card { overflow-wrap: anywhere; }
+html[data-fontsize] .sz-content table, html[data-fontsize] .sz-content pre {
+  display: block; max-width: 100%; overflow-x: auto;
+}
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; padding: 0; }
@@ -191,7 +206,7 @@ img { max-width: 100%; height: auto; }
   border-radius: 4px; padding: 1px 7px; max-width: 60%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.stem { font-size: 16.5px; margin: 6px 0 14px; }
+.stem { font-size: var(--read-font); margin: 6px 0 14px; }
 .stem p { margin: 0 0 8px; }
 
 /* 退出做题 */
@@ -219,7 +234,7 @@ details.material .mat-body p { margin: 0 0 8px; }
 .opt {
   display: flex; gap: 10px; align-items: flex-start;
   border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--panel); padding: 13px 14px; margin-bottom: 10px; font-size: 15.5px;
+  background: var(--panel); padding: 13px 14px; margin-bottom: 10px; font-size: var(--read-font);
 }
 .opt .ol {
   flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
@@ -900,12 +915,10 @@ h2.sec { font-family: var(--serif); font-size: 15px; color: var(--ink-3); letter
 
 /* ============ 趣味功能样式 ============ */
 
-/* U-7 大字 / 小字 */
-body.bigfont { font-size: 18.5px; }
-body.bigfont .stem, body.bigfont .opt { font-size: 18px; }
-body.bigfont .btn-block { font-size: 17.5px; padding: 15px; }
-body.smallfont { font-size: 14.5px; }
-body.smallfont .stem, body.smallfont .opt { font-size: 14px; }
+/* U-7 大字 / 小字 —— 已并入 N4 四档：改用 <html data-fontsize> + 变量，
+   .bigfont / .smallfont 两个 body 类不再使用（老用户偏好由 FontSize.LEGACY 迁移）。 */
+body { font-size: var(--base-font); }
+.stem, .opt { font-size: var(--read-font); line-height: var(--read-lh); }
 
 /* F-1 撒花 */
 .confetti-box {

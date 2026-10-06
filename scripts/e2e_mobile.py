@@ -563,6 +563,39 @@ def check_browser():
         except Exception as e:
             record(False, "N5 夜间模式（移动）", f"异常：{e}")
 
+        # ---- N4 字号四档（移动端）：切档即时生效（正文字号真的变大）→ 特大档不横向溢出
+        try:
+            problems = []
+            pg.goto(BASE + "/#/settings", wait_until="domcontentloaded", timeout=20000)
+            pg.wait_for_selector("#fontPick .type-check", timeout=20000)
+            n_font = pg.locator("#fontPick .type-check").count()
+            if n_font != 4:
+                problems.append(f"字号分段控件应有 4 档，实际 {n_font}")
+            pg.locator("#fontPick .type-check").nth(0).click()   # 小
+            pg.wait_for_timeout(200)
+            st_sm = pg.evaluate(
+                "parseFloat(getComputedStyle(document.documentElement)"
+                ".getPropertyValue('--read-font'))")
+            pg.locator("#fontPick .type-check").nth(3).click()   # 特大
+            pg.wait_for_timeout(200)
+            st_xl = pg.evaluate(
+                "parseFloat(getComputedStyle(document.documentElement)"
+                ".getPropertyValue('--read-font'))")
+            eff = pg.evaluate("document.documentElement.dataset.fontsize")
+            if eff != "xl":
+                problems.append(f"点「特大」后 data-fontsize 应为 xl，实际 {eff!r}")
+            if not (st_xl > st_sm):
+                problems.append(f"特大档正文应大于小档：sm={st_sm} xl={st_xl}")
+            # 特大档下整页不得横向溢出（表格/公式区除外，它们各自可滚动）
+            ovf = pg.evaluate(
+                "document.documentElement.scrollWidth - document.documentElement.clientWidth")
+            if ovf > 1:
+                problems.append(f"特大档下页面横向溢出 {ovf}px")
+            record(not problems, "N4 字号（移动）：四档切换生效 + 特大档不横向溢出",
+                   "；".join(problems) if problems else f"--read-font {st_sm} → {st_xl}，溢出 {ovf}px")
+        except Exception as e:
+            record(False, "N4 字号（移动）", f"异常：{e}")
+
         # ---- 全路由遍历：零 JS 错误 + 恰好一次入场动画 + 动画时 DOM 已是目标页
         routes = pg.evaluate("Object.keys(ROUTES)")
         print(f"  路由清单（{len(routes)} 个）：{' '.join(routes)}", flush=True)
@@ -773,6 +806,28 @@ def check_browser():
                 problems.append("浅色与夜间底色相同 —— CSS 变量覆写没生效")
             record(not problems, "N5 夜间模式（桌面）：三态切换 / 暗底生效",
                    "；".join(problems) if problems else f"dark({bg}) → {eff2}({bg2})")
+
+            # N4 字号（桌面）：同一套共享块 + 变量缩放，特大档同样要真的变大
+            problems = []
+            pg3.evaluate("location.hash = '#/settings'")
+            pg3.wait_for_selector("#fontPick .type-check", timeout=20000)
+            pg3.locator("#fontPick .type-check").nth(0).click()
+            pg3.wait_for_timeout(200)
+            d_sm = pg3.evaluate(
+                "parseFloat(getComputedStyle(document.documentElement)"
+                ".getPropertyValue('--read-font'))")
+            pg3.locator("#fontPick .type-check").nth(3).click()
+            pg3.wait_for_timeout(200)
+            d_xl = pg3.evaluate(
+                "parseFloat(getComputedStyle(document.documentElement)"
+                ".getPropertyValue('--read-font'))")
+            d_eff = pg3.evaluate("document.documentElement.dataset.fontsize")
+            if d_eff != "xl":
+                problems.append(f"桌面端点「特大」后 data-fontsize 应为 xl，实际 {d_eff!r}")
+            if not (d_xl > d_sm):
+                problems.append(f"桌面端特大档正文应大于小档：sm={d_sm} xl={d_xl}")
+            record(not problems, "N4 字号（桌面）：四档切换生效",
+                   "；".join(problems) if problems else f"--read-font {d_sm} → {d_xl}")
             pg3.close()
         except Exception as e:
             record(False, "N5 夜间模式（桌面）", f"异常：{e}")
