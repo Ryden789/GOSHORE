@@ -5,11 +5,15 @@
 """
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import re
+import socket
 import time
 import unicodedata
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -286,16 +290,107 @@ def extract_text_from_file(name: str, data: bytes) -> str:
 
 # ---------------- 网页/文本 → AI 抽取 ----------------
 
+# SSRF 防护：抓取地址来自用户输入，服务又监听 0.0.0.0，若不校验目标，
+# 局域网内任何人都能让服务去请求本机/内网（云元数据 169.254.169.254、
+# 路由器后台、内网服务等）。这里只放行「公网 http/https」，并在**每一跳**
+# 重定向后重新校验。
+_ALLOWED_SCHEMES = ("http", "https")
+_MAX_REDIRECTS = 5
+_MAX_FETCH_BYTES = 5 * 1024 * 1024      # 单页正文上限，防超大响应拖垮服务
+
+
+class UnsafeUrlError(ValueError):
+    """目标地址被安全策略拒绝（协议 / 主机 / 解析出的 IP 命中黑名单）。"""
+
+
+def _is_blocked_ip(ip: str) -> bool:
+    """IP 是否属于不可访问的回环 / 私有 / 链路本地 / 保留 / 多播 / 未指定段。"""
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return True                     # 解析不出的一律按危险处理
+    if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped:
+        a = a.ipv4_mapped               # ::ffff:127.0.0.1 也要按 IPv4 判
+    return (a.is_private or a.is_loopback or a.is_link_local
+            or a.is_reserved or a.is_multicast or a.is_unspecified)
+
+
+def _resolve_ips(host: str) -> list[str]:
+    """解析主机名对应的全部 IP（含字面 IP）。解析失败抛 UnsafeUrlError。"""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError) as e:
+        raise UnsafeUrlError(f"无法解析目标主机：{host}") from e
+    ips = []
+    for info in infos:
+        ip = info[4][0]
+        if ip not in ips:
+            ips.append(ip)
+    return ips
+
+
+def assert_safe_url(url: str) -> str:
+    """校验 URL 可安全抓取，返回原 URL；不安全则抛 UnsafeUrlError。
+
+    规则：仅 http/https；主机解析出的**每一个** IP 都不得命中黑名单段。
+    这样既挡住直接写内网 IP，也挡住「域名解析到内网」「DNS rebinding 到内网」
+    「十进制/八进制 IP」这类绕过写法。
+    """
+    u = (url or "").strip()
+    if not u:
+        raise UnsafeUrlError("链接为空")
+    p = urlparse(u)
+    if p.scheme.lower() not in _ALLOWED_SCHEMES:
+        raise UnsafeUrlError("仅支持 http/https 链接")
+    host = p.hostname
+    if not host:
+        raise UnsafeUrlError("链接缺少主机名")
+    ips = _resolve_ips(host)
+    if not ips:
+        raise UnsafeUrlError("目标主机没有可用地址")
+    for ip in ips:
+        if _is_blocked_ip(ip):
+            raise UnsafeUrlError(f"目标地址指向内网或保留地址（{ip}），已拒绝抓取")
+    return u
+
+
+async def _assert_safe_url_async(url: str) -> str:
+    """在 worker 线程里做校验——getaddrinfo 是阻塞调用，别卡住事件循环。"""
+    return await asyncio.get_running_loop().run_in_executor(None, assert_safe_url, url)
+
+
 async def fetch_url_text(url: str) -> str:
-    """抓取网页并剥离 HTML 标签得到纯文本。"""
+    """抓取网页并剥离 HTML 标签得到纯文本。
+
+    安全约束：只允许 http/https 公网地址；关闭自动重定向，改为手动逐跳跟随，
+    **每一跳都重新做 assert_safe_url 校验**；限制跳转次数与响应体大小。
+    """
+    current = await _assert_safe_url_async(url)
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(30.0),
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-        follow_redirects=True,
+        follow_redirects=False,
     ) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        html = r.text
+        for _ in range(_MAX_REDIRECTS + 1):
+            async with client.stream("GET", current) as r:
+                loc = r.headers.get("location")
+                if r.is_redirect and loc:
+                    # 重定向目标同样可能是内网 —— 必须重新校验再跟
+                    current = await _assert_safe_url_async(urljoin(current, loc))
+                    continue
+                r.raise_for_status()
+                chunks, total = [], 0
+                async for chunk in r.aiter_bytes():
+                    if total + len(chunk) > _MAX_FETCH_BYTES:
+                        chunks.append(chunk[:_MAX_FETCH_BYTES - total])   # 截断，不整段丢弃
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                body = b"".join(chunks)
+                html = body.decode(r.encoding or "utf-8", "ignore")
+                break
+        else:
+            raise UnsafeUrlError(f"重定向次数过多（上限 {_MAX_REDIRECTS} 次）")
     html = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", "", html, flags=re.I)
     html = re.sub(r"<br\s*/?>", "\n", html, flags=re.I)
     html = re.sub(r"</(p|div|li|tr|h\d)>", "\n", html, flags=re.I)

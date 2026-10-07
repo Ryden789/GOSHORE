@@ -75,7 +75,11 @@ function extractConst(src, name) {
 function buildMd(src, kind) {
   const parts = [];
   const need = ["esc", "stripWl"];
-  if (kind === "desktop") need.push("HTML_WHITELIST", "HTML_WHITELIST_CLOSE");
+  if (kind === "desktop") {
+    // 桌面 md() 的白名单标签要过 sanitizeTag（剥 onerror 等），因此把它连同
+    // 依赖的两个常量一起抽出来；移动端 md() 整体转义 HTML，不需要。
+    need.push("HTML_WHITELIST", "HTML_WHITELIST_CLOSE", "SANITIZE_TAGS", "SANITIZE_VOID", "sanitizeTag");
+  }
   for (const n of need) {
     const code = n === "esc" && kind === "mobile"
       ? extractConst(src, "esc")

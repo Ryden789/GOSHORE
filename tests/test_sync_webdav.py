@@ -19,10 +19,12 @@ import io
 import json
 import re
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -302,6 +304,7 @@ class MockDAV:
         outer = self
         self.files: dict[str, bytes] = {}
         self.dirs: set[str] = set()
+        self.mtimes: dict[str, float] = {}      # 每个文件的「上传时刻」，HEAD 据此报 Last-Modified
         self.calls: list[tuple[str, str]] = []
         self.user, self.password = user, password
         self.no_propfind = no_propfind
@@ -369,7 +372,9 @@ class MockDAV:
             def do_PUT(self):
                 def go():
                     n = int(self.headers.get("Content-Length") or 0)
-                    outer.files[self._path()] = self.rfile.read(n)
+                    p = self._path()
+                    outer.files[p] = self.rfile.read(n)
+                    outer.mtimes[p] = time.time()
                     self._send(201)
                 self._handle(go)
 
@@ -384,13 +389,21 @@ class MockDAV:
 
             def do_HEAD(self):
                 def go():
-                    data = outer.files.get(self._path())
+                    p = self._path()
+                    data = outer.files.get(p)
                     if data is None:
                         self._send(404)
                     else:
+                        # 报「上传时刻 +1s」：模拟云端在本机上传之后又被（别的设备）更新过，
+                        # 让 /api/sync/down 的冲突判定（云端 modified > 本机 sync_last_at）
+                        # 可确定地成立。
+                        # 原实现把 Last-Modified 硬编码成 "Wed, 07 Oct 2026 10:00:00 GMT"，
+                        # 于是过了那一刻（北京 18:00）之后该用例每天必红 —— 与业务无关的
+                        # 挂钟依赖，改为按真实上传时刻推导。
+                        mt = outer.mtimes.get(p, time.time()) + 1
                         self._send(200, b"", {
                             "Content-Length": str(len(data)),
-                            "Last-Modified": "Wed, 07 Oct 2026 10:00:00 GMT",
+                            "Last-Modified": formatdate(mt, usegmt=True),
                             "ETag": '"mock-1"',
                         })
                 self._handle(go)
