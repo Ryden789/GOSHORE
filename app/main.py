@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, cube_vision
+from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision
 from .config import (STATIC_DIR, DB_PATH, SETTINGS_PATH, REMINDER_KEYS,
                      GOAL_KEYS, load_settings, reminder_patch, goal_patch,
                      save_settings)
@@ -551,6 +551,12 @@ def api_kaodian_tree(module: str = "判断推理"):
 def api_zy_notes():
     """综应考点知识库：C类综应知识体系静态数据。"""
     return {"ok": True, "data": zy_notes.NOTES}
+
+
+@app.get("/api/xc/notes")
+def api_xc_notes():
+    """O2 行测速查手册：公式 / 规律 / 速算技巧静态数据（与移动端同源）。"""
+    return {"ok": True, "data": xingce_notes.NOTES}
 
 
 class PaperIn(BaseModel):

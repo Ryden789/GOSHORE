@@ -1088,7 +1088,7 @@ function syncNavGroup(name) {
   });
 }
 
-const ROUTE_LOADING_LABELS = { home: "今日书房", report: "周报", history: "做题记录", "ai-ask": "AI 答疑", paper: "组卷", logic: "判断专项", formula: "列式专项", wordfill: "词语填空", speed: "速算", cube: "空间折叠", essay: "申论综应", argument: "论证评价", "argument-quiz": "辨析快练", wenxian: "科技文献", "zy-notes": "综应考点", shizheng: "时政", grade: "AI 批改", review: "今日复习", wrong: "错题本", marks: "收藏", cards: "辨析卡", search: "题库检索", doubts: "疑点工作台", import: "导入题库", settings: "设置", exam: "模考试卷", doc: "题目详情", mastery: "掌握度图谱", plan: "学习计划", interview: "面试模拟" };
+const ROUTE_LOADING_LABELS = { home: "今日书房", report: "周报", history: "做题记录", "ai-ask": "AI 答疑", paper: "组卷", logic: "判断专项", formula: "列式专项", wordfill: "词语填空", speed: "速算", cube: "空间折叠", essay: "申论综应", argument: "论证评价", "argument-quiz": "辨析快练", wenxian: "科技文献", "zy-notes": "综应考点", "xc-notes": "行测速查", shizheng: "时政", grade: "AI 批改", review: "今日复习", wrong: "错题本", marks: "收藏", cards: "辨析卡", search: "题库检索", doubts: "疑点工作台", import: "导入题库", settings: "设置", exam: "模考试卷", doc: "题目详情", mastery: "掌握度图谱", plan: "学习计划", interview: "面试模拟" };
 function routeLoadingMarkup(name) {
   const label = ROUTE_LOADING_LABELS[name] || "上岸自习室";
   return `<div class="route-skeleton" aria-live="polite" aria-label="正在加载${esc(label)}"><div class="route-skeleton-head"><span class="route-skeleton-title">${esc(label)}</span><span class="route-spinner" aria-hidden="true"></span></div><div class="route-skeleton-line wide"></div><div class="route-skeleton-line"></div><div class="route-skeleton-grid"><i></i><i></i><i></i></div><div class="route-skeleton-block"></div></div>`;
@@ -1151,6 +1151,7 @@ function route() {
   else if (name === "logic") dispatch(renderLogic);
   else if (name === "wenxian") dispatch(renderWenxian);
   else if (name === "zy-notes") dispatch(renderZyNotes);
+  else if (name === "xc-notes") dispatch(renderXcNotes);
   else if (name === "report") dispatch(renderReport);
   else if (name === "time") dispatch(renderTimeAnalysis);
   else if (name === "history") dispatch(renderHistory);
@@ -7046,6 +7047,106 @@ async function renderZyNotes() {
   };
 
   $("#zyQ").oninput = e => draw(e.target.value);
+  draw("");
+}
+
+/* =====================================================
+   O2 行测速查手册
+===================================================== */
+
+async function renderXcNotes() {
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">行测速查</h1>
+      <p class="page-desc">公式 · 规律 · 速算技巧，碎片时间快速回顾：资料分析 · 数量关系 · 判断推理 · 言语理解 · 常识判断</p>
+    </div>
+    <div class="panel" style="padding:10px 14px;margin-bottom:14px">
+      <input id="xcQ" type="search" placeholder="搜索考点标题、公式或正文（如「增长率」「容斥」）…" style="width:100%">
+    </div>
+    <div id="xcToc" class="panel" style="padding:10px 14px;margin-bottom:14px"></div>
+    <div id="xcBody"></div>`;
+  const body = $("#xcBody");
+  const toc = $("#xcToc");
+
+  let notes;
+  try {
+    const r = await api("/api/xc/notes");
+    notes = r.data;
+  } catch (e) {
+    body.innerHTML = `<div class="panel">
+      <h3>速查手册加载失败</h3>
+      <p style="color:var(--ink-2);font-size:14px">${esc(String((e && e.message) || e))}</p>
+      <button class="btn btn-primary" id="xcRetry">重试</button>
+    </div>`;
+    toc.innerHTML = "";
+    $("#xcRetry").onclick = () => renderXcNotes();
+    return;
+  }
+  const groups = (notes && notes.groups) || [];
+
+  // 目录：点一下跳到对应模块（搜索时目录同步收窄）
+  const drawToc = shown => {
+    if (!shown.length) { toc.innerHTML = ""; return; }
+    toc.innerHTML = `<div style="font-size:12px;color:var(--ink-3);margin-bottom:6px">目录 · 共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${shown.map(g => `<a href="javascript:void(0)" class="xc-toc" data-g="${esc(g.key)}"
+          style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--line-soft);border-radius:14px;font-size:12.5px;color:var(--ink-2);text-decoration:none">
+          <b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>${esc(g.name)}
+          <span style="color:var(--ink-3)">${g.points.length}</span></a>`).join("")}
+      </div>`;
+    toc.querySelectorAll(".xc-toc").forEach(a => {
+      a.onclick = () => {
+        const el = document.getElementById("xc-" + a.dataset.g);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    });
+  };
+
+  const draw = kw => {
+    const k = (kw || "").trim().toLowerCase();
+    const shown = groups.map(g => ({
+      ...g,
+      points: g.points.filter(p =>
+        !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)),
+    })).filter(g => g.points.length);
+    drawToc(shown);
+    if (!shown.length) {
+      body.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">没有匹配「${esc(kw)}」的考点</div></div>`;
+      return;
+    }
+    body.innerHTML = shown.map((g, gi) => `
+      <div class="panel rise rise-${Math.min(gi + 1, 3)}" id="xc-${esc(g.key)}">
+        <h3 style="margin:0 0 2px"><span style="color:var(--cinnabar);margin-right:6px">${esc(g.icon)}</span>${esc(g.name)}
+          <span style="font-size:12px;color:var(--ink-3);font-weight:400;margin-left:8px">${g.points.length} 个考点</span></h3>
+        <p style="color:var(--ink-2);font-size:13px;margin:0 0 6px">${esc(g.desc)}</p>
+        ${g.points.map(p => `
+          <div class="zy-item">
+            <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--line-soft);cursor:pointer">
+              <b style="font-size:14px">${esc(p.title)}</b><span style="color:var(--ink-3)">▾</span>
+            </div>
+            <div class="zy-body" hidden style="padding:0 2px 12px">
+              <div style="font-size:13.5px;line-height:1.75">${md(p.body)}</div>
+              ${p.tips && p.tips.length ? `
+                <div style="margin-top:8px;padding:8px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar)">
+                  <b style="font-size:13px">⚠ 易错提醒</b>
+                  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2);line-height:1.7">
+                    ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
+                  </ul>
+                </div>` : ""}
+            </div>
+          </div>`).join("")}
+      </div>`).join("");
+    body.querySelectorAll(".zy-head").forEach(h => {
+      h.onclick = () => {
+        const item = h.closest(".zy-item");
+        const b = item.querySelector(".zy-body");
+        b.hidden = !b.hidden;
+        item.querySelector(".zy-head span").textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+  };
+
+  $("#xcQ").oninput = e => draw(e.target.value);
   draw("");
 }
 

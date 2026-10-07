@@ -1075,6 +1075,7 @@ const TITLES = {
   formula: "列式专项", wordfill: "词语填空", speed: "速算",
   essay: "申论综应", wenxian: "科技文献", shizheng: "时政", grade: "AI 批改",
   "zy-notes": "综应考点",
+  "xc-notes": "行测速查",
   argument: "论证评价", "argument-quiz": "辨析快练", "ai-ask": "AI 答疑",
   wrong: "错题本", marks: "收藏", cards: "辨析卡", notes: "我的笔记",
   search: "搜题", doubts: "疑点", import: "导入", settings: "设置",
@@ -1120,6 +1121,7 @@ const HUB = [
     ["marks", "★", "收藏", "收藏题目"],
     ["notes", "✎", "笔记", "我的题目笔记"],
     ["cards", "▦", "辨析卡", "翻面辨析卡片"],
+    ["xc-notes", "速", "行测速查", "公式·规律·速算技巧"],
     ["share", "⇄", "分享 PK", "题单分享·好友PK"],
   ]},
   { group: "题库管理", items: [
@@ -1984,6 +1986,7 @@ const ROUTES = {
   speed: renderSpeed, wordfill: renderWordfill,
   essay: renderEssay, wenxian: renderWenxian,
   "zy-notes": renderZyNotes,
+  "xc-notes": renderXcNotes,
   argument: renderArgument, "argument-quiz": renderArgumentQuiz,
   "ai-ask": renderAiAsk,
   shizheng: renderShizheng, grade: renderGrade,
@@ -6664,6 +6667,98 @@ async function renderZyNotes() {
   };
 
   $("#zyQ").oninput = e => draw(e.target.value);
+  draw("");
+}
+
+/* ---------- O2 行测速查手册 ---------- */
+
+async function renderXcNotes() {
+  view.innerHTML = `
+    <div class="page-head">
+      <h2>行测速查</h2>
+      <p class="muted">公式 · 规律 · 速算技巧 · 点标题展开，可搜索</p>
+    </div>
+    <div class="card"><input id="xcQ" type="search" placeholder="搜索考点标题、公式或正文…" style="width:100%"></div>
+    <div class="card" id="xcToc" style="padding:10px 12px"></div>
+    <div id="xcBody"></div>`;
+
+  let notes;
+  try {
+    const r = await api("/api/xc/notes");
+    notes = r.data;
+  } catch (e) {
+    $("#xcBody").innerHTML = `
+      <div class="card">
+        <h3>速查手册加载失败</h3>
+        <p class="muted">${esc(String((e && e.message) || e))}</p>
+        <button class="btn btn-primary" id="xcRetry">重试</button>
+      </div>`;
+    $("#xcToc").innerHTML = "";
+    $("#xcRetry").onclick = () => renderXcNotes();
+    return;
+  }
+  const groups = (notes && notes.groups) || [];
+
+  // 目录：点一下跳到对应模块（搜 keyword 时目录同步收窄）
+  const drawToc = shown => {
+    const el = $("#xcToc");
+    if (!shown.length) { el.innerHTML = ""; return; }
+    el.innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:6px">目录 · 共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${shown.map(g => `<a href="javascript:void(0)" class="xc-toc" data-g="${esc(g.key)}"
+          style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--line-soft);border-radius:14px;font-size:12.5px;color:var(--ink-2);text-decoration:none">
+          <b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>${esc(g.name)}
+          <span class="muted">${g.points.length}</span></a>`).join("")}
+      </div>`;
+    [...el.querySelectorAll(".xc-toc")].forEach(a => {
+      a.onclick = () => {
+        const t = document.getElementById("xc-" + a.dataset.g);
+        if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    });
+  };
+
+  const draw = kw => {
+    const k = (kw || "").trim().toLowerCase();
+    const shown = groups.map(g => ({
+      ...g,
+      points: g.points.filter(p =>
+        !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)),
+    })).filter(g => g.points.length);
+    drawToc(shown);
+    const el = $("#xcBody");
+    el.innerHTML = shown.length ? shown.map(g => `
+      <div class="card" id="xc-${esc(g.key)}">
+        <h3 class="sec"><span style="color:var(--cinnabar)">${esc(g.icon)}</span> ${esc(g.name)} · ${g.points.length} 点</h3>
+        <p class="muted" style="margin:0 0 4px;font-size:12.5px">${esc(g.desc)}</p>
+        ${g.points.map(p => `
+          <div class="zy-item">
+            <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--line-soft);cursor:pointer">
+              <b style="font-size:14.5px;line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
+            </div>
+            <div class="zy-body" hidden style="padding-bottom:12px">
+              ${md(p.body)}
+              ${p.tips && p.tips.length ? `
+                <div style="margin-top:8px;padding:8px 10px;background:#fbf6ec;border-left:3px solid var(--cinnabar)">
+                  <b style="font-size:13px">⚠ 易错提醒</b>
+                  <ul class="md-list" style="margin:4px 0 0;font-size:12.5px;color:var(--ink-2)">
+                    ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
+                  </ul>
+                </div>` : ""}
+            </div>
+          </div>`).join("")}
+      </div>`).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点</div>`;
+    [...el.querySelectorAll(".zy-head")].forEach(h => {
+      h.onclick = () => {
+        const item = h.closest(".zy-item");
+        const b = item.querySelector(".zy-body");
+        b.hidden = !b.hidden;
+        h.querySelector("span").textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+  };
+
+  $("#xcQ").oninput = e => draw(e.target.value);
   draw("");
 }
 
