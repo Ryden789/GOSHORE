@@ -229,3 +229,22 @@ def test_xss_validator_runs_green(node_exe):
                        encoding="utf-8", errors="replace", timeout=120)
     assert p.returncode == 0, (p.stdout or "") + (p.stderr or "")
     assert "全通过" in (p.stdout or "")
+
+
+# ------------------------------------------- SEC-1：信任模型决策 = 「维持现状 + 补警示」
+
+def test_lan_risk_warning_in_startup_banner():
+    """启动横幅必须把「局域网无鉴权」讲清楚（否则用户不知道自己在什么风险下用）。"""
+    src = _read(ROOT / "run.py")
+    assert "0.0.0.0" in src
+    for needle in ("没有登录鉴权", "可信网络", "公共 Wi-Fi"):
+        assert needle in src, f"run.py 启动横幅缺少安全警示：{needle}"
+
+
+def test_lan_risk_warning_in_readme():
+    readme = _read(ROOT / "README.md")
+    for needle in ("安全边界", "没有登录鉴权", "可信网络", "公共 Wi-Fi"):
+        assert needle in readme, f"README 缺少安全边界说明：{needle}"
+    # 必须点明「重置接口只查 confirm 不是访问控制」这个具体误区
+    assert "confirm=true" in readme
+
