@@ -4404,6 +4404,26 @@ async function renderDoubts(page = 1, status = "") {
   });
 }
 
+/* O1 多设备同步：字节数格式化 + 上次同步摘要（与桌面端同一口径） */
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+function syncLastText(s) {
+  if (!s || !s.sync_last_at) {
+    return "尚未同步过。首次使用：先在本机「上传到云端」，再到另一台设备填同样的地址 / 账号 / 同步口令，点「从云端恢复」。";
+  }
+  const up = s.sync_last_up_at ? "上传 " + s.sync_last_up_at : "";
+  const down = s.sync_last_down_at ? "恢复 " + s.sync_last_down_at : "";
+  const dev = s.sync_device ? "· 设备 " + s.sync_device : "";
+  const size = s.sync_last_size ? "· " + fmtBytes(s.sync_last_size) : "";
+  const when = [up, down].filter(Boolean).join(" / ") || s.sync_last_at;
+  return ("上次同步：" + when + " " + dev + " " + size).replace(/\s+/g, " ").trim();
+}
+
 /* ---------- 设置 ---------- */
 
 async function renderSettings() {
@@ -4511,6 +4531,45 @@ async function renderSettings() {
       <div class="muted">备份含本机全部账号与做题数据，可发微信/存网盘；恢复后账号密码原样可用</div>
     </div>
     <div class="card">
+      <h3>多设备同步（WebDAV）</h3>
+      <div class="muted" style="margin-bottom:10px">用自己的网盘（坚果云 / Nextcloud）中转备份：<b>包在本机用同步口令加密后才上传，云端只有密文</b>，口令不会发给任何服务器。</div>
+      <label class="check"><input type="checkbox" id="syOn"
+        ${s.sync_enabled ? "checked" : ""}/> 启用多设备同步</label>
+      <div class="field" style="margin-top:10px">
+        <label>WebDAV 地址</label>
+        <input id="syUrl" class="m-input" placeholder="https://dav.jianguoyun.com/dav/"
+          value="${esc(s.sync_url || "")}"/>
+        <div class="muted">坚果云：账户信息 → 安全选项 → 添加应用密码；地址填 https://dav.jianguoyun.com/dav/</div>
+      </div>
+      <div class="field">
+        <label>账号</label>
+        <input id="syUser" class="m-input" placeholder="登录邮箱" value="${esc(s.sync_user || "")}"/>
+      </div>
+      <div class="field">
+        <label>密码 / 应用密码</label>
+        <input id="syPass" class="m-input" type="password" autocomplete="new-password"
+          placeholder="${s.sync_has_password ? "已保存，不修改请留空" : "网盘应用密码"}"/>
+      </div>
+      <div class="field">
+        <label>同步口令（加密用，务必牢记）</label>
+        <input id="syPhrase" class="m-input" type="password" autocomplete="new-password"
+          placeholder="${s.sync_has_passphrase ? "已保存，不修改请留空" : "自定一段口令"}"/>
+        <div class="muted">备份包由它派生密钥加密；口令丢了云端数据解不开，换设备填同一口令即可互通</div>
+      </div>
+      <div class="field">
+        <label>远端路径</label>
+        <input id="syPath" class="m-input" value="${esc(s.sync_remote_path || "goshore/backup.gsync")}"/>
+      </div>
+      <label class="check"><input type="checkbox" id="syWifi"
+        ${s.sync_wifi_only ? "checked" : ""}/> 仅 Wi-Fi 下同步（移动数据下不自动跑）</label>
+      <button class="btn btn-primary btn-block" id="sySave" style="margin-top:12px">保存同步设置</button>
+      <button class="btn btn-block" id="syTest">测试连接</button>
+      <button class="btn btn-block" id="syUp">上传到云端</button>
+      <button class="btn btn-block" id="syDown">从云端恢复</button>
+      <div class="set-status" id="syStatus"></div>
+      <div class="muted" id="syLast">${esc(syncLastText(s))}</div>
+    </div>
+    <div class="card">
       <h3>题库更新</h3>
       <div class="kd-row"><span class="kn">当前题库版本</span>
         <span>${bank ? `v${bank.version} · ${bank.docs} 题` : "读取失败"}</span></div>
@@ -4565,6 +4624,114 @@ async function renderSettings() {
       }
     };
   });
+
+  /* O1 多设备同步：保存配置 / 测试连接 / 上传 / 从云端恢复
+     确认一律用「两步点击」，不依赖 WebView 的 confirm */
+  const syMsg = (t, cls) => {
+    const el = $("#syStatus");
+    el.textContent = t; el.className = "set-status " + (cls || "");
+  };
+  // 口令字段只写不回填：留空表示「不修改」，避免每次保存都把已存口令清掉
+  const syPatch = () => {
+    const p = {
+      sync_enabled: $("#syOn").checked,
+      sync_wifi_only: $("#syWifi").checked,
+      sync_url: $("#syUrl").value.trim(),
+      sync_user: $("#syUser").value.trim(),
+      sync_remote_path: $("#syPath").value.trim(),
+    };
+    const pw = $("#syPass").value, ph = $("#syPhrase").value;
+    if (pw) p.sync_password = pw;
+    if (ph) p.sync_passphrase = ph;
+    return p;
+  };
+  const syLastRefresh = async () => {
+    try { $("#syLast").textContent = syncLastText((await api("/api/sync/config")).config); }
+    catch (e) {}
+  };
+
+  $("#sySave").onclick = async ev => {
+    const b = ev.currentTarget;
+    b.disabled = true;
+    try {
+      const r = await api("/api/sync/config", syPatch());
+      $("#syPass").value = ""; $("#syPhrase").value = "";
+      $("#syLast").textContent = syncLastText(r.config);
+      syMsg("同步设置已保存", "ok");
+    } catch (e) { syMsg("保存失败：" + e.message, "err"); }
+    finally { b.disabled = false; }
+  };
+
+  $("#syTest").onclick = async ev => {
+    const b = ev.currentTarget;
+    b.disabled = true; syMsg("正在连接…");
+    try {
+      // 未保存也能测：把当前输入框里的地址/账号密码带上
+      const p = syPatch();
+      const r = await api("/api/sync/test", {
+        sync_url: p.sync_url, sync_user: p.sync_user, sync_password: p.sync_password,
+      });
+      r.ok ? syMsg(r.message + (r.server ? `（${r.server}）` : ""), "ok")
+        : syMsg(r.error || "连接测试失败", "err");
+    } catch (e) { syMsg("测试失败：" + e.message, "err"); }
+    finally { b.disabled = false; }
+  };
+
+  $("#syUp").onclick = async ev => {
+    const b = ev.currentTarget;
+    const orig = "上传到云端";
+    if (!b.dataset.armed) {
+      b.dataset.armed = "1"; b.textContent = "再点一次确认上传";
+      safeTimeout(() => {
+        if (b.isConnected) { delete b.dataset.armed; b.textContent = orig; }
+      }, 5000);
+      return;
+    }
+    delete b.dataset.armed; b.textContent = orig;
+    if ($("#syPhrase").value || $("#syPass").value) {
+      syMsg("请先点「保存同步设置」，再上传", "err");
+      return;
+    }
+    b.disabled = true; syMsg("正在打包并加密上传…");
+    try {
+      const r = await api("/api/sync/up", {});   // 必须带 body，否则 api() 会走 GET
+      if (!r.ok) { syMsg(r.error, "err"); return; }
+      syMsg(`已上传 ${fmtBytes(r.size)}（加密后）；云端只有密文`, "ok");
+      await syLastRefresh();
+    } catch (e) { syMsg("上传失败：" + e.message, "err"); }
+    finally { b.disabled = false; }
+  };
+
+  $("#syDown").onclick = async ev => {
+    const b = ev.currentTarget;
+    const orig = "从云端恢复";
+    const reset = () => {
+      delete b.dataset.armed; delete b.dataset.force; b.textContent = orig;
+    };
+    if (!b.dataset.armed) {
+      b.dataset.armed = "1"; delete b.dataset.force;
+      b.textContent = "再点一次：用云端覆盖本机";
+      safeTimeout(() => { if (b.isConnected) reset(); }, 6000);
+      return;
+    }
+    const force = b.dataset.force === "1";
+    b.disabled = true; syMsg("正在下载并解密…");
+    try {
+      const r = await api("/api/sync/down", { force });
+      if (!r.ok && r.conflict) {
+        // 冲突：保持 armed 状态，再点一次即带 force 覆盖
+        b.dataset.force = "1"; b.dataset.armed = "1";
+        b.textContent = "冲突：再点一次用云端覆盖本机";
+        syMsg(r.error, "err");
+        return;
+      }
+      if (!r.ok) { syMsg(r.error, "err"); reset(); return; }
+      syMsg(`已恢复 ${(r.restored || []).join("、")}，请重新登录账号`, "ok");
+      reset();
+      await syLastRefresh();
+    } catch (e) { syMsg("恢复失败：" + e.message, "err"); reset(); }
+    finally { b.disabled = false; }
+  };
 
   Theme.bindPicker($("#themePick"));
   FontSize.bindPicker($("#fontPick"));

@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, print_export, share, speedcalc, variant, wordfill, xingce_notes, zy_notes
+from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, print_export, share, speedcalc, sync_webdav, variant, wordfill, xingce_notes, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -45,6 +45,18 @@ _MOBILE_SETTINGS_DEFAULTS = {
     # G2 每日目标：题量 / 专注分钟（0 表示该项不设目标）
     "daily_goal_questions": 30,
     "daily_goal_minutes": 30,
+    # O1 多设备加密同步（WebDAV）——与桌面 config.DEFAULTS 同口径
+    "sync_enabled": False,
+    "sync_url": "",
+    "sync_user": "",
+    "sync_remote_path": "goshore/backup.gsync",
+    "sync_wifi_only": False,
+    "sync_last_at": "",
+    "sync_last_up_at": "",
+    "sync_last_down_at": "",
+    "sync_last_size": 0,
+    "sync_device": "",
+    "sync_local_stamp": "",
 }
 
 
@@ -342,6 +354,176 @@ def _restore_legacy(zf, names: set) -> dict:
         conn.close()
     return {"ok": True, "restored": restored,
             "answers": ans_n, "counts": counts}
+
+
+# ---------------- O1 多设备加密同步（WebDAV，与桌面同构） ----------------
+# 复用本机已有的整包备份能力：上传 = 导出 zip → 口令派生密钥加密 → PUT；
+# 下载 = GET → 解密 → 走 `_mobile_backup_import` 还原。明文不出本机。
+
+def _now_iso() -> str:
+    import datetime
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def _mobile_local_stamp() -> str:
+    """本地数据版本戳（账号库 + 全部个人库，含各自 -wal）。
+
+    与桌面同口径：只看主库 mtime 会漏判 WAL 里的新数据，见
+    `sync_webdav.file_stamp`。
+    """
+    files = [str(_USERS_DIR / "accounts.db")] + [str(p) for p in _users_data_dbs()]
+    return sync_webdav.file_stamp(files)
+
+
+def _mobile_sync_ready(s: dict) -> str:
+    if not s.get("sync_url"):
+        return "请先填写 WebDAV 地址"
+    if not s.get("sync_passphrase"):
+        return "请先设置同步口令（上传前用它加密，务必牢记）"
+    return ""
+
+
+def _mobile_sync_client(s: dict, **ov) -> "sync_webdav.WebDAVClient":
+    return sync_webdav.WebDAVClient(
+        ov.get("sync_url") or s.get("sync_url", ""),
+        ov.get("sync_user", s.get("sync_user", "")),
+        ov.get("sync_password", s.get("sync_password", "")),
+    )
+
+
+def _mobile_sync_test(b: dict) -> dict:
+    s = _mobile_load_settings()
+    ov = {k: b[k] for k in ("sync_url", "sync_user", "sync_password")
+          if isinstance(b.get(k), str) and b[k]}
+    if not (ov.get("sync_url") or s.get("sync_url")):
+        return {"ok": False, "error": "请先填写 WebDAV 地址"}
+    try:
+        res = _mobile_sync_client(s, **ov).test()
+    except sync_webdav.SyncError as e:
+        return {"ok": False, "error": str(e)}
+    if not res.get("ok"):
+        return {"ok": False, "error": res.get("message", "连接测试失败")}
+    return {"ok": True, "message": res.get("message", "连接成功"),
+            "server": res.get("server", "")}
+
+
+def _mobile_sync_remote() -> dict:
+    s = _mobile_load_settings()
+    if not s.get("sync_url"):
+        return {"ok": False, "error": "请先填写 WebDAV 地址"}
+    remote = s.get("sync_remote_path") or config.SYNC_REMOTE_DEFAULT
+    try:
+        st = _mobile_sync_client(s).stat(remote)
+    except sync_webdav.SyncError as e:
+        return {"ok": False, "error": str(e)}
+    if st is None:
+        return {"ok": True, "exists": False, "remote": remote,
+                "message": "云端还没有备份，请先在本机上传"}
+    return {"ok": True, "exists": True, "remote": remote, "size": st["size"],
+            "modified": st["modified"], "etag": st["etag"],
+            "last_at": s.get("sync_last_at", ""),
+            "local_changed": bool(s.get("sync_local_stamp")
+                                  and _mobile_local_stamp() != s.get("sync_local_stamp"))}
+
+
+def _mobile_sync_up() -> dict:
+    s = _mobile_load_settings()
+    err = _mobile_sync_ready(s)
+    if err:
+        return {"ok": False, "error": err}
+    remote = s.get("sync_remote_path") or config.SYNC_REMOTE_DEFAULT
+    # include_key=False：云端包只放学习数据；DeepSeek Key 换机后重填一次即可，
+    # 不把长期有效的第三方 Key 放进任何可上传的包（与手动导出默认一致）。
+    res = _mobile_backup_export(False)
+    if not res.get("ok"):
+        return res
+    try:
+        blob = sync_webdav.encrypt_bytes(Path(res["path"]).read_bytes(),
+                                         s["sync_passphrase"])
+        cli = _mobile_sync_client(s)
+        cli.ensure_dirs(remote)
+        size = cli.put(remote, blob)
+    except sync_webdav.SyncError as e:
+        return {"ok": False, "error": str(e)}
+    now = _now_iso()
+    _mobile_save_settings({
+        "sync_last_at": now, "sync_last_up_at": now, "sync_last_size": size,
+        "sync_device": sync_webdav.device_name(),
+        "sync_local_stamp": _mobile_local_stamp(),
+    })
+    return {"ok": True, "size": size, "plain_size": res.get("size", 0),
+            "remote": remote, "at": now, "note": "已加密上传（云端只见密文）"}
+
+
+def _write_sync_state_all(state: dict) -> None:
+    """把同步状态写进 users 目录下每个账号设置。
+
+    恢复整包后会话被重置为游客（见 `_restore_full`），此时按当前 uid 写
+    会落到游客设置上、用户登录后又读到旧状态，所以逐个账号写一遍。
+    """
+    files = sorted(_USERS_DIR.glob("data_*.settings.json"))
+    if not files:
+        _mobile_save_settings(state)
+        return
+    for p in files:
+        try:
+            cur = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            cur = {}
+        cur.update(state)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(json.dumps(cur, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        tmp.replace(p)
+
+
+def _mobile_sync_down(force: bool) -> dict:
+    import base64
+    s = _mobile_load_settings()
+    err = _mobile_sync_ready(s)
+    if err:
+        return {"ok": False, "error": err}
+    remote = s.get("sync_remote_path") or config.SYNC_REMOTE_DEFAULT
+    try:
+        cli = _mobile_sync_client(s)
+        st = cli.stat(remote)
+        if st is None:
+            return {"ok": False, "error": "云端还没有备份，请先在本机上传"}
+        # 冲突：本机自上次同步后又写了新数据，且云端也在此后更新过 → 需二次确认
+        local_changed = bool(s.get("sync_local_stamp")
+                             and _mobile_local_stamp() != s.get("sync_local_stamp"))
+        if (local_changed and not force
+                and sync_webdav.remote_newer(st.get("modified", ""),
+                                             s.get("sync_last_at", ""))):
+            return {"ok": False, "conflict": True, "size": st["size"],
+                    "modified": st["modified"],
+                    "error": "检测到冲突：本机自上次同步后又有新数据，云端同期也更新了。"
+                             "继续将用云端覆盖本机，请确认后再试。"}
+        blob = cli.get(remote)
+    except sync_webdav.SyncError as e:
+        return {"ok": False, "error": str(e)}
+    if blob is None:
+        return {"ok": False, "error": "云端还没有备份，请先在本机上传"}
+    try:
+        raw = sync_webdav.decrypt_bytes(blob, s["sync_passphrase"])
+    except sync_webdav.SyncError as e:
+        # 解不开就绝不落盘，避免「解出一堆乱码再覆盖本地」
+        return {"ok": False, "error": str(e)}
+
+    res = _mobile_backup_import(base64.b64encode(raw).decode("ascii"))
+    if not res.get("ok"):
+        return res
+    now = _now_iso()
+    # 整包还原会带上云端那份账号设置里的同步配置（同账号同配置，符合预期）；
+    # 这里只刷新「上次同步」状态，供下次上传/下载做冲突判断。
+    _write_sync_state_all({
+        "sync_last_at": now, "sync_last_down_at": now,
+        "sync_last_size": len(blob),
+        "sync_local_stamp": _mobile_local_stamp(),
+    })
+    return {"ok": True, "size": len(blob), "at": now, "need_login": True,
+            "restored": res.get("restored"), "accounts": res.get("accounts"),
+            "note": "已从云端恢复，请重新登录账号"}
 
 
 # ---------------- 题库热更新 ----------------
@@ -813,7 +995,15 @@ class _Handler(BaseHTTPRequestHandler):
                 s = _mobile_load_settings()
                 key = s.get("deepseek_api_key") or ""
                 s["deepseek_api_key"] = ("***" + key[-4:]) if key else ""
+                # O1：WebDAV 密码 / 同步口令绝不回给前端，只暴露「是否已配置」
+                s["sync_has_password"] = bool(s.pop("sync_password", ""))
+                s["sync_has_passphrase"] = bool(s.pop("sync_passphrase", ""))
                 self._json(s)
+            elif path == "/api/sync/config":
+                self._json({"ok": True, "config": sync_webdav.public_config(
+                    _mobile_load_settings())})
+            elif path == "/api/sync/remote":
+                self._json(_mobile_sync_remote())
             elif path == "/api/argument/overview":
                 ov = argument.list_materials()
                 ov["taxonomy"] = argument._TAXONOMY
@@ -1275,6 +1465,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             elif path == "/api/settings/test":
                 self._json(_run_async(_settings_test()))
+            # O1 多设备加密同步（与桌面 /api/sync/* 同构）
+            elif path == "/api/sync/config":
+                _mobile_save_settings(config.sync_patch(b))
+                self._json({"ok": True, "config": sync_webdav.public_config(
+                    _mobile_load_settings())})
+            elif path == "/api/sync/test":
+                self._json(_mobile_sync_test(b))
+            elif path == "/api/sync/up":
+                self._json(_mobile_sync_up())
+            elif path == "/api/sync/down":
+                self._json(_mobile_sync_down(bool(b.get("force"))))
             # N1 断点续做：草稿保存 / 清除（与桌面端同构）
             elif path == "/api/paper-draft/save":
                 with _lock:

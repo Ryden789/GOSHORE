@@ -32,6 +32,21 @@ DEFAULTS = {
     # G2 每日目标：题量 / 专注分钟（0 表示该项不设目标）
     "daily_goal_questions": 30,
     "daily_goal_minutes": 30,
+    # O1 多设备加密同步（WebDAV）：开关 / 地址 / 账号 / 远端路径 / 仅 Wi-Fi
+    "sync_enabled": False,
+    "sync_url": "",
+    "sync_user": "",
+    "sync_remote_path": "goshore/backup.gsync",
+    "sync_wifi_only": False,
+    # 上次同步时间（本地时区 ISO 串，用于冲突判断「两边是否都动过」）
+    "sync_last_at": "",
+    "sync_last_up_at": "",
+    "sync_last_down_at": "",
+    "sync_last_size": 0,
+    "sync_device": "",
+    # 上次同步成功时本地数据的「版本戳」（内部状态，不对外暴露）：主库 + WAL 的
+    # mtime_ns/size 拼串，用来判断「本机自上次同步后又写入了新数据」。
+    "sync_local_stamp": "",
 }
 
 # ---------------- 设置项归一化（桌面 / 移动共用同一口径） ----------------
@@ -99,6 +114,22 @@ def normalize_time_hhmm(value) -> str | None:
     return f"{int(m.group(1)):02d}:{m.group(2)}" if m else None
 
 
+def as_bool(value) -> bool | None:
+    """开关类字段统一口径：bool / 1 / 'on' / 'yes' → True，'0'/'off' → False。
+
+    认不出的值返回 None，调用方据此**丢弃**（不落盘）。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, str)):
+        s = str(value).strip().lower()
+        if s in _TRUTHY:
+            return True
+        if s in _FALSY:
+            return False
+    return None
+
+
 def reminder_patch(raw: dict) -> dict:
     """N2 学习提醒：从设置入参里挑出合法的提醒字段。
 
@@ -123,6 +154,61 @@ def reminder_patch(raw: dict) -> dict:
         t = normalize_time_hhmm(raw["reminder_time"])
         if t:
             out["reminder_time"] = t
+    return out
+
+
+# ---------------- O1 多设备同步（WebDAV）字段归一化 ----------------
+
+SYNC_KEYS = ("sync_enabled", "sync_url", "sync_user", "sync_remote_path",
+             "sync_wifi_only")
+# 口令类字段：不放进 DEFAULTS，也不回给前端；只以 has_* 布尔暴露是否已配置
+SYNC_SECRET_KEYS = ("sync_password", "sync_passphrase")
+SYNC_REMOTE_DEFAULT = "goshore/backup.gsync"
+
+
+def normalize_remote_path(value) -> str | None:
+    """远端相对路径归一：去首尾斜杠、反斜杠转正斜杠；非法返回 None。
+
+    拒绝 `..` / `.` 段——路径会拼进 WebDAV URL，放行等于给了目录穿越能力。
+    空串 / 全是斜杠 → 回落到默认路径（用户在设置页清空输入框时不该报错）。
+    """
+    if not isinstance(value, str):
+        return None
+    v = value.strip().replace("\\", "/")
+    if not v:
+        return SYNC_REMOTE_DEFAULT
+    parts = [p for p in v.split("/") if p]
+    if not parts:
+        return SYNC_REMOTE_DEFAULT
+    if any(p in ("..", ".") for p in parts):
+        return None
+    return "/".join(parts)
+
+
+def sync_patch(raw: dict) -> dict:
+    """O1：从设置入参里挑出合法的同步字段（与移动端同口径）。
+
+    - 开关类走 `as_bool`，认不出就丢弃；
+    - `sync_url` / `sync_user` 只接受字符串并 strip；
+    - `sync_remote_path` 归一化（见 `normalize_remote_path`）；
+    - 口令类：**允许空串**（表示清除），非字符串丢弃。
+    """
+    out: dict = {}
+    for k in ("sync_enabled", "sync_wifi_only"):
+        if k in raw:
+            b = as_bool(raw[k])
+            if b is not None:
+                out[k] = b
+    for k in ("sync_url", "sync_user"):
+        if k in raw and isinstance(raw[k], str):
+            out[k] = raw[k].strip()
+    if "sync_remote_path" in raw:
+        p = normalize_remote_path(raw["sync_remote_path"])
+        if p:
+            out["sync_remote_path"] = p
+    for k in SYNC_SECRET_KEYS:
+        if k in raw and isinstance(raw[k], str):
+            out[k] = raw[k].strip()
     return out
 
 
@@ -182,7 +268,28 @@ def dpapi_decrypt(b64: str) -> str:
 
 # ---------------- 设置读写 ----------------
 
-_ENC_FIELD = "deepseek_api_key_enc"
+# 敏感字段 → 磁盘上的密文字段名。
+# O1 复用了同一套「明文不落盘」机制：WebDAV 密码与同步口令都在这里登记，
+# 而不是各写一份 DPAPI 调用（新增敏感项只需扩这张表）。
+_SECRET_FIELDS = {
+    "deepseek_api_key": "deepseek_api_key_enc",
+    "sync_password": "sync_password_enc",
+    "sync_passphrase": "sync_passphrase_enc",
+}
+_ENC_FIELD = _SECRET_FIELDS["deepseek_api_key"]      # 兼容旧引用
+
+
+def _plain_of(disk: dict, field: str) -> str:
+    """从磁盘设置里取某个敏感字段的明文（优先密文，其次存量明文）。
+
+    安卓等无 DPAPI 的平台：密文字段不写、明文原样留着（设置文件在应用私有
+    目录），这里同样要能读回来，否则手机上保存完口令就丢了。
+    """
+    enc_field = _SECRET_FIELDS[field]
+    enc = disk.get(enc_field, "")
+    if enc and _dpapi_available():
+        return dpapi_decrypt(enc)
+    return disk.get(field, "") or ""
 
 
 def load_settings() -> dict:
@@ -195,52 +302,59 @@ def load_settings() -> dict:
             s.update(disk)
         except Exception:
             pass
-    # 优先读加密 key
-    enc = disk.get(_ENC_FIELD, "")
-    if enc and _dpapi_available():
-        s["deepseek_api_key"] = dpapi_decrypt(enc)
-    elif disk.get("deepseek_api_key"):
-        # 存量明文 key：立即迁移为加密存储
-        plain = disk["deepseek_api_key"]
-        if _dpapi_available():
+    dirty = False
+    for plain, enc_field in _SECRET_FIELDS.items():
+        s[plain] = _plain_of(disk, plain)
+        # 存量明文 → 立即迁移为密文（只在能加密的平台上做）
+        if disk.get(plain) and not disk.get(enc_field) and _dpapi_available():
             try:
-                disk[_ENC_FIELD] = dpapi_encrypt(plain)
-                disk["deepseek_api_key"] = ""
-                SETTINGS_PATH.write_text(
-                    json.dumps(disk, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
+                disk[enc_field] = dpapi_encrypt(disk[plain])
+                disk[plain] = ""
+                dirty = True
             except OSError:
                 pass  # 加密失败则保持现状，不影响功能
-        s["deepseek_api_key"] = plain
-    s.pop(_ENC_FIELD, None)
+    if dirty:
+        try:
+            SETTINGS_PATH.write_text(
+                json.dumps(disk, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    for enc_field in _SECRET_FIELDS.values():
+        s.pop(enc_field, None)
     return s
 
 
 def save_settings(patch: dict) -> dict:
     patch = dict(patch)
-    # 明文 key 不落盘：转为 DPAPI 密文
-    if "deepseek_api_key" in patch:
-        plain = patch.pop("deepseek_api_key") or ""
-        if _dpapi_available():
-            patch[_ENC_FIELD] = dpapi_encrypt(plain) if plain else ""
-            patch["deepseek_api_key"] = ""
-        else:
-            patch["deepseek_api_key"] = plain
+    # 所有敏感字段：明文一律转成密文再落盘（无 DPAPI 的平台保持明文）
+    secrets = {k: patch.pop(k) for k in list(patch) if k in _SECRET_FIELDS}
     s = load_settings()
-    s.pop(_ENC_FIELD, None)
-    s.update(patch)
-    # 读出现有磁盘密文，避免被默认值覆盖
-    if SETTINGS_PATH.exists() and _ENC_FIELD not in patch:
+    for enc_field in _SECRET_FIELDS.values():
+        s.pop(enc_field, None)
+    if SETTINGS_PATH.exists():
         try:
             old = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            if old.get(_ENC_FIELD):
-                s[_ENC_FIELD] = old[_ENC_FIELD]
+            for field, enc_field in _SECRET_FIELDS.items():
+                if old.get(enc_field):
+                    s[enc_field] = old[enc_field]
         except Exception:
             pass
+    for field, plain in secrets.items():
+        plain = plain or ""
+        enc_field = _SECRET_FIELDS[field]
+        if _dpapi_available():
+            s[enc_field] = dpapi_encrypt(plain) if plain else ""
+            s[field] = ""
+        else:
+            s[field] = plain
+            s.pop(enc_field, None)
+    s.update(patch)
     if _dpapi_available():
-        s["deepseek_api_key"] = ""  # 明文 key 绝不落盘
+        for field in _SECRET_FIELDS:      # 明文绝不落盘
+            s[field] = ""
     SETTINGS_PATH.write_text(
         json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    s.pop(_ENC_FIELD, None)
+    for enc_field in _SECRET_FIELDS.values():
+        s.pop(enc_field, None)
     return s

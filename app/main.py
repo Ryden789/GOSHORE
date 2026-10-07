@@ -20,10 +20,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision
+from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision, sync_webdav
 from .config import (STATIC_DIR, DB_PATH, SETTINGS_PATH, REMINDER_KEYS,
                      GOAL_KEYS, load_settings, reminder_patch, goal_patch,
-                     save_settings)
+                     save_settings, SYNC_KEYS, sync_patch, SYNC_REMOTE_DEFAULT)
 # 可打印导出页（G5）：与手机端 goshor_server.py 共用同一份拼装逻辑。
 # esc/rich_text 也从这里引入，别再在本模块另写一份（会漂移）。
 from .print_export import esc, rich_text, render_html
@@ -1127,6 +1127,9 @@ def api_argument_quiz_check(b: ArgumentQuizCheckIn):
 def api_settings_get():
     s = load_settings()
     s["deepseek_api_key"] = "***" + s["deepseek_api_key"][-4:] if s["deepseek_api_key"] else ""
+    # O1：WebDAV 密码 / 同步口令绝不回给前端，只暴露「是否已配置」
+    s["sync_has_password"] = bool(s.pop("sync_password", ""))
+    s["sync_has_passphrase"] = bool(s.pop("sync_passphrase", ""))
     return s
 
 
@@ -1410,6 +1413,31 @@ async def api_shizheng_quiz(b: ShizhengGenIn):
 
 # ---------------- 备份 / 恢复 ----------------
 
+def _replace_db_file(src) -> None:
+    """把 src 的内容写进当前库（走 SQLite 在线备份 API，不换文件）。
+
+    为什么不是 `shutil.copy2` + 删 `-wal`：
+    - 只覆盖 `goshor.db`、留着旧 `-wal` → 下次打开时 SQLite 会把旧事务**重放**
+      回新库，表现为「恢复了但还是旧数据」；
+    - 改成「先删 `-wal` 再覆盖」在 Windows 上会撞 `WinError 32`（库连接还开着，
+      文件被占用删不掉），而且中途失败就没有退路。
+
+    用 `Connection.backup()` 把源库页面整份写进目标库，则以上问题都不存在：
+    写入走 WAL、对已在运行的服务即时可见，也不需要动文件。
+    """
+    import sqlite3
+    src_conn = sqlite3.connect(str(src), timeout=15)
+    try:
+        dst = sqlite3.connect(DB_PATH, timeout=15)
+        try:
+            src_conn.backup(dst)
+            dst.commit()
+        finally:
+            dst.close()
+    finally:
+        src_conn.close()
+
+
 @app.get("/api/backup/export")
 def api_backup_export():
     """打包 goshor.db + settings.json + essay_questions.json 为 zip 下载。
@@ -1481,7 +1509,7 @@ async def api_backup_import(file: UploadFile):
                     chk.close()
                 except Exception:
                     return {"ok": False, "error": "goshor.db 校验失败"}
-                shutil.copy2(tmp_db, DB_PATH)
+                _replace_db_file(tmp_db)
                 ok_files.append("goshor.db")
                 if "settings.json" in names:
                     shutil.copy2(Path(td) / "settings.json", SETTINGS_PATH)
@@ -1493,6 +1521,278 @@ async def api_backup_import(file: UploadFile):
         return {"ok": True, "restored": ok_files, "note": "请重启服务使恢复生效"}
     except zipfile.BadZipFile:
         return {"ok": False, "error": "不是合法的 zip 备份包"}
+
+
+# ---------------- O1 多设备加密同步（WebDAV） ----------------
+# 明文永不出本机：上传的是「本地备份 zip → 口令派生密钥加密」后的信封，
+# 口令只参与本地派生，不随请求发送。冲突策略见 `api_sync_down`。
+
+class SyncConfigIn(BaseModel):
+    sync_enabled: bool | None = None
+    sync_url: str | None = None
+    sync_user: str | None = None
+    sync_remote_path: str | None = None
+    sync_wifi_only: bool | None = None
+    # 写入口令：不填（None）表示保持原值；传空串表示清除
+    sync_password: str | None = None
+    sync_passphrase: str | None = None
+
+
+class SyncTestIn(BaseModel):
+    """连接测试可临时传地址/账号（未保存也能先测）。"""
+    sync_url: str | None = None
+    sync_user: str | None = None
+    sync_password: str | None = None
+
+
+class SyncDownIn(BaseModel):
+    force: bool = False
+
+
+def _sync_public(s: dict) -> dict:
+    """同步配置的对外视图（与移动端共用 `sync_webdav.public_config`）。"""
+    return sync_webdav.public_config(s)
+
+
+def _sync_remote_path(s: dict) -> str:
+    return s.get("sync_remote_path") or SYNC_REMOTE_DEFAULT
+
+
+def _sync_client(s: dict, **override) -> sync_webdav.WebDAVClient:
+    return sync_webdav.WebDAVClient(
+        override.get("sync_url") or s.get("sync_url", ""),
+        override.get("sync_user", s.get("sync_user", "")),
+        override.get("sync_password", s.get("sync_password", "")),
+    )
+
+
+def _sync_ready(s: dict) -> str:
+    """返回错误文案；配置齐了返回空串。"""
+    if not s.get("sync_url"):
+        return "请先填写 WebDAV 地址"
+    if not s.get("sync_passphrase"):
+        return "请先设置同步口令（上传前用它加密，务必牢记）"
+    return ""
+
+
+def _local_stamp() -> str:
+    """本地数据版本戳（主库 + WAL 一起算，见 `sync_webdav.file_stamp`）。"""
+    return sync_webdav.file_stamp([str(DB_PATH)])
+
+
+def _device_name() -> str:
+    return sync_webdav.device_name()
+
+
+def _sync_pack(tmpdir) -> tuple:
+    """打包桌面备份（goshor.db 一致性快照 + settings.json + essay 题库）。
+
+    返回 (zip 路径, 明文字节数)；清单与 `/api/backup/export` 保持一致，
+    便于「云端恢复」后与手动导出包互换使用。
+    """
+    import shutil
+    from pathlib import Path as _P
+    td = _P(tmpdir)
+    snap = td / "goshor.db"
+    try:
+        db.snapshot_to(snap)
+    except Exception:
+        shutil.copyfile(DB_PATH, snap)
+    pairs = [(snap, "goshor.db")]
+    if SETTINGS_PATH.exists():
+        pairs.append((SETTINGS_PATH, "settings.json"))
+    eq = STATIC_DIR.parent / "data" / "essay_questions.json"
+    if eq.exists():
+        pairs.append((eq, "essay_questions.json"))
+    zp = sync_webdav.build_zip(pairs, td / "backup.zip")
+    return zp, zp.stat().st_size
+
+
+def _http_time_gt(modified: str, last_iso: str) -> bool:
+    return sync_webdav.remote_newer(modified, last_iso)
+
+
+@app.get("/api/sync/config")
+def api_sync_config_get():
+    return {"ok": True, "config": _sync_public(load_settings())}
+
+
+@app.post("/api/sync/config")
+def api_sync_config_set(b: SyncConfigIn):
+    raw = {k: v for k, v in b.model_dump().items() if v is not None}
+    save_settings(sync_patch(raw))
+    return {"ok": True, "config": _sync_public(load_settings())}
+
+
+@app.post("/api/sync/test")
+def api_sync_test(b: SyncTestIn | None = None):
+    s = load_settings()
+    ov = {k: v for k, v in (b.model_dump() if b else {}).items() if v}
+    try:
+        if not (ov.get("sync_url") or s.get("sync_url")):
+            return {"ok": False, "error": "请先填写 WebDAV 地址"}
+        res = _sync_client(s, **ov).test()
+    except sync_webdav.SyncError as e:
+        return {"ok": False, "error": str(e)}
+    if not res.get("ok"):
+        return {"ok": False, "error": res.get("message", "连接测试失败")}
+    return {"ok": True, "message": res.get("message", "连接成功"),
+            "server": res.get("server", "")}
+
+
+@app.post("/api/sync/up")
+def api_sync_up():
+    import shutil
+    import tempfile
+    s = load_settings()
+    err = _sync_ready(s)
+    if err:
+        return {"ok": False, "error": err}
+    remote = _sync_remote_path(s)
+    tmpdir = tempfile.mkdtemp(prefix="goshore_sync_")
+    try:
+        zp, plain_size = _sync_pack(tmpdir)
+        blob = sync_webdav.encrypt_bytes(zp.read_bytes(), s["sync_passphrase"])
+        cli = _sync_client(s)
+        cli.ensure_dirs(remote)
+        size = cli.put(remote, blob)
+    except sync_webdav.SyncError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": f"打包备份失败：{e}"}
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    save_settings({
+        "sync_last_at": now, "sync_last_up_at": now,
+        "sync_last_size": size, "sync_device": _device_name(),
+        # 上传后本机就是云端的内容，重置基准 stamp，避免下次下载误报冲突
+        "sync_local_stamp": _local_stamp(),
+    })
+    return {"ok": True, "size": size, "plain_size": plain_size,
+            "remote": remote, "at": now, "note": "已加密上传（云端只见密文）"}
+
+
+@app.get("/api/sync/remote")
+def api_sync_remote():
+    s = load_settings()
+    if not s.get("sync_url"):
+        return {"ok": False, "error": "请先填写 WebDAV 地址"}
+    remote = _sync_remote_path(s)
+    try:
+        st = _sync_client(s).stat(remote)
+    except sync_webdav.SyncError as e:
+        return {"ok": False, "error": str(e)}
+    if st is None:
+        return {"ok": True, "exists": False, "remote": remote,
+                "message": "云端还没有备份，请先在本机上传"}
+    return {"ok": True, "exists": True, "remote": remote, "size": st["size"],
+            "modified": st["modified"], "etag": st["etag"],
+            "last_at": s.get("sync_last_at", ""),
+            "local_changed": bool(s.get("sync_local_stamp")
+                                  and _local_stamp() != s.get("sync_local_stamp"))}
+
+
+@app.post("/api/sync/down")
+def api_sync_down(b: SyncDownIn):
+    import json as _json
+    import shutil
+    import sqlite3
+    import tempfile
+    s = load_settings()
+    err = _sync_ready(s)
+    if err:
+        return {"ok": False, "error": err}
+    remote = _sync_remote_path(s)
+    try:
+        cli = _sync_client(s)
+        st = cli.stat(remote)
+        if st is None:
+            return {"ok": False, "error": "云端还没有备份，请先在本机上传"}
+        # 冲突：本机自上次同步后又写了新数据，且云端也在此后更新过 → 需二次确认
+        local_changed = bool(s.get("sync_local_stamp")
+                             and _local_stamp() != s.get("sync_local_stamp"))
+        if local_changed and _http_time_gt(st.get("modified", ""),
+                                           s.get("sync_last_at", "")) and not b.force:
+            return {"ok": False, "conflict": True, "size": st["size"],
+                    "modified": st["modified"],
+                    "error": "检测到冲突：本机自上次同步后又有新数据，云端同期也更新了。"
+                             "继续将用云端覆盖本机，请确认后再试。"}
+        blob = cli.get(remote)
+    except sync_webdav.SyncError as e:
+        return {"ok": False, "error": str(e)}
+    if blob is None:
+        return {"ok": False, "error": "云端还没有备份，请先在本机上传"}
+    try:
+        raw = sync_webdav.decrypt_bytes(blob, s["sync_passphrase"])
+    except sync_webdav.SyncError as e:
+        # 解不开就绝不落盘，避免「解出一堆乱码再覆盖本地」
+        return {"ok": False, "error": str(e)}
+
+    tmpdir = tempfile.mkdtemp(prefix="goshore_restore_")
+    restored = []
+    try:
+        zp = Path(tmpdir) / "backup.zip"
+        zp.write_bytes(raw)
+        import zipfile
+        try:
+            with zipfile.ZipFile(zp) as z:
+                names = z.namelist()
+                if "goshor.db" not in names:
+                    return {"ok": False, "error": "云端备份包中缺少 goshor.db"}
+                z.extract("goshor.db", tmpdir)
+                chk = sqlite3.connect(Path(tmpdir) / "goshor.db")
+                chk.execute("SELECT 1")
+                chk.close()
+                restored.append("goshor.db")
+                if "settings.json" in names:
+                    z.extract("settings.json", tmpdir)
+                    restored.append("settings.json")
+                if "essay_questions.json" in names:
+                    z.extract("essay_questions.json", tmpdir)
+                    restored.append("essay_questions.json")
+        except zipfile.BadZipFile:
+            return {"ok": False, "error": "云端数据不是合法的备份包（口令是否用错？）"}
+
+        # 本机的同步凭据不能被云端那份覆盖：DPAPI 密文跨机器解不开，
+        # 覆盖后用户会「既连不上云、又丢了本地密钥」。先留好，落盘后回填。
+        keep = {"sync_local_stamp": s.get("sync_local_stamp", "")}
+        try:
+            keep_disk = _json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            keep_disk = {}
+        for k in SYNC_KEYS + ("sync_local_stamp", "sync_last_at",
+                              "sync_last_up_at", "sync_last_down_at",
+                              "sync_last_size", "sync_device"):
+            if k in s:
+                keep[k] = s[k]
+        for enc in ("sync_password_enc", "sync_passphrase_enc"):
+            if keep_disk.get(enc):
+                keep[enc] = keep_disk[enc]
+
+        _replace_db_file(Path(tmpdir) / "goshor.db")
+        if "settings.json" in restored:
+            merged = _json.loads(
+                (Path(tmpdir) / "settings.json").read_text(encoding="utf-8"))
+            merged.update(keep)
+            SETTINGS_PATH.write_text(
+                _json.dumps(merged, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        else:
+            save_settings(keep)
+        if "essay_questions.json" in restored:
+            shutil.copy2(Path(tmpdir) / "essay_questions.json",
+                         STATIC_DIR.parent / "data" / "essay_questions.json")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    save_settings({"sync_last_at": now, "sync_last_down_at": now,
+                   "sync_last_size": len(blob),
+                   "sync_local_stamp": _local_stamp()})
+    return {"ok": True, "restored": restored, "size": len(blob), "at": now,
+            "note": "已从云端恢复，请重启服务使数据生效"}
 
 
 # ---------------- 申论 / 综应知识 ----------------
