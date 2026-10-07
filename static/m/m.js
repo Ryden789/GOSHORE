@@ -276,6 +276,182 @@ const SearchHistory = {
   },
 };
 
+/* G3 题目自由笔记（app.js / m.js 逐字节一致）。
+   每题一条文本笔记，存服务端 `doc_notes`（PUT/POST /api/doc/{id}/note），
+   服务不可用时降级到 localStorage（Pref 键 'note_<docId>'），不阻塞作答。
+   - 自动保存：输入停止 DEBOUNCE 毫秒后落库；离开/切题时 flush 一次。
+   - 空内容即删除该题笔记（后端同语义），前端不做二次判断。
+   - 列表页「有笔记」标记：NoteBox.mark(docId, counts) 用 /api/notes 的 counts。 */
+const NoteBox = {
+  DEBOUNCE: 900,          // 自动保存防抖（毫秒）
+  MAX: 4000,              // 与后端 _NOTE_MAX 对齐，超长前端先截断
+  _timer: null,
+  _curDoc: 0,             // 当前正在编辑的题，便于 flush 时写对地方
+  key(docId) { return "note_" + docId; },
+  /** 本地降级读（服务读写失败时用） */
+  localGet(docId) { const v = Pref.get(this.key(docId), ""); return typeof v === "string" ? v : ""; },
+  localSet(docId, text) { Pref.set(this.key(docId), String(text == null ? "" : text)); },
+  /** 拉取某题笔记：优先服务端，失败回落本地；返回 {content, saved} */
+  async load(docId) {
+    try {
+      const r = await api(`/api/doc/${docId}/note`);
+      const c = r && typeof r.content === "string" ? r.content : "";
+      this.localSet(docId, c);       // 同步一份本地，离线也能看
+      return { content: c, saved: true };
+    } catch (e) {
+      return { content: this.localGet(docId), saved: false };
+    }
+  },
+  /** 保存某题笔记（空内容 → 后端删除）；失败回落本地并返回 {ok, offline} */
+  async save(docId, content) {
+    const text = String(content == null ? "" : content).slice(0, this.MAX);
+    this.localSet(docId, text);
+    try {
+      await api(`/api/doc/${docId}/note`, { content: text });
+      return { ok: true, offline: false };
+    } catch (e) {
+      return { ok: false, offline: true };
+    }
+  },
+  /** 题目页笔记卡片 HTML；docId 用于 data 标记，content 初值 */
+  html(docId, content) {
+    const body = String(content == null ? "" : content);
+    return `<div class="note-box" id="noteBox" data-doc="${docId}">
+      <div class="nb-head">
+        <span class="nb-title">📝 我的笔记</span>
+        <span class="nb-state" id="nbState">${body ? "已保存" : ""}</span>
+      </div>
+      <textarea class="nb-text" id="nbText" rows="3"
+        placeholder="记下思路 / 坑点 / 老师讲法…（自动保存）">${esc(body)}</textarea>
+      <div class="nb-foot">
+        <span class="nb-hint" id="nbHint">输入停止后自动保存；清空即删除本题笔记</span>
+        <button class="btn btn-sm" id="nbSave">保存</button>
+      </div>
+    </div>`;
+  },
+  /** 绑定题目页笔记卡：自动保存（防抖）+ 手动保存 + 计数提示 */
+  bind(docId, onChange) {
+    const ta = document.getElementById("nbText");
+    if (!ta) return;
+    const state = document.getElementById("nbState");
+    const hint = document.getElementById("nbHint");
+    this._curDoc = docId;
+    const setState = (s, warn) => {
+      if (state) { state.textContent = s; state.classList.toggle("warn", !!warn); }
+    };
+    const doSave = async () => {
+      if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+      const text = ta.value.slice(0, this.MAX);
+      setState("保存中…", false);
+      const r = await this.save(docId, text);
+      if (r.offline) { setState("离线·已存本机", true); if (hint) hint.textContent = "当前离线，笔记暂存本机，联网后再保存"; }
+      else { setState(text ? "已保存" : ""); if (hint) hint.textContent = "输入停止后自动保存；清空即删除本题笔记"; }
+      if (onChange) onChange(text);
+    };
+    ta.oninput = () => {
+      setState("未保存", false);
+      if (this._timer) clearTimeout(this._timer);
+      this._timer = setTimeout(doSave, this.DEBOUNCE);
+    };
+    const sb = document.getElementById("nbSave");
+    if (sb) sb.onclick = doSave;
+  },
+  /** 切题/离开前把 pending 的改动落盘（同步语义：先存本地再尽力上服务） */
+  flush(docId) {
+    if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+    const did = docId || this._curDoc;
+    const ta = document.getElementById("nbText");
+    if (!did || !ta) return;
+    this.save(did, ta.value);
+  },
+  /** 列表页「有笔记」小标记；counts 为 /api/notes 返回的 {docId: ts} */
+  mark(docId, counts) {
+    if (!counts) return "";
+    const k = String(docId);
+    return Object.prototype.hasOwnProperty.call(counts, k)
+      ? `<span class="note-dot" title="有笔记">✎</span>` : "";
+  },
+  /** 时间戳 → 简短本地时间（块内自带，避免依赖宿主各自的 fmtTime） */
+  timeText(ts) {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return "";
+    const p = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  },
+  /** 「我的」页集中浏览：全部笔记列表 HTML（含跳转与删除） */
+  listHtml(items) {
+    const arr = Array.isArray(items) ? items : [];
+    if (!arr.length) return `<div class="empty" style="padding:28px">还没有笔记——做题时点「📝 我的笔记」写下第一条</div>`;
+    return arr.map(n => `<div class="note-row" data-doc="${n.doc_id}">
+      <div class="nr-head">
+        <a class="nr-title" href="#/doc/${n.doc_id}/answer">${esc(n.title)}</a>
+        ${n.module ? `<span class="tag">${esc(n.module)}</span>` : ""}
+      </div>
+      <div class="nr-body">${esc(n.content).replace(/\n/g, "<br>")}</div>
+      <div class="nr-foot">
+        <span class="nr-time">${this.timeText(n.updated)}</span>
+        <button class="btn btn-sm nr-del" data-doc="${n.doc_id}">删除</button>
+      </div>
+    </div>`).join("");
+  },
+  /** 绑定「我的」页笔记列表的删除按钮 */
+  bindList(onRemoved) {
+    const del = typeof $$ === "function" ? $$(".nr-del") :
+      null;
+    const nodes = del != null ? del : document.querySelectorAll(".nr-del");
+    nodes.forEach(b => b.onclick = async () => {
+      const did = b.dataset.doc;
+      b.disabled = true;
+      try { await api(`/api/doc/${did}/note`, { content: "" }); } catch (e) {}
+      const row = b.closest(".note-row");
+      if (row) row.remove();
+      if (onRemoved) onRemoved();
+    });
+  },
+};
+
+/* G4 单手翻题 · 手势（app.js / m.js 逐字节一致）。
+   在做题容器上监听 touchstart/touchend：水平位移 > MX(50px) 且垂直位移
+   < MY(30px) 判定为翻页，避免与纵向滚动冲突。只在做题页启用。
+   `SwipePaging.attach(el, {onPrev, onNext})` 返回 detach。 */
+const SwipePaging = {
+  MX: 50,   // 水平最小位移（px）
+  MY: 30,   // 垂直最大位移（px）
+  attach(el, cb) {
+    if (!el || !cb) return () => {};
+    let x0 = 0, y0 = 0, t0 = 0, tracking = false;
+    const start = e => {
+      if (!e.touches || e.touches.length !== 1) { tracking = false; return; }
+      tracking = true;
+      x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+    };
+    const end = e => {
+      if (!tracking) return;
+      tracking = false;
+      const t = (e.changedTouches && e.changedTouches[0]);
+      if (!t) return;
+      const dx = t.clientX - x0, dy = t.clientY - y0;
+      if (Date.now() - t0 > 800) return;
+      if (Math.abs(dx) < this.MX || Math.abs(dy) > this.MY) return;
+      if (dx < 0) cb.onNext && cb.onNext(); else cb.onPrev && cb.onPrev();
+    };
+    el.addEventListener("touchstart", start, { passive: true });
+    el.addEventListener("touchend", end, { passive: true });
+    return () => {
+      el.removeEventListener("touchstart", start);
+      el.removeEventListener("touchend", end);
+    };
+  },
+  /** 音量键：安卓宿主注入 window.__goshorVolume(dir)（dir=-1 上一题 / 1 下一题）*/
+  volumeHook(onPrev, onNext) {
+    window.__goshorVolume = dir => {
+      if (dir > 0) return onNext && onNext();
+      return onPrev && onPrev();
+    };
+  },
+};
+
 /* N1 断点续做 · 练习草稿（双端逐字节一致）。
    把「做到第几题 / 每题选了什么 / 标记 / 考场倒计时截止时间」存到服务端
    `paper_drafts`（scope 只有 'normal' 与 'exam'，各留最近一份），下次进做题页还原。
@@ -885,7 +1061,7 @@ const TITLES = {
   essay: "申论综应", wenxian: "科技文献", shizheng: "时政", grade: "AI 批改",
   "zy-notes": "综应考点",
   argument: "论证评价", "argument-quiz": "辨析快练", "ai-ask": "AI 答疑",
-  wrong: "错题本", marks: "收藏", cards: "辨析卡",
+  wrong: "错题本", marks: "收藏", cards: "辨析卡", notes: "我的笔记",
   search: "搜题", doubts: "疑点", import: "导入", settings: "设置",
   mydocs: "我的题库",
   mastery: "掌握度",
@@ -927,6 +1103,7 @@ const HUB = [
     ["plan", "计", "学习计划", "能力雷达·14天路径"],
     ["wrong", "✗", "错题本", "错题重做"],
     ["marks", "★", "收藏", "收藏题目"],
+    ["notes", "✎", "笔记", "我的题目笔记"],
     ["cards", "▦", "辨析卡", "翻面辨析卡片"],
     ["share", "⇄", "分享 PK", "题单分享·好友PK"],
   ]},
@@ -1077,6 +1254,8 @@ let runFrom = "";
 function exitRun() {
   inRun = false;
   DraftPaper.leave();   // N1：离开做题页前把草稿强制落盘
+  NoteBox.flush();      // G3：未保存的笔记先落库
+  if (window.__goshorVolume) { try { delete window.__goshorVolume; } catch (e) { window.__goshorVolume = null; } }
   Pomo.unmount();
   const name = (runFrom || "").replace(/^#\//, "").split("/")[0];
   const hasRoute = name && (ROUTES[ALIAS[name] || name]);
@@ -1792,6 +1971,7 @@ const ROUTES = {
   shizheng: renderShizheng, grade: renderGrade,
   cards: renderCards,
   search: renderSearch, doubts: renderDoubts,
+  notes: renderNotes,
   mydocs: renderMyDocs,
   mastery: renderMastery,
   plan: renderPlan,
@@ -2312,6 +2492,10 @@ async function runPaper(ids, opt = {}) {
   }
   let cur = align ? align.cur : 0, t0 = Date.now(), qStart = Date.now();
   let finished = false, warned5 = false, cardOpen = false, daub = false;
+  /* G4 单手翻题：开关取自设置（默认滑动开、音量键关，与设计一致） */
+  const swipeOn = Pref.get("swipe_paging", true) !== false;
+  const volumeOn = Pref.get("volume_keys", false) === true;
+  let detachSwipe = null;
   let deadline = opt.minutes ? Date.now() + opt.minutes * 60000 : 0;
   if (draft && draft.state && draft.state.deadline) deadline = +draft.state.deadline || 0;
   let timerH = 0;
@@ -2356,6 +2540,56 @@ async function runPaper(ids, opt = {}) {
   }
 
   let guessedNow = false;
+
+  /* ---------- G3 题目笔记（折叠入口 + 自动保存） ---------- */
+  function bindNote(docId) {
+    const slot = $("#noteSlot"), tg = $("#noteToggle");
+    if (!slot || !tg) return;
+    let loaded = false;
+    tg.onclick = async () => {
+      const open = slot.classList.toggle("open");
+      tg.classList.toggle("on", open);
+      if (open && !loaded) {
+        loaded = true;
+        const r = await NoteBox.load(docId);
+        slot.innerHTML = NoteBox.html(docId, r.content);
+        NoteBox.bind(docId, () => {});
+      }
+    };
+  }
+
+  /* ---------- G4 单手翻题：底部操作条 + 左右滑动 + 音量键 ---------- */
+  function go(delta) {
+    const nx = cur + delta;
+    if (nx < 0) { toast("已经是第一题"); return; }
+    if (nx >= docs.length) {
+      if (exam) { toast("已经是最后一题，可点「交卷」"); return; }
+      toast("已经是最后一题"); return;
+    }
+    show(nx);
+  }
+  let barEl = null;
+  function bottomBarHtml() {
+    return `<div class="q-bottom-bar" id="qBottomBar">
+      <button class="btn qb-prev" id="qbPrev">← 上一题</button>
+      <span class="qb-pos">${cur + 1} / ${docs.length}</span>
+      <button class="btn btn-primary qb-next" id="qbNext">下一题 →</button>
+    </div>`;
+  }
+  function ensureBar() {
+    if (!swipeOn) {
+      if (barEl && barEl.parentNode) barEl.remove();
+      return;
+    }
+    if (!barEl) barEl = document.createElement("div");
+    // show() 每次都用 view.innerHTML= 重写内容，会把上一屏的底栏从 DOM 里摘掉，
+    // 因此这里每次都重新挂回，否则翻到第 2 题起底栏就消失了。
+    view.appendChild(barEl);
+    barEl.innerHTML = bottomBarHtml();
+    const p = $("#qbPrev"), n = $("#qbNext");
+    if (p) p.onclick = () => go(-1);
+    if (n) n.onclick = () => go(1);
+  }
 
   /* ---------- 标准化答题卡（考场模式 · 功能 2.4） ---------- */
   function cardStats() {
@@ -2450,8 +2684,11 @@ async function runPaper(ids, opt = {}) {
         <button class="btn btn-ghost" id="skipBtn">⏭ 跳过</button>
         ${exam ? `<button class="btn btn-primary" id="finishBtn">交卷</button>` : ""}
       </div>
-      <div id="anaBox"></div>`;
+      <div id="anaBox"></div>
+      <div class="note-toggle" id="noteToggle">📝 我的笔记</div>
+      <div id="noteSlot"></div>`;
     animIn(view);
+    bindNote(doc.id);
     $("#runExit").onclick = exitRun;
     if (exam) {
       bindCard();
@@ -2474,6 +2711,11 @@ async function runPaper(ids, opt = {}) {
       if (opt.daily) { Pref.set("dskip", todayStr()); DAILY_DONE = true; }
       if (cur + 1 < docs.length) show(cur + 1); else summary();
     };
+    /* G4：底部操作条 + 左右滑动（每次重绘都要重新挂，因为 view.innerHTML 被换掉） */
+    ensureBar();
+    if (detachSwipe) { detachSwipe(); detachSwipe = null; }
+    if (swipeOn) detachSwipe = SwipePaging.attach(view, { onPrev: () => go(-1), onNext: () => go(1) });
+    if (volumeOn) SwipePaging.volumeHook(() => go(-1), () => go(1));
     persist();
   }
 
@@ -4132,6 +4374,14 @@ async function renderSettings() {
         <div class="muted">填 0 表示不设该项；首页环形进度取两项中较低者，都达标才算完成</div>
       </div>
       <div class="field">
+        <label>单手翻题</label>
+        <label class="check"><input type="checkbox" id="setSwipe"
+          ${Pref.get("swipe_paging", true) !== false ? "checked" : ""}/> 左右滑动翻题</label>
+        <label class="check" style="margin-top:6px"><input type="checkbox" id="setVolume"
+          ${Pref.get("volume_keys", false) === true ? "checked" : ""}/> 音量键翻页（可能影响调节音量）</label>
+        <div class="muted">做题页底部已固定「上一题 / 下一题」，单手可达</div>
+      </div>
+      <div class="field">
         <label class="check"><input type="checkbox" id="setRemindOn"
           ${s.reminder_on ? "checked" : ""}/> 每日学习提醒</label>
         <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
@@ -4232,6 +4482,10 @@ async function renderSettings() {
     // G2 每日目标：0 合法（不设目标）
     patch.daily_goal_questions = Math.max(0, parseInt($("#setGoalQ").value, 10) || 0);
     patch.daily_goal_minutes = Math.max(0, parseInt($("#setGoalM").value, 10) || 0);
+    // G4 单手翻题：纯前端偏好
+    const swEl = $("#setSwipe"), voEl = $("#setVolume");
+    if (swEl) Pref.set("swipe_paging", swEl.checked);
+    if (voEl) Pref.set("volume_keys", voEl.checked);
     await api("/api/settings", patch);
     const rs = $("#remindState");
     if (rs) rs.textContent = applyReminder(rOn, rTime, rPlan, patch.exam_date);
@@ -4877,6 +5131,33 @@ async function renderWordfill() {
 
 /* ---------- 我的 ---------- */
 
+/* ---------- G3 我的笔记（集中浏览） ---------- */
+async function renderNotes() {
+  const res = await api("/api/notes");
+  const items = (res && res.items) || [];
+  view.innerHTML = `
+    <div class="card">
+      <h3>我的笔记</h3>
+      <div class="meta">共 ${items.length} 条 · 点标题回到原题</div>
+      ${items.length ? `<button class="btn btn-block" id="noteClearAll" style="margin-top:8px">清空全部笔记</button>` : ""}
+    </div>
+    <div id="noteList">${NoteBox.listHtml(items)}</div>`;
+  NoteBox.bindList(() => {
+    const rows = document.querySelectorAll("#noteList .note-row");
+    if (!rows.length) {
+      const ca = $("#noteClearAll"); if (ca) ca.remove();
+      $("#noteList").innerHTML = NoteBox.listHtml([]);
+    }
+  });
+  const ca = $("#noteClearAll");
+  if (ca) ca.onclick = async () => {
+    if (!confirm("确定清空全部笔记吗？此操作不可撤销。")) return;
+    ca.disabled = true;
+    try { await api("/api/note/clear", {}); } catch (e) {}
+    route();
+  };
+}
+
 async function renderMe() {
   const rep = await api("/api/report/weekly");
   const s = rep.summary || {};
@@ -4938,6 +5219,7 @@ async function renderMe() {
       <h3>本周建议</h3>
       ${(rep.advice || []).map(a => `<div style="padding:7px 0;border-top:1px solid var(--line-soft);font-size:14px">${esc(a)}</div>`).join("")}
       <a class="btn btn-sm btn-block" href="#/time" style="margin-top:10px">查看用时分析 →</a>
+      <a class="btn btn-sm btn-block" href="#/notes" style="margin-top:8px">我的笔记 →</a>
     </div>
     ${mode === "browser" ? `
     <div class="card">

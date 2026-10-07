@@ -813,7 +813,9 @@ class _Handler(BaseHTTPRequestHandler):
                     self._json(m)
                 else:
                     self._json({"error": "not found"}, 404)
-            elif path.startswith("/api/doc/"):
+            elif path.startswith("/api/doc/") and not path.endswith("/note"):
+                # 注意：必须排除 /api/doc/{id}/note（G3 笔记有独立分支，见下方），
+                # 否则这里会把 "note" 当 doc_id 解析失败而 404，导致笔记读不出来。
                 try:
                     doc_id = int(path.rsplit("/", 1)[1])
                 except ValueError:
@@ -908,6 +910,17 @@ class _Handler(BaseHTTPRequestHandler):
             elif path.startswith("/api/paper-draft/"):
                 _dscope = urllib.parse.unquote(path[len("/api/paper-draft/"):])
                 self._json({"draft": db.load_paper_draft(_dscope)})
+            # G3 题目自由笔记：读单题笔记 / 全部笔记（与桌面端同构）
+            elif path.startswith("/api/doc/") and path.endswith("/note"):
+                _nid = path[len("/api/doc/"):-len("/note")].strip("/")
+                try:
+                    _ndoc = int(urllib.parse.unquote(_nid))
+                except ValueError:
+                    _ndoc = 0
+                self._json(db.get_note(_ndoc))
+            elif path == "/api/notes":
+                self._json({"items": db.list_notes(),
+                            "counts": db.note_counts()})
             elif path == "/api/update/current":
                 self._json({"ok": True, **_shared_db_meta()})
             elif path == "/api/update/check":
@@ -1222,6 +1235,19 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/paper-draft/clear":
                 with _lock:
                     db.clear_paper_draft(str(b.get("scope", "normal")))
+                self._json({"ok": True})
+            # G3 题目自由笔记：写单题笔记 / 清空全部（与桌面端同构）
+            elif path.startswith("/api/doc/") and path.endswith("/note"):
+                _nid = path[len("/api/doc/"):-len("/note")].strip("/")
+                try:
+                    _ndoc = int(urllib.parse.unquote(_nid))
+                except ValueError:
+                    _ndoc = 0
+                with _lock:
+                    self._json(db.set_note(_ndoc, b.get("content", "")))
+            elif path == "/api/note/clear":
+                with _lock:
+                    db.clear_note(0)
                 self._json({"ok": True})
             elif path == "/api/backup/export":
                 self._json(_mobile_backup_export(

@@ -135,14 +135,14 @@ def test_draft_progress_never_exceeds_total():
 # B. 数据层：CRUD 往返
 # ============================================================
 
-def test_schema_version_is_11(temp_db):
+def test_schema_version_at_least_11(temp_db):
     conn = temp_db.connect()
     v = conn.execute("SELECT value FROM _meta WHERE key='schema_version'").fetchone()["value"]
     row = conn.execute("SELECT name FROM sqlite_master WHERE name='paper_drafts'").fetchone()
     conn.close()
-    assert int(v) == 11, "N1 的迁移必须是 v11"
+    assert int(v) >= 11, "N1 的迁移是 v11，后续功能继续往上加"
     assert row is not None, "paper_drafts 表未建（迁移 v11 没跑？）"
-    assert temp_db.SCHEMA_VERSION == 11
+    assert temp_db.SCHEMA_VERSION >= 11
 
 
 def test_draft_save_load_roundtrip(temp_db):

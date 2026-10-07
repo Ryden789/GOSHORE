@@ -625,6 +625,38 @@ def api_paper_draft_clear(b: DraftScopeIn):
     return {"ok": True}
 
 
+class NoteIn(BaseModel):
+    content: str = ""
+
+
+@app.get("/api/doc/{doc_id}/note")
+def api_doc_note_get(doc_id: int):
+    """读取某题笔记（无笔记返回空串）。"""
+    return db.get_note(doc_id)
+
+
+@app.post("/api/doc/{doc_id}/note")
+def api_doc_note_set(doc_id: int, b: NoteIn):
+    """写入/覆盖某题笔记；content 归一后为空即删除该题笔记。"""
+    return db.set_note(doc_id, b.content)
+
+
+@app.post("/api/note/clear")
+def api_note_clear(b: NoteIn):
+    """清空全部笔记（G7 数据清空与「我的」页一键清理用）。
+
+    这里复用 NoteIn 只为拿到合适的 body 模型；content 被忽略。
+    """
+    db.clear_note(0)
+    return {"ok": True}
+
+
+@app.get("/api/notes")
+def api_notes(limit: int = 500):
+    """全部笔记（集中浏览 + 列表页「有笔记」标记）。"""
+    return {"items": db.list_notes(limit), "counts": db.note_counts()}
+
+
 @app.get("/api/mastery")
 def api_mastery(module: str = "", only_practiced: bool = False,
                 limit: int = 0, offset: int = 0):

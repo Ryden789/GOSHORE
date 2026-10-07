@@ -654,6 +654,43 @@ public class MainActivity extends Activity {
         });
     }
 
+    /* G4 单手翻题：音量键翻页。
+       仅当页面里注册了 window.__goshorVolume（即做题页且用户开启了「音量键翻页」）
+       时才消费按键；否则一律放行给系统调音量，避免影响正常音量调节。 */
+    @Override
+    public boolean onKeyDown(int keyCode, android.view.KeyEvent event) {
+        if (web != null
+                && (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP
+                    || keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            final int dir = keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN ? 1 : -1;
+            web.evaluateJavascript(
+                "String(typeof window.__goshorVolume==='function')", value -> {
+                    if ("\"true\"".equals(value) || "true".equals(value)) {
+                        web.evaluateJavascript(
+                            "window.__goshorVolume(" + dir + ")", null);
+                    } else {
+                        // 页面未接管：还原成系统音量调节
+                        dispatchVolumeFallback(dir);
+                    }
+                });
+            return true;   // 已接管本按键
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    /** 页面未接管音量键时，把它交还给系统（调音量），避免「按了没反应」。 */
+    private void dispatchVolumeFallback(int dir) {
+        try {
+            android.media.AudioManager am =
+                (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+            if (am == null) return;
+            am.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC,
+                dir > 0 ? android.media.AudioManager.ADJUST_RAISE
+                        : android.media.AudioManager.ADJUST_LOWER,
+                android.media.AudioManager.FLAG_SHOW_UI);
+        } catch (Exception ignored) { /* 忽略：不影响主流程 */ }
+    }
+
     private void defaultBack() {
         // hash 路由每次切换都会进 WebView 历史栈（history.length 封顶 50，
         // 不能拿它判断是否退出）。首页按返回直接退出 App；其余页先回退一条

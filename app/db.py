@@ -250,7 +250,7 @@ CREATE TABLE IF NOT EXISTS _meta (
 SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
 
 # 当前 schema 版本号（每次新增迁移步骤时 +1）
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
 EBBINGHAUS_DAYS = [1, 2, 4, 7, 15, 30]
@@ -626,6 +626,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         conn.execute(
             "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','11')"
+        )
+        conn.commit()
+
+    if v < 12:
+        # v12: 题目自由笔记（G3）。每题最多一条文本笔记，靠 doc_id 上的 UNIQUE
+        # 实现「覆盖」语义（INSERT OR REPLACE / upsert 均可）。content 为空串
+        # 时由 set_note 直接删行，因此表里只留非空笔记。
+        # 与 paper_drafts 同理：这是**个人数据表**（手机端主库 data_<uid>.db）。
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS doc_notes(
+                id INTEGER PRIMARY KEY,
+                doc_id INTEGER NOT NULL UNIQUE,
+                content TEXT NOT NULL DEFAULT '',
+                updated_at REAL DEFAULT 0)"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_docnotes_doc ON doc_notes(doc_id)"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','12')"
         )
         conn.commit()
 
@@ -4156,3 +4176,157 @@ def list_unfinished_drafts() -> list[dict]:
                     "left": prog["left"], "total": prog["total"],
                     "answered": prog["answered"], "updated": r["updated_at"] or 0})
     return out
+
+
+# ---------------------------------------------------------------------------
+# G3 题目自由笔记
+# 每题最多一条文本笔记：doc_id 上 UNIQUE，内容为空即删行。存于个人库。
+# ---------------------------------------------------------------------------
+
+_NOTE_MAX = 4000  # 单条笔记字符上限（防误粘贴超长文本撑爆库）
+
+
+def _note_doc_id(doc_id) -> int:
+    """把 doc_id 稳健转成 int；空/脏/非正数一律返回 0（调用方据此走"全部"分支）。"""
+    try:
+        return int(doc_id)
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_note_text(text) -> str:
+    """归一笔记文本：None/非字符串 -> ""；去掉首尾空白；截断到 _NOTE_MAX。
+
+    注意这里**不**做 markdown/HTML 处理，原样存原样取；前端渲染时才转义。
+    """
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:  # pragma: no cover - str() 几乎不会抛
+            return ""
+    # 统一换行，避免 \r\n 与 \n 混存导致前端比对失败
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return text[:_NOTE_MAX]
+
+
+def set_note(doc_id, content) -> dict:
+    """写入/覆盖某题笔记。content 归一后为空 -> 删除该题笔记（等同清除）。
+
+    返回 `{"doc_id", "content", "updated"}`，方便前端就地更新。
+    """
+    did = _note_doc_id(doc_id)
+    if did <= 0:
+        return {"doc_id": 0, "content": "", "updated": 0}
+    text = normalize_note_text(content)
+    conn = connect()
+    try:
+        if not text:
+            conn.execute("DELETE FROM doc_notes WHERE doc_id=?", (did,))
+            conn.commit()
+            return {"doc_id": did, "content": "", "updated": 0}
+        now = time.time()
+        conn.execute(
+            "INSERT INTO doc_notes(doc_id,content,updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(doc_id) DO UPDATE SET content=excluded.content, "
+            "updated_at=excluded.updated_at",
+            (did, text, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"doc_id": did, "content": text, "updated": now}
+
+
+def get_note(doc_id) -> dict:
+    """读取某题笔记。无笔记返回 `{"doc_id", "content": "", "updated": 0}`。"""
+    did = _note_doc_id(doc_id)
+    if did <= 0:
+        return {"doc_id": 0, "content": "", "updated": 0}
+    conn = connect()
+    try:
+        r = conn.execute(
+            "SELECT doc_id,content,updated_at FROM doc_notes WHERE doc_id=?",
+            (did,)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        return {"doc_id": did, "content": "", "updated": 0}
+    return {"doc_id": r["doc_id"], "content": r["content"] or "",
+            "updated": r["updated_at"] or 0}
+
+
+def clear_note(doc_id) -> None:
+    """删除某题笔记；doc_id 为空/<=0 则清空全部（G7 数据清空会用到）。"""
+    did = _note_doc_id(doc_id)
+    conn = connect()
+    try:
+        if did > 0:
+            conn.execute("DELETE FROM doc_notes WHERE doc_id=?", (did,))
+        else:
+            conn.execute("DELETE FROM doc_notes")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def note_counts() -> dict:
+    """返回 `{"<doc_id>": updated_at}`，供列表页一次性标记「有笔记」。
+
+    一次查全表（笔记量远小于题量），避免列表逐题发请求。
+    """
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT doc_id,updated_at FROM doc_notes").fetchall()
+    finally:
+        conn.close()
+    out: dict[str, float] = {}
+    for r in rows:
+        try:
+            out[str(int(r["doc_id"]))] = r["updated_at"] or 0
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def list_notes(limit: int = 500) -> list[dict]:
+    """集中浏览用：全部笔记按最近更新倒序，LEFT JOIN 题目取标题/模块。
+
+    已删除的题（documents 里查不到）也保留，title 回落为「题目已删除」，
+    前端可提示用户清理，而不是凭空消失。
+    """
+    try:
+        lim = max(1, min(2000, int(limit)))
+    except (TypeError, ValueError):
+        lim = 500
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT n.doc_id AS doc_id, n.content AS content, "
+            "       n.updated_at AS updated_at, "
+            "       d.title AS title, d.module AS module, "
+            "       d.kaodian AS kaodian, d.kind AS kind "
+            "FROM doc_notes n LEFT JOIN documents d ON d.id=n.doc_id "
+            "ORDER BY n.updated_at DESC LIMIT ?", (lim,)).fetchall()
+    finally:
+        conn.close()
+    out: list[dict] = []
+    for r in rows:
+        out.append({
+            "doc_id": int(r["doc_id"]),
+            "content": r["content"] or "",
+            "updated": r["updated_at"] or 0,
+            "title": r["title"] or "题目已删除",
+            "module": r["module"] or "",
+            "kaodian": r["kaodian"] or "",
+            "kind": r["kind"] or "",
+            "exists": bool(r["title"]),
+        })
+    return out
+
+
+def note_doc_ids() -> set:
+    """有笔记的 doc_id 集合（前端标记用，与 note_counts 二选一）。"""
+    return {int(k) for k in note_counts().keys()}

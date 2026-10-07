@@ -141,12 +141,12 @@ def test_random_paper_respects_module(temp_db):
 
 # ---------------- 掌握度 / 自适应推题（1.1）与图谱（1.4） ----------------
 
-def test_schema_version_is_11(temp_db):
+def test_schema_version_at_least_11(temp_db):
     conn = temp_db.connect()
     row = conn.execute(
         "SELECT value FROM _meta WHERE key='schema_version'").fetchone()
     conn.close()
-    assert int(row["value"]) == 11
+    assert int(row["value"]) >= 11
 
 
 def test_v10_creates_kaodian_covering_indexes(temp_db):

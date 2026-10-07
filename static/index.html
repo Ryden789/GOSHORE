@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/styles.css?v=20261021" />
+<link rel="stylesheet" href="/styles.css?v=20261022" />
 <script>
 /* N5 夜间模式：先于 <body> 渲染应用，避免刷新时闪一下浅色。
    与 app.js 里的 Theme 块等价（那边负责后续切换、跟随系统、同步地址栏颜色）。 */
@@ -104,6 +104,7 @@
           <a href="#/plan" data-route="plan"><span class="ico">计</span>学习计划</a>
           <a href="#/wrong" data-route="wrong"><span class="ico">✗</span>错题本</a>
           <a href="#/marks" data-route="marks"><span class="ico">★</span>收藏</a>
+          <a href="#/notes" data-route="notes"><span class="ico">✎</span>笔记</a>
           <a href="#/cards" data-route="cards"><span class="ico">▦</span>辨析卡</a>
           <a href="#/share" data-route="share"><span class="ico">⇄</span>分享 PK</a>
         </div></div>
@@ -127,7 +128,7 @@
   </aside>
   <main id="view" class="view"></main>
 </div>
-<script src="/app.js?v=20261021"></script>
+<script src="/app.js?v=20261022"></script>
 <script>
 /* PWA（功能 3.1）：注册 Service Worker 提供离线应用壳。
    仅 http/https 可用；file:// 或 WebView 内会静默跳过。 */

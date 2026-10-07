@@ -668,6 +668,115 @@ def check_browser():
         except Exception as e:
             record(False, "G6 搜题历史（移动）", f"异常：{e}")
 
+        # ---- G3 题目笔记（移动端）：做题页写笔记 → 落服务端 → 「我的笔记」可见 → 删除
+        try:
+            problems = []
+            step = "进入做题页"
+            # 先找一道真题进做题页（组卷 3 题）
+            # 注意：直接 goto 会整页重载并再次触发「开门守卫」（未做每日一题弹回首页），
+            # 所以统一走页内 hash 切路由，与文件里其它做题流段一致。
+            pg.evaluate("location.hash = '#/home'")
+            pg.wait_for_selector("#view", timeout=20000)
+            pg.evaluate("location.hash = '#/practice'")
+            pg.wait_for_selector("#pGo", timeout=20000)
+            pg.click("#pGo")
+            # 做题页：笔记入口出现（折叠态）
+            pg.wait_for_selector("#noteToggle", timeout=20000)
+            if pg.locator("#noteToggle").count() != 1:
+                problems.append("做题页应有「📝 我的笔记」入口")
+            # 展开 → 文本框出现 → 写内容 → 自动保存
+            step = "点击 #noteToggle"
+            try:
+                pg.click("#noteToggle", timeout=15000)
+            except Exception as ce:
+                diag = pg.evaluate("""() => {
+                  const t = document.getElementById('noteToggle');
+                  if (!t) return {err: 'no #noteToggle'};
+                  const r = t.getBoundingClientRect();
+                  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                  const top = document.elementFromPoint(cx, cy);
+                  const bar = document.getElementById('qBottomBar');
+                  const br = bar ? bar.getBoundingClientRect() : null;
+                  return {rect: [r.x|0, r.y|0, r.width|0, r.height|0], vh: window.innerHeight,
+                          scrollY: window.scrollY|0,
+                          topEl: top ? (top.id || top.className || top.tagName) : null,
+                          barRect: br ? [br.x|0, br.y|0, br.width|0, br.height|0] : null,
+                          barZ: bar ? getComputedStyle(bar).zIndex : null};
+                }""")
+                raise RuntimeError(f"{ce} | diag={diag}")
+            step = "等待 #nbText"
+            pg.wait_for_selector("#nbText", timeout=8000)
+            step = "填充笔记"
+            note_id = pg.evaluate(
+                "document.getElementById('noteBox').dataset.doc")
+            pg.fill("#nbText", "E2E 记的笔记")
+            pg.wait_for_timeout(1500)   # 等防抖保存
+            step = "校验落服务端"
+            _, n = http_get(f"/api/doc/{note_id}/note")
+            if (n.get("content") or "") != "E2E 记的笔记":
+                problems.append(f"笔记未落服务端：{n.get('content')!r}")
+            # 「我的笔记」集中浏览可见（页内切路由：goto 会整页重载并触发开门守卫弹回首页）
+            step = "跳到 #/notes"
+            pg.evaluate("location.hash = '#/notes'")
+            pg.wait_for_selector(".note-row", timeout=20000)
+            rows = pg.locator(".note-row").count()
+            if rows < 1:
+                problems.append("「我的笔记」应至少有 1 条")
+            body = pg.locator(".note-row .nr-body").first.inner_text()
+            if "E2E 记的笔记" not in body:
+                problems.append(f"笔记正文不匹配：{body!r}")
+            # 删除该条 → 服务端也清掉
+            step = "点删除"
+            pg.locator(".note-row .nr-del").first.click()
+            pg.wait_for_timeout(900)
+            step = "校验删除"
+            _, n2 = http_get(f"/api/doc/{note_id}/note")
+            if (n2.get("content") or "") != "":
+                problems.append(f"点删除后服务端笔记应清空，实际 {n2.get('content')!r}")
+            record(not problems, "G3 题目笔记（移动）：写/落盘/集中浏览/删除",
+                   "；".join(problems) if problems else f"题 {note_id}，列表 {rows} 条")
+        except Exception as e:
+            record(False, "G3 题目笔记（移动）", f"异常（{step}）：{e}")
+
+        # ---- G4 单手翻题（移动端）：底部操作条 + 滑动翻题
+        try:
+            problems = []
+            step = "进入做题页"
+            pg.evaluate("location.hash = '#/home'")
+            pg.wait_for_selector("#view", timeout=20000)
+            pg.evaluate("location.hash = '#/practice'")
+            pg.wait_for_selector("#pGo", timeout=20000)
+            pg.click("#pGo")
+            step = "等待底栏"
+            pg.wait_for_selector("#qBottomBar", timeout=20000)
+            pos0 = (pg.locator("#qBottomBar .qb-pos").inner_text() or "").strip()
+            if "1 /" not in pos0:
+                problems.append(f"底部条应显示进度 1/N，实际 {pos0!r}")
+            # 点「下一题」
+            step = "点下一题"
+            pg.click("#qbNext")
+            pg.wait_for_timeout(600)
+            pos1 = (pg.locator("#qBottomBar .qb-pos").inner_text() or "").strip()
+            if pos0 == pos1:
+                problems.append(f"点下一题后进度应变化（{pos0} → {pos1}）")
+            # 模拟左滑 → 再进一题
+            step = "模拟左滑"
+            pg.evaluate("""() => {
+              const el = document.getElementById('view');
+              const mk = (x,y) => new Touch({identifier: 1, target: el, clientX: x, clientY: y});
+              const t0 = mk(320, 400), t1 = mk(200, 402);
+              el.dispatchEvent(new TouchEvent('touchstart', {touches: [t0], changedTouches: [t0], bubbles: true}));
+              el.dispatchEvent(new TouchEvent('touchend', {touches: [], changedTouches: [t1], bubbles: true}));
+            }""")
+            pg.wait_for_timeout(600)
+            pos2 = (pg.locator("#qBottomBar .qb-pos").inner_text() or "").strip()
+            if pos2 == pos1:
+                problems.append(f"左滑后进度应前进（{pos1} → {pos2}）")
+            record(not problems, "G4 单手翻题（移动）：底部操作条 + 左右滑动",
+                   "；".join(problems) if problems else f"{pos0} → {pos1} → {pos2}")
+        except Exception as e:
+            record(False, "G4 单手翻题（移动）", f"异常（{step}）：{e}")
+
         # ---- 全路由遍历：零 JS 错误 + 恰好一次入场动画 + 动画时 DOM 已是目标页
         routes = pg.evaluate("Object.keys(ROUTES)")
         print(f"  路由清单（{len(routes)} 个）：{' '.join(routes)}", flush=True)
@@ -853,6 +962,7 @@ def check_browser():
         # ---- N5 夜间模式（桌面端）：同一套共享块在 app.js 里也要生效（含 CSS 变量覆写）
         try:
             problems = []
+            step = "桌面设置页"
             pg3 = browser.new_page(viewport={"width": 1280, "height": 900})
             pg3.add_init_script(INIT_JS)
             pg3.goto(BASE + "/index.html#/settings", wait_until="domcontentloaded", timeout=20000)
@@ -960,9 +1070,69 @@ def check_browser():
                 problems.append("桌面端点清空后历史标签块应移除")
             record(not problems, "G6 搜题历史（桌面）：记录 / 点击再搜 / 清空",
                    "；".join(problems) if problems else f"记录 {d_tags} 条，再搜 {d_cnt!r}")
+
+            # G3 题目笔记（桌面）：底稿页写笔记 → 落服务端 → 「我的笔记」可见
+            problems = []
+            step = "桌面 G3 打开题目"
+            pg3.evaluate("location.hash = '#/search'")
+            pg3.wait_for_selector("#q", timeout=20000)
+            pg3.fill("#q", "的")
+            pg3.click("#go")
+            pg3.wait_for_timeout(1200)
+            pg3.locator(".doc-item").first.click()
+            pg3.wait_for_selector(".doc-header", timeout=20000)
+            # 切到底稿 tab（笔记入口在那里）
+            pg3.evaluate("location.hash = location.hash.replace(/(#\\/doc\\/\\d+).*/, '$1/didao')")
+            pg3.wait_for_selector("#noteBox", timeout=20000)
+            d_doc = pg3.evaluate("document.getElementById('noteBox').dataset.doc")
+            pg3.fill("#nbText", "桌面端笔记")
+            pg3.wait_for_timeout(1500)
+            _, dn = http_get(f"/api/doc/{d_doc}/note")
+            if (dn.get("content") or "") != "桌面端笔记":
+                problems.append(f"桌面笔记未落服务端：{dn.get('content')!r}")
+            pg3.evaluate("location.hash = '#/notes'")
+            pg3.wait_for_selector(".note-row", timeout=20000)
+            d_rows = pg3.locator(".note-row").count()
+            if d_rows < 1:
+                problems.append("桌面「我的笔记」应至少有 1 条")
+            record(not problems, "G3 题目笔记（桌面）：写/落盘/集中浏览",
+                   "；".join(problems) if problems else f"题 {d_doc}，列表 {d_rows} 条")
+
+            # G4 单手翻题（桌面）：桌面 #/paper 页依赖 /api/kaodian-list（移动 server 没有），
+            # 因此与 N1 一样用顶层 runPaper + 显式 container 驱动，只验证滑动翻题的接线。
+            problems = []
+            step = "桌面 G4 组卷"
+            code, paper = http_post("/api/paper/sequential",
+                                    {"module": "", "kaodian": "", "n": 3})
+            ids = paper.get("ids") or []
+            if code != 200 or len(ids) < 3:
+                problems.append(f"取不到 3 道真题：HTTP {code} ids={ids}")
+            else:
+                pg3.evaluate(
+                    "(ids) => runPaper(ids, {container: document.getElementById('view'),"
+                    " title: 'G4桌面'})", ids)
+                pg3.wait_for_selector("#next", timeout=15000)
+                top0 = (pg3.locator(".paper-runner-top").first.inner_text() or "").strip()
+                if "第 1 /" not in top0:
+                    problems.append(f"桌面首题应显示「第 1 / N 题」，实际 {top0!r}")
+                # 左滑（桌面也走 SwipePaging，挂在 container 上）→ 前进一题
+                step = "桌面 G4 左滑"
+                pg3.evaluate("""() => {
+                  const el = document.getElementById('view');
+                  const mk = (x,y) => new Touch({identifier: 1, target: el, clientX: x, clientY: y});
+                  const t0 = mk(320, 400), t1 = mk(200, 402);
+                  el.dispatchEvent(new TouchEvent('touchstart', {touches: [t0], changedTouches: [t0], bubbles: true}));
+                  el.dispatchEvent(new TouchEvent('touchend', {touches: [], changedTouches: [t1], bubbles: true}));
+                }""")
+                pg3.wait_for_timeout(700)
+                top1 = (pg3.locator(".paper-runner-top").first.inner_text() or "").strip()
+                if top0 == top1:
+                    problems.append(f"桌面端左滑后题号应前进（{top0} → {top1}）")
+                record(not problems, "G4 单手翻题（桌面）：滑动翻题",
+                       "；".join(problems) if problems else f"{top0} → {top1}")
             pg3.close()
         except Exception as e:
-            record(False, "N5 夜间模式（桌面）", f"异常：{e}")
+            record(False, "N5 夜间模式（桌面）", f"异常（{step}）：{e}")
 
         browser.close()
 
