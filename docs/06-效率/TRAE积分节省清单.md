@@ -35,8 +35,8 @@
 
 | 操作 | 示例 |
 | --- | --- |
-| **只给相关片段** | "db.py L287-291 有个 ALTER TABLE，帮我改成版本化迁移" |
-| **指定行号范围** | "m.js L201-212 的 api() 函数，参考 app.js L29-43 改错误处理" |
+| **只给相关片段** | "`app/db.py` 的 `init_db()` 里还有散装 ALTER TABLE，帮我改成版本化迁移" |
+| **指定函数而不是行号** | "`static/m/m.js` 的 `api()`（搜 `async function api`），参考 `static/app.js` 同名函数改错误处理" |
 | **搜索结果贴摘要** | Grep 找到 3 处匹配 → 只贴这 3 段各 10 行 |
 | **SQL 错误先自己跑** | `SELECT COUNT(*) FROM documents WHERE difficulty=""` 先出结果再告诉 AI |
 | **新会话重新开始** | 一个话题聊超 10 轮 → 开新会话，旧上下文别续 |
@@ -45,25 +45,29 @@
 
 | 浪费行为 | 原因 |
 | --- | --- |
-| 粘整个 `db.py`（1900行）让 AI 改一个函数 | 输入 Token = 全文件 × 3~5，单次消耗 500+ |
-| "帮我看看 app.js 有什么问题" | 全文件 2900 行，AI 还要逐行检查 → 输出也多 |
+| 粘整个 `db.py`（4400 行）让 AI 改一个函数 | 输入 Token = 全文件 × 3~5，单次消耗 500+ |
+| "帮我看看 app.js 有什么问题" | 全文件 7700 行，AI 还要逐行检查 → 输出也多 |
 | 长对话续聊 20+ 轮 | 每轮都带完整历史，后期单次消耗是初期 5~10 倍 |
-| 上传 `goshor.db` 让 AI 分析 | 210MB 文件，AI 根本吃不下还白费 Token |
+| 上传 `goshor.db` 让 AI 分析 | 数百 MB 文件，AI 根本吃不下还白费 Token |
 
 ### GOSHORE 常用文件精确定位速查
 
-| 功能 | 文件 | 行号 | 平时只读这几行 |
+> ⚠ **行号会漂移**：下表是 2026-10-07 重新核对过的**函数起始行**，但每次提交后都可能变。
+> 定位不到时用 Grep 搜函数名（如 `def _migrate` / `async function api`）比翻行号可靠。
+
+| 功能 | 文件 | 起始行 | 定位关键词 |
 | --- | --- | --- | --- |
-| 数据库连接 | `app/db.py` | L266-356 | 90 行 |
-| 版本化迁移 | `app/db.py` | L327-356 | 30 行 |
-| reindex | `app/db.py` | L466-510 | 45 行 |
-| 难度打标 | `app/db.py` | L2084-2120 | 37 行 |
-| 桌面端 api() | `static/app.js` | L29-50 | 22 行 |
-| 移动端 api() | `static/m/m.js` | L201-212 | 12 行 |
-| 桌面端路由 | `static/app.js` | L199-219 | 21 行 |
-| 移动端真题套卷 | `static/m/m.js` | L939-947 | 9 行 |
-| WebView 壳 | `MainActivity.java` | L48-200 | 153 行 |
-| 移动端服务器 | `goshor_server.py` | L1-50 | 50 行 |
+| 数据库连接 | `app/db.py` | L344 | `def connect()` |
+| 版本化迁移 | `app/db.py` | L418 | `def _migrate(` |
+| reindex | `app/db.py` | L748 | `def reindex(` |
+| 难度打标 | `app/db.py` | L3319 | `def tag_difficulty_batch(` |
+| 桌面端 api() | `static/app.js` | L102 | `async function api(` |
+| 移动端 api() | `static/m/m.js` | L1049 | `async function api(` |
+| 桌面端路由 | `static/app.js` | L1103 | `function route()` |
+| 移动端路由表 | `static/m/m.js` | L1981 | `const ROUTES =` |
+| 双端 Markdown 渲染 | `static/app.js` / `static/m/m.js` | L136 / L4972 | `function md(` |
+| WebView 壳 | `android/app/src/main/java/com/goshor/app/MainActivity.java` | — | `class MainActivity` |
+| 移动端服务器 | `android/app/src/main/python/goshor_server.py` | L1 | `def start(` |
 
 ---
 
@@ -79,7 +83,7 @@
 | 编译检查 | Shell | `python -m compileall -q app` |
 | 跑回归 | Shell | `python .trae/skills/goshor-regression/scripts/regression.py` |
 | 数据库查询 | Shell | `python -c "import sqlite3;c=sqlite3.connect('data/goshor.db');print(c.execute('SELECT difficulty,COUNT(*) FROM documents GROUP BY difficulty').fetchall())"` |
-| APK 构建 | Shell | `gradle clean assembleDebug` |
+| APK 构建 | Shell | `python scripts/build_mobile_assets.py` → `rm -rf android/app/build/outputs/apk/debug` → `cd android && gradle assembleDebug`（**别用 `gradle clean`**：直接删产物目录即可，`clean` 会连 payload 缓存一起重建，慢得多） |
 | Git 操作 | Shell | `git log --oneline -5` / `git diff HEAD~1` |
 | 端口占用检查 | Shell | `Get-NetTCPConnection -LocalPort 8765 -State Listen` |
 | Python 语法验证 | Shell | `python -c "import ast; ast.parse(open('app/db.py').read()); print('OK')"` |
@@ -103,7 +107,7 @@
 | ❌ 一句话大任务 | ✅ 拆成 3 小步 |
 | --- | --- |
 | "帮我给 db.py 加完整的版本化迁移机制" | 1. "写 `_migrate()` 函数框架，读 `_meta.schema_version`" <br> 2. "加 v0→v1 的 difficulty/material_fp/guessed 三列 ALTER" <br> 3. "在 init_db() 和 connect() 中调用 _migrate" |
-| "重写 m.js 的辨析卡页面" | 1. "先看当前 drawCardLibrary 函数结构（L1473-1573）" <br> 2. "改成 allCards + cards 双变量 + applyFilters()" <br> 3. "加 300ms 防抖搜索框" |
+| "重写 m.js 的辨析卡页面" | 1. "先看当前辨析卡渲染函数的结构（搜 `renderCards`）" <br> 2. "改成 allCards + cards 双变量 + applyFilters()" <br> 3. "加 300ms 防抖搜索框" |
 | "APK 构建失败帮我修" | 1. 贴 Gradle 报错最后 30 行 → 定位问题 <br> 2. 贴相关 build.gradle 片段 → 修改 <br> 3. 构建验证结果 → 确认 |
 
 ### 拆分原则
