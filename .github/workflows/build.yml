@@ -20,7 +20,34 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
       - name: 运行测试
-        run: python -m pytest tests -q
+        run: |
+          # 失败时把「失败的用例名」提升为 GitHub 注解。
+          # 原因：作业日志下载需要仓库写权限，而注解在公开仓库可直接通过 REST API 读取，
+          # 这样「哪条用例挂了」不必依赖看日志就能定位。
+          echo "::notice::python=$(python -V 2>&1) | pytest=$(python -m pytest --version 2>&1 | head -1) | node=$(node -v 2>&1 || echo none)"
+          set +e
+          python -m pytest tests -q -rf --tb=short > /tmp/pytest.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/pytest.log
+          if [ "$rc" -ne 0 ]; then
+          python - <<'PY'
+          import re
+          text = ""
+          try:
+              with open("/tmp/pytest.log", encoding="utf-8", errors="replace") as f:
+                  text = f.read()
+          except OSError:
+              pass
+          lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+          picked = [l for l in lines if re.match(r"^(FAILED|ERROR)\b", l)]
+          if not picked:
+              picked = lines[-30:]
+          for l in picked[:8]:
+              print("::error::" + l[:900])
+          PY
+          fi
+          exit "$rc"
 
   # APK 构建：仅在手动触发时执行。
   # 说明：本项目 Android 构建依赖本地工具链（Chaquopy + .tools/ 下的 Gradle/SDK/wheels，
