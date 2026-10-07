@@ -132,6 +132,24 @@ img { max-width: 100%; height: auto; }
 }
 #tabbar a:focus-visible { color: var(--cinnabar); }
 
+/* ============ A11Y-01 点击式列表行的键盘可用性 ============ */
+/* 原本用 <div> 绑 onclick 的整行列表项已改为原生 <button>；
+   抹平浏览器默认按钮外观（字体/居中/内边距/边框），保持与原视觉一致。
+   具体控件外观（.sr-item / .ta-item / .heat-row / .mst-row）仍由各自类提供。 */
+button.sr-item, button.ta-item, button.heat-row, button.mst-row {
+  font: inherit; color: inherit; text-align: left; width: 100%; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+}
+button.ta-item, button.heat-row, button.mst-row { background: none; border: 0; }
+button.ta-item { border-top: 1px solid var(--line-soft); }
+button.mst-row { padding: 0; }
+/* 行内含「删除」等子按钮时不能整行改成 button（嵌套按钮非法），
+   改由标题内的原生 button 承担键盘激活；视觉与原标题一致。 */
+.sr-title-btn {
+  font: inherit; color: inherit; text-align: left;
+  background: none; border: 0; padding: 0; cursor: pointer;
+}
+
 /* UX-02 首次使用 / 配置状态提示卡 */
 .setup-card { border-left: 4px solid var(--cinnabar); }
 .setup-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -162,15 +180,18 @@ img { max-width: 100%; height: auto; }
 .door-actions .btn { flex: 1; }
 
 /* UX-05 设置分区快速定位 + 保存时机标签 */
+/* PAGE-02：原先单行横向滚动并隐藏滚动条，窄屏只露出前几个分区，用户看不出右侧还有内容。
+   改成换行布局：320px / 360px / 375px / 430px 与特大字号下均不超过两行，
+   六个分区始终全部可见。锚点行为（data-sec → scrollIntoView）与 #sec-m-* 的
+   scroll-margin-top 完全不变。 */
 .m-index {
-  display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 8px;
-  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 0 8px;
 }
-.m-index::-webkit-scrollbar { display: none; }
 .si-btn {
-  flex: 0 0 auto; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2);
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink-2);
   border-radius: 999px; padding: 6px 14px; cursor: pointer;
-  font-size: calc(12.5px * var(--fs)); white-space: nowrap;
+  font-size: calc(12.5px * var(--fs));
+  max-width: 100%;   /* 极端窄屏下允许收缩换行，绝不横向溢出 */
 }
 .si-btn:active { color: var(--cinnabar); border-color: var(--cinnabar); }
 .save-tag {
@@ -916,9 +937,9 @@ h2.sec { font-family: var(--serif); font-size: calc(15px * var(--fs)); color: va
   flex-shrink: 0; font-size: calc(11px * var(--fs)); border: 1px solid var(--line);
   border-radius: 5px; padding: 2px 7px; color: var(--ink-3); margin-top: 2px;
 }
-.sr-main { flex: 1; min-width: 0; }
-.sr-title { font-size: calc(14.5px * var(--fs)); font-weight: 600; }
-.sr-sub { font-size: calc(12px * var(--fs)); color: var(--ink-3); margin-top: 2px; }
+.sr-main { display: block; flex: 1; min-width: 0; }
+.sr-title { display: block; font-size: calc(14.5px * var(--fs)); font-weight: 600; }
+.sr-sub { display: block; font-size: calc(12px * var(--fs)); color: var(--ink-3); margin-top: 2px; }
 .sr-count { margin: 10px 2px 8px; min-height: 20px; }
 .sr-open-hint { flex: 0 0 auto; align-self: center; color: var(--cinnabar); font-size: calc(12px * var(--fs)); font-weight: 700; }
 

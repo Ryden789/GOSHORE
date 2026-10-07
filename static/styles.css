@@ -326,6 +326,8 @@ input, select, textarea { font-family: var(--sans); }
   box-shadow: var(--shadow);
   padding: 18px 20px; position: relative; overflow: hidden;
   cursor: default; transition: .15s;
+  /* A11Y-01：可点击的统计卡改为原生 <a>，补回块级与链接默认样式抹平 */
+  display: block; color: inherit; text-decoration: none;
 }
 .stat-card.link { cursor: pointer; }
 .stat-card.link:hover { transform: translateY(-2px); box-shadow: 0 3px 0 rgba(35,32,26,.05), 0 10px 24px rgba(35,32,26,.1); }
@@ -397,8 +399,15 @@ input, select, textarea { font-family: var(--sans); }
   box-shadow: var(--shadow);
   padding: 14px 18px; cursor: pointer; transition: .15s;
   display: flex; align-items: center; gap: 14px;
+  /* A11Y-01：整行列表项已改为原生 <a>，抹平链接默认下划线与蓝色，
+     使键盘焦点行与鼠标行外观一致（div 行同样适用，无副作用）。 */
+  color: inherit; text-decoration: none;
 }
 .doc-item:hover { border-color: var(--cinnabar); transform: translateX(3px); }
+/* A11Y-01：含「移出 / 变式歼灭 / 勾选」等子控件的行不能整行套链接，
+   改用标题内嵌链接作为可键盘激活的主入口，样式与原标题保持一致。 */
+.doc-title-link { color: inherit; text-decoration: none; }
+.doc-title-link:hover { text-decoration: underline; }
 .doc-open-hint { flex: 0 0 auto; color: var(--indigo); font-size: calc(12.5px * var(--fs)); font-weight: 600; white-space: nowrap; }
 .doc-open-hint span { padding-left: 3px; }
 .doc-kind {

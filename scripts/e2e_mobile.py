@@ -324,6 +324,31 @@ def check_browser():
         record(back == "#/home" and door and prompt_ok,
                "开门守卫：#/practice 弹回 #/home 并给出可读提示",
                f"最终 hash={back}，开门卡={door}，提示={prompt_ok}")
+
+        # A11Y-02：弹窗焦点管理（打开即移入 / Tab 不逃到背景 / Esc 等价于「稍后再说」）
+        a11y2 = []
+        act0 = None
+        try:
+            in_modal = ("() => { const m = document.getElementById('doorPrompt');"
+                        " return !!(m && m.contains(document.activeElement)); }")
+            if not pg.evaluate(in_modal):
+                a11y2.append("打开后焦点未移入弹窗")
+            act0 = pg.evaluate("document.activeElement && document.activeElement.id")
+            if act0 != "doorGo":
+                a11y2.append(f"默认焦点应为 doorGo，实际 {act0!r}")
+            pg.keyboard.press("Tab")
+            pg.wait_for_timeout(150)
+            if not pg.evaluate(in_modal):
+                a11y2.append("Tab 后焦点逃到弹窗外的背景")
+            pg.keyboard.press("Escape")
+            pg.wait_for_timeout(300)
+            if pg.locator("#doorPrompt").count():
+                a11y2.append("Esc 未关闭弹窗")
+        except Exception as e:
+            a11y2.append(f"异常：{e}")
+        record(not a11y2, "A11Y-02 每日弹窗焦点管理：打开移入 / Tab 不逃逸 / Esc 等价关闭",
+               "；".join(a11y2) if a11y2 else f"默认焦点 {act0}，Esc 已关闭")
+
         # 关掉提示，继续用首页卡片完成开门题（弹窗与首页卡片两条入口等价）
         if pg.locator("#doorLater").count():
             pg.locator("#doorLater").click()
@@ -1331,6 +1356,145 @@ def check_browser():
             pg3.close()
         except Exception as e:
             record(False, "N5 夜间模式（桌面）", f"异常（{step}）：{e}")
+
+        # ---- A11Y-01：点击式列表项改用原生 <a>/<button> 后，键盘可聚焦 + Enter 激活。
+        #      语义与外观的静态保证由 tools/check_a11y_rows.mjs 长期守着；
+        #      这里只证明「浏览器里真的 Tab 得到、Enter 真的触发一次」。
+        A11Y_D_NAME = "A11Y-01 桌面：搜题结果/首页统计卡为原生 <a> 且 Enter 可激活"
+        try:
+            problems = []
+            step = "A11Y-01 桌面"
+            pa = browser.new_page(viewport={"width": 1280, "height": 900})
+            pa.add_init_script(INIT_JS)
+            pa.goto(BASE + "/index.html#/search", wait_until="domcontentloaded", timeout=20000)
+            pa.wait_for_selector("#q", timeout=20000)
+            pa.fill("#q", "的")
+            pa.click("#go")
+            pa.wait_for_selector("#list .doc-item", timeout=20000)
+            tag = pa.eval_on_selector("#list .doc-item", "e => e.tagName")
+            href = pa.eval_on_selector("#list .doc-item", "e => e.getAttribute('href') || ''")
+            did = pa.eval_on_selector("#list .doc-item", "e => e.dataset.id")
+            if tag != "A" or href != f"#/doc/{did}":
+                problems.append(f"搜题结果应为 <a href='#/doc/{did}'>，实际 <{tag} href={href!r}>")
+            else:
+                pa.locator("#list .doc-item").first.focus()
+                pa.keyboard.press("Enter")
+                pa.wait_for_selector(".doc-header", timeout=20000)
+                if pa.evaluate("location.hash") != f"#/doc/{did}":
+                    problems.append(f"Enter 应进入 #/doc/{did}，实际 {pa.evaluate('location.hash')}")
+                pa.wait_for_timeout(300)
+            pa.evaluate("location.hash = '#/home'")
+            pa.wait_for_selector(".stat-card.link", timeout=20000)
+            cards = pa.eval_on_selector_all(
+                ".stat-card.link",
+                "els => els.map(e => e.tagName + '|' + (e.getAttribute('href') || ''))")
+            if not cards or not all(x.startswith("A|#/") for x in cards):
+                problems.append(f"首页可点统计卡应为 <a href>，实际 {cards}")
+            record(not problems, A11Y_D_NAME,
+                   "；".join(problems) if problems else
+                   f"搜题首行 → #/doc/{did}，统计卡 {len(cards)} 张")
+            pa.close()
+        except Exception as e:
+            record(False, A11Y_D_NAME, f"异常（{step}）：{e}")
+
+        A11Y_M_NAME = "A11Y-01 移动：搜题结果/掌握度行为原生 <button> 且 Enter 可激活"
+        try:
+            problems = []
+            step = "A11Y-01 移动搜题"
+            pb = browser.new_page(viewport={"width": 390, "height": 844})
+            pb.add_init_script(INIT_JS)
+            pb.goto(BASE + "/m/#/search", wait_until="domcontentloaded", timeout=20000)
+            pb.wait_for_selector("#srQ", timeout=20000)
+            pb.fill("#srQ", "的")
+            pb.click("#srGo")
+            pb.wait_for_selector("#srList .sr-item", timeout=20000)
+            tag = pb.eval_on_selector("#srList .sr-item",
+                                      "e => e.tagName + ':' + e.getAttribute('type')")
+            if tag != "BUTTON:button":
+                problems.append(f"搜题结果应为 <button type=button>，实际 {tag}")
+            else:
+                pb.locator("#srList .sr-item").first.focus()
+                pb.keyboard.press("Enter")
+                try:
+                    pb.wait_for_function(
+                        "document.getElementById('mTitle').textContent === '做题中'",
+                        timeout=10000)
+                except Exception:
+                    problems.append("搜题行 Enter 未进入做题视图")
+            # 掌握度行（大库聚合较慢；取不到数据就只记录「无数据」）
+            step = "A11Y-01 移动掌握度"
+            pb.evaluate("location.hash = '#/home'")
+            pb.wait_for_timeout(400)
+            pb.goto(BASE + "/m/#/mastery", wait_until="domcontentloaded", timeout=20000)
+            try:
+                pb.wait_for_selector(".mst-row", timeout=25000)
+            except Exception:
+                pass
+            mst_n = pb.locator(".mst-row").count()
+            if mst_n:
+                mst = pb.eval_on_selector_all(
+                    ".mst-row",
+                    "els => els.slice(0, 5).map(e => e.tagName + ':' + (e.getAttribute('type') || ''))")
+                if not all(t == "BUTTON:button" for t in mst):
+                    problems.append(f"掌握度行应为 <button>，实际 {mst}")
+            record(not problems, A11Y_M_NAME,
+                   "；".join(problems) if problems else
+                   f"搜题首行 Enter → 做题中；掌握度 {mst_n} 行"
+                   + ("" if mst_n else "（无数据，跳过）"))
+            pb.close()
+        except Exception as e:
+            record(False, A11Y_M_NAME, f"异常（{step}）：{e}")
+
+        # ---- PAGE-02：设置分区导航由「单行横滚 + 隐藏滚动条」改为换行后，
+        #      320px 与特大字号下六个分区必须全部可见、不横滚、不超过两行。
+        PAGE02_NAME = "PAGE-02 移动设置分区导航：320px/特大字号下 6 个分区全可见且不横滚"
+        try:
+            problems = []
+            step = "PAGE-02 设置分区"
+            pd = browser.new_page(viewport={"width": 320, "height": 720})
+            pd.add_init_script(INIT_JS)
+            for fs_idx, fs_name in ((1, "常规"), (3, "特大")):
+                # 设置页重渲染会替换节点，先整页 reload 再点分段控件
+                pd.goto(BASE + "/m/#/settings", wait_until="domcontentloaded", timeout=20000)
+                pd.wait_for_selector("#fontPick .type-check", timeout=30000)
+                pd.locator("#fontPick .type-check").nth(fs_idx).click(timeout=15000)
+                pd.wait_for_timeout(400)
+                m = pd.evaluate("""() => {
+                  const idx = document.querySelector('.m-index');
+                  const btns = [...document.querySelectorAll('.si-btn')];
+                  const vw = window.innerWidth;
+                  return {
+                    n: btns.length,
+                    rows: new Set(btns.map(b => Math.round(b.getBoundingClientRect().top))).size,
+                    overflow: idx ? Math.round(idx.scrollWidth - idx.clientWidth) : -1,
+                    clipped: btns.filter(b => {
+                      const r = b.getBoundingClientRect();
+                      return r.left < -0.5 || r.right > vw + 0.5 || r.width < 12;
+                    }).map(b => b.textContent.trim()),
+                  };
+                }""")
+                if m["n"] != 6 or m["overflow"] > 1 or m["rows"] > 2 or m["clipped"]:
+                    problems.append(f"{fs_name}字号：{m}")
+            # 点最后一个分区仍准确定位（标题不被吸顶栏遮住）
+            step = "PAGE-02 定位"
+            pd.locator(".si-btn").last.click()
+            pd.wait_for_timeout(900)
+            pos = pd.evaluate("""() => {
+              const b = document.querySelectorAll('.si-btn')[5];
+              const sec = document.getElementById(b.dataset.sec);
+              const head = document.getElementById('mhead');
+              const hh = head ? head.getBoundingClientRect().height : 0;
+              const r = sec.getBoundingClientRect();
+              return {sec: b.dataset.sec, top: Math.round(r.top), headH: Math.round(hh)};
+            }""")
+            if pos["top"] < pos["headH"] - 4:
+                problems.append(f"点「数据清空」后标题被吸顶栏遮住：{pos}")
+            record(not problems, PAGE02_NAME,
+                   "；".join(problems) if problems else
+                   f"6 个分区 ≤2 行、零横滚；末项定位 top={pos['top']}（吸顶 {pos['headH']}）")
+            pd.close()
+        except Exception as e:
+            record(False, PAGE02_NAME, f"异常（{step}）：{e}")
 
         browser.close()
 

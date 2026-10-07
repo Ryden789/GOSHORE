@@ -1244,17 +1244,21 @@ function clearAllTimers() {
 }
 
 /* UX-03 每日开门题提示：未完成今日开门题被拦截时，给出可读说明与「开始今日一题」直达入口。
-   保留原有「跳回首页 + 拦截受限路由」的逻辑，不改变受限页面集合与每日判定口径。 */
+   保留原有「跳回首页 + 拦截受限路由」的逻辑，不改变受限页面集合与每日判定口径。
+   A11Y-02：补全模态焦点管理（打开时焦点移入 / Tab 在弹窗内循环 / Esc 等价于「稍后再说」/
+   关闭后焦点恢复），以及重复打开与监听清理；拦截范围、完成判定与抽题流程一字未动。 */
 function dailyDoorPrompt() {
   if (document.getElementById("doorPrompt")) return;
+  // 记录触发弹窗前的活动元素，关闭时按原路返回焦点
+  const opener = document.activeElement;
   const mask = document.createElement("div");
   mask.className = "door-mask";
   mask.id = "doorPrompt";
   mask.innerHTML = `
-    <div class="door-card" role="dialog" aria-modal="true" aria-labelledby="doorT">
+    <div class="door-card" role="dialog" aria-modal="true" aria-labelledby="doorT" aria-describedby="doorD">
       <div class="door-emoji" aria-hidden="true">📅</div>
       <h3 id="doorT">先完成今日开门一题</h3>
-      <p>每日开门题是当天学习的第一步：做完它，其余学习功能（刷题 / 复习 / 错题…）才会解锁。
+      <p id="doorD">每日开门题是当天学习的第一步：做完它，其余学习功能（刷题 / 复习 / 错题…）才会解锁。
         它只是当天的热身，<b>不等于</b>完成整个学习计划，也不影响复习排期。</p>
       <div class="door-actions">
         <button class="btn btn-ghost" id="doorLater">稍后再说</button>
@@ -1262,22 +1266,69 @@ function dailyDoorPrompt() {
       </div>
     </div>`;
   document.body.appendChild(mask);
-  const close = () => mask.remove();
+
+  let closed = false;
+  // 弹窗内当前可操作项（主按钮加载中会被禁用，此时只剩关闭项可达）
+  const focusables = () => $$("button", mask).filter(el => !el.disabled);
+
+  const close = () => {
+    if (closed) return;                    // 重复关闭保护（Esc / 遮罩 / 按钮可能连击）
+    closed = true;
+    document.removeEventListener("keydown", onKey, true);
+    mask.remove();
+    // 焦点恢复：原元素还在就回去；否则落到首页「今日一题」按钮，再不行落到主内容区
+    if (opener && opener.isConnected && opener !== document.body
+        && opener !== document.documentElement && typeof opener.focus === "function") {
+      try { opener.focus(); return; } catch (e) { /* 元素不可聚焦则继续兜底 */ }
+    }
+    const daily = document.getElementById("dailyGo");
+    if (daily) { daily.focus(); return; }
+    const v = document.getElementById("view");
+    if (v) { v.tabIndex = -1; v.focus(); }
+  };
+
+  // 捕获阶段拦截：保证 Tab 不会跑到遮罩后面的导航或页面按钮上
+  const onKey = e => {
+    if (e.key === "Escape") { e.preventDefault(); close(); return; }
+    if (e.key !== "Tab") return;
+    const items = focusables();
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    const act = document.activeElement;
+    if (!mask.contains(act)) {             // 焦点已在弹窗外（含被禁用的主按钮把焦点交还 body）
+      e.preventDefault(); (e.shiftKey ? last : first).focus(); return;
+    }
+    if (e.shiftKey && act === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && act === last) { e.preventDefault(); first.focus(); }
+  };
+  document.addEventListener("keydown", onKey, true);
+
   mask.addEventListener("click", e => { if (e.target === mask) close(); });
   $("#doorLater", mask).onclick = close;
   $("#doorGo", mask).onclick = async () => {
     const b = $("#doorGo", mask);
     b.disabled = true; b.textContent = "抽题中…";
+    // 主按钮禁用期间焦点会掉到 body，主动把焦点交给仍可用的关闭项
+    const later = $("#doorLater", mask);
+    if (later) later.focus();
     try {
       const r = await api("/api/paper", { n: 1 });
-      if (!r.ids.length) { toast("题库暂不可用"); b.disabled = false; b.textContent = "开始今日一题"; return; }
+      if (!r.ids.length) {
+        toast("题库暂不可用");
+        b.disabled = false; b.textContent = "开始今日一题"; b.focus(); return;
+      }
       close();
       runPaper(r.ids, { title: "每日一题", daily: true });
     } catch (e) {
       toast("组卷失败：" + e.message);
-      b.disabled = false; b.textContent = "开始今日一题";
+      b.disabled = false; b.textContent = "开始今日一题"; b.focus();
     }
   };
+
+  // 焦点移入弹窗：默认落在「开始今日一题」，但绝不自动触发它
+  const go = $("#doorGo", mask);
+  if (go && !go.disabled) go.focus();
+  else { const later = $("#doorLater", mask); if (later) later.focus(); }
 }
 
 function route() {
@@ -1626,18 +1677,18 @@ async function renderTimeAnalysis() {
     ${d.slow_correct.length ? `
     <h2 class="sec">🐢 会做但超时</h2>
     <div class="card">${d.slow_correct.map(t => `
-      <div class="ta-item" data-id="${t.doc_id}">
-        <div class="ta-main"><b>${esc(t.title)}</b>
-          <span class="muted">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))}</span></div>
+      <button type="button" class="ta-item" data-id="${t.doc_id}">
+        <span class="ta-main"><b>${esc(t.title)}</b>
+          <span class="muted">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))}</span></span>
         <span class="ta-ms">${fmt(t.ms / 1000)}</span>
-      </div>`).join("")}</div>` : ""}
+      </button>`).join("")}</div>` : ""}
     <h2 class="sec">⏱ 耗时最长 Top ${d.top_slow.length}</h2>
     <div class="card">${d.top_slow.map((t, i) => `
-      <div class="ta-item" data-id="${t.doc_id}">
-        <div class="ta-main"><b>${i + 1}. ${esc(t.title)}${t.slow ? " 🐢" : ""}</b>
-          <span class="muted">${esc([t.module].filter(Boolean).join(" · "))} · ${t.correct ? "答对" : "答错"}</span></div>
+      <button type="button" class="ta-item" data-id="${t.doc_id}">
+        <span class="ta-main"><b>${i + 1}. ${esc(t.title)}${t.slow ? " 🐢" : ""}</b>
+          <span class="muted">${esc([t.module].filter(Boolean).join(" · "))} · ${t.correct ? "答对" : "答错"}</span></span>
         <span class="ta-ms">${fmt(t.ms / 1000)}</span>
-      </div>`).join("")}</div>`;
+      </button>`).join("")}</div>`;
   const ids = d.top_slow.map(t => t.doc_id);
   $$("#view .ta-item").forEach(el => {
     const pos = ids.indexOf(+el.dataset.id);
@@ -2198,17 +2249,8 @@ async function renderHome() {
       <button class="btn btn-primary btn-block" id="dailyGo" style="margin-top:10px">抽今日一题</button>
     </div>`}
 
-    <div class="stat-grid">
-      <div class="stat"><b>${s.today_answers}</b><span>今日作答 · 对 ${s.today_correct}</span></div>
-      <div class="stat"><b>${s.streak} 天</b><span>连续学习</span></div>
-      <div class="stat"><b>${totalRate}%</b><span>总正确率 · 共 ${s.answers_total} 题</span></div>
-      <div class="stat"><b>${s.wrong_count}</b><span>待消灭错题</span></div>
-      <div class="stat"><b>${focusMin} 分</b><span>今日专注</span></div>
-      <div class="stat"><b>🔥 ${Streak.n}</b><span>今日连对</span></div>
-      <div class="stat"><b>${s.annihilated || 0}</b><span>累计歼灭错题</span></div>
-      <div class="stat"><b>${s.today_guessed || 0}</b><span>今日蒙题</span></div>
-    </div>
-    ${GoalRing.panel(s.goal)}
+    <!-- PAGE-01：常用学习入口前移到统计网格与每日目标之前。节点原样搬移——
+         标签、路由、题量、条件显示与点击动作全部未改，仅调整所在位置。 -->
     <h2 class="sec">开始学习</h2>
     <a class="entry" id="recGo" style="cursor:pointer"><span class="ei">🎯</span>
       <span class="et"><b>今日推荐练习</b><small>按掌握度智能组卷 15 题 · 弱项优先</small></span><span class="go">›</span></a>
@@ -2225,7 +2267,19 @@ async function renderHome() {
     <a class="entry" href="#/me"><span class="ei">报</span>
       <span class="et"><b>本周诊断</b><small>正确率涨跌与建议</small></span><span class="go">›</span></a>
     <a class="entry" id="exportToday" style="margin-top:12px;cursor:pointer"><span class="ei">📤</span>
-      <span class="et"><b>导出今日学习报告</b><small>保存或分享今日学习成果</small></span><span class="go">›</span></a>`;
+      <span class="et"><b>导出今日学习报告</b><small>保存或分享今日学习成果</small></span><span class="go">›</span></a>
+
+    <div class="stat-grid">
+      <div class="stat"><b>${s.today_answers}</b><span>今日作答 · 对 ${s.today_correct}</span></div>
+      <div class="stat"><b>${s.streak} 天</b><span>连续学习</span></div>
+      <div class="stat"><b>${totalRate}%</b><span>总正确率 · 共 ${s.answers_total} 题</span></div>
+      <div class="stat"><b>${s.wrong_count}</b><span>待消灭错题</span></div>
+      <div class="stat"><b>${focusMin} 分</b><span>今日专注</span></div>
+      <div class="stat"><b>🔥 ${Streak.n}</b><span>今日连对</span></div>
+      <div class="stat"><b>${s.annihilated || 0}</b><span>累计歼灭错题</span></div>
+      <div class="stat"><b>${s.today_guessed || 0}</b><span>今日蒙题</span></div>
+    </div>
+    ${GoalRing.panel(s.goal)}`;
 
   const sx = $("#setupX");   // UX-02：关闭首次使用提示（当天不再显示）
   if (sx) sx.onclick = () => {
@@ -2466,14 +2520,14 @@ async function renderPractice(auto = "") {
         const st = rateMap[m];
         const r = st ? st.rate : null;
         return `
-        <div class="heat-row" data-m="${esc(m)}">
+        <button type="button" class="heat-row" data-m="${esc(m)}">
           <span class="heat-name">${esc(m)}</span>
           <span class="heat-track">
             <span class="heat-fill ${r == null ? "" : heatCls(r)}"
               style="width:${r == null ? 0 : r}%"></span>
           </span>
           <span class="heat-val">${r == null ? "待积累" : r + "%"}${st ? ` · ${st.n}题` : ""}</span>
-        </div>`;
+        </button>`;
       }).join("")}
     </div>
     <div class="card">
@@ -4067,14 +4121,14 @@ async function renderSearch() {
     const ids = res.items.map(it => it.id);
     $("#srList").innerHTML = res.items.length
       ? res.items.map(it => `
-        <div class="sr-item" data-id="${it.id}">
+        <button type="button" class="sr-item" data-id="${it.id}">
           <span class="sr-kind">${esc(it.kind || "文档")}</span>
-          <div class="sr-main">
-            <div class="sr-title">${esc(it.title)}</div>
-            <div class="sr-sub">${esc([it.kaodian, it.region + " " + it.year, it.qid].filter(Boolean).join(" · "))}</div>
-          </div>
+          <span class="sr-main">
+            <span class="sr-title">${esc(it.title)}</span>
+            <span class="sr-sub">${esc([it.kaodian, it.region + " " + it.year, it.qid].filter(Boolean).join(" · "))}</span>
+          </span>
           <span class="sr-open-hint">练习</span>
-        </div>`).join("")
+        </button>`).join("")
       : `<div class="empty">没有符合条件的结果</div>`;
     $$("#srList .sr-item").forEach(el => {
       const pos = ids.indexOf(+el.dataset.id);
@@ -4153,7 +4207,7 @@ async function renderMyDocs() {
         <div class="sr-item" data-id="${it.id}">
           <span class="sr-kind">${esc(it.module || "导入")}</span>
           <div class="sr-main">
-            <div class="sr-title">${esc((it.stem || it.title || "").slice(0, 60))}</div>
+            <div class="sr-title"><button type="button" class="sr-title-btn" data-open="${it.id}">${esc((it.stem || it.title || "").slice(0, 60))}</button></div>
             <div class="sr-sub">${esc([it.kaodian, it.region + " " + it.year, it.qid]
               .filter(Boolean).join(" · "))} · ${it.options} 个选项</div>
           </div>
@@ -4168,6 +4222,11 @@ async function renderMyDocs() {
         if (e.target.dataset.del) return;
         runPaper([+el.dataset.id]);
       };
+    });
+    // A11Y-01：整行含「删除」子按钮，不能把行改成 button（嵌套按钮非法），
+    // 改由标题内的原生 button 承担键盘激活；鼠标点整行行为保持不变。
+    $$("#mdList .sr-title-btn").forEach(b => {
+      b.onclick = e => { e.stopPropagation(); runPaper([+b.dataset.open]); };
     });
     // 删除：两步确认（不依赖 WebView 的 confirm 对话框）
     $$("#mdList [data-del]").forEach(btn => {
@@ -4265,7 +4324,7 @@ async function renderMastery() {
         </div>
       </div>
       ${list.length ? list.map(it => `
-        <div class="kd-row mst-row" data-module="${esc(it.module)}" data-kaodian="${esc(it.kaodian)}"
+        <button type="button" class="kd-row mst-row" data-module="${esc(it.module)}" data-kaodian="${esc(it.kaodian)}"
              style="cursor:pointer;align-items:center">
           <span class="kn" style="flex:1;min-width:0">
             <span style="color:${M_LEVEL_COLOR[it.level]}">●</span>
@@ -4276,7 +4335,7 @@ async function renderMastery() {
             ${it.rate === null ? '<span class="muted">未练</span>' : `<b>${it.rate}%</b>`}
             <span class="muted" style="display:block">${M_LEVEL_LABEL[it.level]} · 掌握 ${it.mastery.toFixed(2)}</span>
           </span>
-        </div>`).join("") + (rest ? `<button class="btn btn-block" id="mstMore" style="margin-top:12px">显示更多（还有 ${rest} 个）</button>` : "")
+        </button>`).join("") + (rest ? `<button class="btn btn-block" id="mstMore" style="margin-top:12px">显示更多（还有 ${rest} 个）</button>` : "")
         : `<div class="card"><div class="empty">${
             st.onlyPracticed ? "还没有练过的考点，先去题库做几道题吧" : "暂无考点数据，先去题库做几道题吧"
           }</div></div>`}`;

@@ -1396,12 +1396,24 @@ async function renderHome() {
       <p class="page-desc">题库 ${s.doc_counts["真题"] || 0} 道真题 · ${s.doc_counts["考点"] || 0} 篇考点 · ${s.doc_counts["材料"] || 0} 份材料</p>
     </div>
 
-    <div class="stat-row rise rise-1">
+    <!-- PAGE-01：常用学习入口前移到统计卡与图表之前。节点原样搬移——标签、路由、
+         题量、条件显示与点击动作全部未改，仅调整所在位置。 -->
+    <div class="panel rise rise-1">
+      <h3>开始学习</h3>
+      <div class="quick-entries">
+        <a class="qe" href="#/paper"><div class="qe-ico">✎</div><div class="qe-t">随机组卷</div><div class="qe-d">整卷计时，模拟实战</div></a>
+        <a class="qe" href="#/review"><div class="qe-ico">◌</div><div class="qe-t">今日复习</div><div class="qe-d">艾宾浩斯到期 ${s.review_due + s.card_due} 项</div></a>
+        <a class="qe" href="#/cards"><div class="qe-ico">▦</div><div class="qe-t">辨析卡</div><div class="qe-d">${s.card_due ? `今日到期 ${s.card_due} 张` : "词语辨析记忆训练"}</div></a>
+        <a class="qe" href="#/essay"><div class="qe-ico">文</div><div class="qe-t">申论 · 综应</div><div class="qe-d">题型方法与提分要点</div></a>
+      </div>
+    </div>
+
+    <div class="stat-row rise rise-2">
       <div class="stat-card"><div class="v">${s.today_answers}<small>题</small></div><div class="k">今日作答 · 对 ${s.today_correct}</div></div>
       <div class="stat-card" style="--accent:var(--indigo)"><div class="v">${s.streak}<small>天</small></div><div class="k">连续学习</div></div>
       <div class="stat-card" style="--accent:var(--bamboo)"><div class="v">${rate}<small>%</small></div><div class="k">总正确率 · ${s.answers_total} 次作答</div></div>
-      <div class="stat-card link" data-go="wrong" style="--accent:var(--cinnabar)"><div class="v">${s.wrong_count}<small>道</small></div><div class="k">待消灭错题</div></div>
-      <div class="stat-card link" data-go="review" style="--accent:var(--amber)"><div class="v">${s.review_due + s.card_due}<small>项</small></div><div class="k">今日待复习（题 ${s.review_due} + 卡 ${s.card_due}）</div></div>
+      <a class="stat-card link" data-go="wrong" href="#/wrong" style="--accent:var(--cinnabar)"><div class="v">${s.wrong_count}<small>道</small></div><div class="k">待消灭错题</div></a>
+      <a class="stat-card link" data-go="review" href="#/review" style="--accent:var(--amber)"><div class="v">${s.review_due + s.card_due}<small>项</small></div><div class="k">今日待复习（题 ${s.review_due} + 卡 ${s.card_due}）</div></a>
     </div>
 
     ${GoalRing.panel(s.goal)}
@@ -1461,15 +1473,6 @@ async function renderHome() {
                 <div class="bar ${i === st.daily.length - 1 ? "today" : ""}" style="height:${Math.max(2, Math.round(d.minutes / Math.max(1, ...st.daily.map(x => x.minutes)) * 100))}%"></div>
                 <span class="bar-lbl">${i % 2 ? "" : d.date.slice(3)}</span>
               </div>`).join("")}
-          </div>
-        </div>
-        <div class="panel">
-          <h3>开始学习</h3>
-          <div class="quick-entries">
-            <a class="qe" href="#/paper"><div class="qe-ico">✎</div><div class="qe-t">随机组卷</div><div class="qe-d">整卷计时，模拟实战</div></a>
-            <a class="qe" href="#/review"><div class="qe-ico">◌</div><div class="qe-t">今日复习</div><div class="qe-d">艾宾浩斯到期 ${s.review_due + s.card_due} 项</div></a>
-            <a class="qe" href="#/cards"><div class="qe-ico">▦</div><div class="qe-t">辨析卡</div><div class="qe-d">${s.card_due ? `今日到期 ${s.card_due} 张` : "词语辨析记忆训练"}</div></a>
-            <a class="qe" href="#/essay"><div class="qe-ico">文</div><div class="qe-t">申论 · 综应</div><div class="qe-d">题型方法与提分要点</div></a>
           </div>
         </div>
       </div>
@@ -1546,14 +1549,14 @@ async function renderSearch() {
     $("#searchPageMeta").textContent = res.total ? `第 ${page} 页 · 每页 20 条` : "";
     $("#list").innerHTML = res.items.length
       ? res.items.map(it => `
-          <div class="doc-item" data-id="${it.id}">
+          <a class="doc-item" data-id="${it.id}" href="#/doc/${it.id}">
             <span class="doc-kind ${esc(it.kind)}">${esc(it.kind || "文档")}</span>
             <div class="doc-main">
               <div class="doc-title">${esc(it.title)}</div>
               <div class="doc-sub">${esc([it.kaodian, it.region + " " + it.year, it.qid].filter(Boolean).join(" · "))}</div>
             </div>
             <span class="doc-open-hint">查看题目 <span aria-hidden="true">→</span></span>
-          </div>`).join("")
+          </a>`).join("")
       : `<div class="empty">没有符合条件的结果</div>`;
     $$("#list .doc-item").forEach(el =>
       el.onclick = () => {
@@ -2288,7 +2291,7 @@ async function renderWrong() {
         <div class="doc-item wrong-item" data-id="${it.id}">
           <label class="wb-pick-wrap" title="勾选后可导出/打印"><input type="checkbox" class="wb-pick" data-id="${it.id}"/></label>
           <div class="doc-main">
-            <div class="doc-title">${esc(it.title)}${badge}${anniBadge}</div>
+            <div class="doc-title"><a class="doc-title-link" href="#/doc/${it.id}/answer">${esc(it.title)}</a>${badge}${anniBadge}</div>
             <div class="doc-sub">${esc([it.kaodian, it.region + " " + it.year].filter(Boolean).join(" · "))}</div>
             <div class="reason-row" data-id="${it.id}">
               ${WRONG_REASONS.map(r =>
@@ -2889,14 +2892,14 @@ async function renderMarks() {
     <div class="doc-list rise rise-1" id="list"></div>`;
   $("#list").innerHTML = items.length
     ? items.map(it => `
-        <div class="doc-item" data-id="${it.id}">
+        <a class="doc-item" data-id="${it.id}" href="#/doc/${it.id}">
           <span class="doc-kind ${esc(it.kind)}">${esc(it.kind || "文档")}</span>
           <div class="doc-main">
             <div class="doc-title">${esc(it.title)}</div>
             <div class="doc-sub">${esc([it.kaodian, it.region + " " + it.year].filter(Boolean).join(" · "))}</div>
           </div>
           <span style="color:var(--amber);font-size:calc(16px * var(--fs))">★</span>
-        </div>`).join("")
+        </a>`).join("")
     : `<div class="empty">还没有收藏 —— 在题目「作答」页点 ☆ 收藏</div>`;
   $$("#list .doc-item").forEach(el =>
     el.onclick = () => {
@@ -3753,13 +3756,13 @@ async function runPaper(ids, opt = {}) {
       </div>
       <div class="doc-list">
         ${docs.map((doc, i) => `
-          <div class="doc-item exam-review-item" data-i="${i}">
+          <a class="doc-item exam-review-item" data-i="${i}" href="#/doc/${doc.id}/ai">
             <div class="doc-main">
               <div class="doc-title">${answers[i] ? (answers[i].correct ? "✔" : "✘") : "○"} ${esc(doc.title)}</div>
               <div class="doc-sub">${esc([doc.kaodian, doc.region + " " + doc.year].filter(Boolean).join(" · "))}</div>
             </div>
             <span class="doc-open-hint">查看解析 <span aria-hidden="true">→</span></span>
-          </div>`).join("")}
+          </a>`).join("")}
       </div>`;
     $("#rePaper").onclick = () => {
       exitFullscreen();
@@ -5689,13 +5692,13 @@ async function renderReview() {
       ${items.length ? `
       <div class="doc-list" style="margin-top:14px">
         ${items.map(it => `
-          <div class="doc-item" data-id="${it.id}">
+          <a class="doc-item" data-id="${it.id}" href="#/doc/${it.id}/answer">
             <div class="doc-main">
               <div class="doc-title">${esc(it.title)}</div>
               <div class="doc-sub">${esc([it.kaodian, it.module].filter(Boolean).join(" · "))}</div>
             </div>
             <div class="doc-side"><span class="tag">第 ${it.stage} 轮 · ${EBB_STAGES[Math.min(it.stage - 1, 5)]}前到期</span></div>
-          </div>`).join("")}
+          </a>`).join("")}
       </div>` : `<div class="empty" style="padding:20px">今天没有到期的真题复习——保持节奏，做新题错题都会自动进入复习计划</div>`}
     </div>
     <div class="review-dashboard panel rise rise-2">
@@ -6849,14 +6852,14 @@ async function renderTimeAnalysis() {
       <h3 style="margin:0 0 10px">🐢 会做但超时（Top ${d.slow_correct.length}）<span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">正确率没问题，节奏才是——点进去限时重做</span></h3>
       <div class="doc-list">
         ${d.slow_correct.map(t => `
-          <div class="doc-item" data-id="${t.doc_id}">
+          <a class="doc-item" data-id="${t.doc_id}" href="#/doc/${t.doc_id}">
             <div class="doc-main">
               <div class="doc-title">${esc(t.title)}</div>
               <div class="doc-sub">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))}</div>
             </div>
             <div class="doc-side"><span style="color:var(--cinnabar);font-weight:700">${fmt(secs(t.ms) * 1)}</span>
               <span style="color:var(--ink-3);font-size:calc(12px * var(--fs))"> / 阈值 ${fmt(t.threshold)}</span></div>
-          </div>`).join("")}
+          </a>`).join("")}
       </div>
     </div>` : ""}
 
@@ -6864,13 +6867,13 @@ async function renderTimeAnalysis() {
       <h3 style="margin:0 0 10px">⏱ 耗时最长 Top ${d.top_slow.length}</h3>
       <div class="doc-list">
         ${d.top_slow.map((t, i) => `
-          <div class="doc-item" data-id="${t.doc_id}">
+          <a class="doc-item" data-id="${t.doc_id}" href="#/doc/${t.doc_id}">
             <div class="doc-main">
               <div class="doc-title">${i + 1}. ${esc(t.title)} ${t.slow ? "🐢" : ""}</div>
               <div class="doc-sub">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))} · ${t.correct ? "答对" : "答错"}</div>
             </div>
             <div class="doc-side"><span style="font-family:var(--mono);font-weight:700">${fmt(t.ms / 1000)}</span></div>
-          </div>`).join("")}
+          </a>`).join("")}
       </div>
     </div>`;
 

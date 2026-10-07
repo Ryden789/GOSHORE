@@ -143,8 +143,8 @@ GOSHORE/
 │   ├── goshor.db          # 题库与学习记录
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（764 条）
-├── tools/                 # 前端静态校验器（10 个 .mjs）
+├── tests/                 # pytest 用例（831 条）
+├── tools/                 # 前端静态校验器（14 个 .mjs）
 ├── scripts/               # 导入 / 打包 / E2E 回归脚本
 └── docs/                  # 开发文档（按用途归类，见 docs/）
 ```
@@ -152,19 +152,19 @@ GOSHORE/
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（764 条，跑在临时库上，不碰 data/goshor.db）
+# 后端单元 / 接口测试（831 条，跑在临时库上，不碰 data/goshor.db）
 python -m pytest tests -q
 
 # 前端静态校验器（无需浏览器；本机无 node 时自动跳过）
 node tools/check_appearance.mjs    # 夜间模式 + 字号四档
 node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致性
-# …共 10 个，全部退出码 0
+# …共 14 个，全部退出码 0
 
-# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 74 项断言）
+# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 78 项断言）
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 814 passed**、**11 个静态校验器全 EXIT=0**、**E2E 74 项断言全通过**。
+当前基线：**pytest 831 passed**、**14 个静态校验器全 EXIT=0**、**E2E 78 项断言全通过**。
 
 ## 常见问题
 
