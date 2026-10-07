@@ -72,10 +72,12 @@ html[data-theme="dark"] {
 html[data-theme="light"] { color-scheme: light; }
 
 /* N4 字号四档：只缩放正文基数，UI（导航/按钮/表格）不受影响。
-   默认（未设 data-fontsize）即 md，与升级前一致。 */
-html[data-fontsize="sm"] { --base-font: 13.5px; --read-font: 15px; }
-html[data-fontsize="lg"] { --base-font: 15.5px; --read-font: 17.5px; }
-html[data-fontsize="xl"] { --base-font: 17px;   --read-font: 19.5px; }
+   默认（未设 data-fontsize）即 md，与升级前一致。
+   四档跨度按「肉眼可辨」设计：小→特大 正文 12.5→19px（约 +52%），
+   相邻两档至少差 2px，避免切了看不出变化。 */
+html[data-fontsize="sm"] { --base-font: 12.5px; --read-font: 14px; }
+html[data-fontsize="lg"] { --base-font: 16.5px; --read-font: 18.5px; }
+html[data-fontsize="xl"] { --base-font: 19px;   --read-font: 21.5px; }
 /* 行高宽松（可选开关） */
 html[data-lineheight="loose"] { --read-lh: 2.15; }
 

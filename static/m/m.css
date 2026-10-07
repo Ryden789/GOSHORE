@@ -67,10 +67,11 @@ html[data-theme="dark"] {
 }
 html[data-theme="light"] { color-scheme: light; }
 
-/* N4 字号四档：只缩放正文基数，UI（tabbar / 按钮 / 表格）不受影响。 */
-html[data-fontsize="sm"] { --base-font: 14.5px; --read-font: 14.5px; }
-html[data-fontsize="lg"] { --base-font: 18.5px; --read-font: 18.5px; }
-html[data-fontsize="xl"] { --base-font: 20.5px; --read-font: 20.5px; }
+/* N4 字号四档：只缩放正文基数，UI（tabbar / 按钮 / 表格）不受影响。
+   四档跨度按「肉眼可辨」设计：小→特大 13→22px（约 +69%），相邻两档差 3px 以上。 */
+html[data-fontsize="sm"] { --base-font: 13px; --read-font: 13px; }
+html[data-fontsize="lg"] { --base-font: 19px; --read-font: 19px; }
+html[data-fontsize="xl"] { --base-font: 22px; --read-font: 22px; }
 html[data-lineheight="loose"] { --read-lh: 1.95; }
 /* 特大档下长文允许换行、表格横向滚动，但不横向溢出（文档边界要求） */
 .stem, .opt, .sz-content, .f-ctx, .f-explain, .muted, .card { overflow-wrap: anywhere; }
