@@ -1,7 +1,8 @@
 """O1 多设备加密同步测试：加密层 / URL 归一 / 配置落盘 / mock WebDAV 往返。
 
 三个关键不变量（任何一条破了都会让用户数据受损）：
-1. **明文不落盘、不上云**：settings.json 里看不到口令原文，云端文件是信封；
+1. **云端永远是信封；本地有 DPAPI 时明文不落盘**：上传包一律加密，Windows 上
+   settings.json 里看不到口令原文；无 DPAPI 的平台（Linux/安卓）按既定约定留明文；
 2. **解不开就绝不覆盖**：错口令 / 被篡改 / 非本格式 → 返回错误，本地数据不动；
 3. **双端同源**：桌面 `app/main.py` 与移动 `goshor_server.py` 走同一份
    `app/sync_webdav.py`，接口与设置项同口径。
@@ -216,15 +217,29 @@ def tmp_settings(tmp_path, monkeypatch):
 
 
 def test_secrets_never_written_in_plaintext(tmp_settings):
+    """有 DPAPI 的平台（Windows）口令必须密文落盘；没有的平台按约定留明文。
+
+    这条是**平台分叉**的，断言必须跟着分叉——`_dpapi_available()` 只在 win32 为真，
+    Linux/安卓没有系统级加密可用，`save_settings` 会保留明文（见本文件
+    `test_android_without_dpapi_keeps_plaintext`）。把「明文不落盘」写成无条件断言，
+    在 Windows 上永远为真、在 Linux 上（CI 就跑在 Linux）永远为假。
+    """
     config.save_settings({"sync_url": "https://x/dav",
                           "sync_password": "s3cret-pw",
                           "sync_passphrase": "s3cret-pp"})
     text = tmp_settings.read_text(encoding="utf-8")
-    assert "s3cret-pw" not in text and "s3cret-pp" not in text
     disk = json.loads(text)
     if config._dpapi_available():
+        assert "s3cret-pw" not in text and "s3cret-pp" not in text
         assert disk.get("sync_password_enc") and disk.get("sync_passphrase_enc")
         assert disk.get("sync_password", "") == ""
+    else:
+        # 无 DPAPI：明文落盘是既定行为，但绝不能凭空多出 _enc 字段
+        # （否则看起来像「已经加密了」，实际是假象）
+        assert disk.get("sync_password") == "s3cret-pw"
+        assert disk.get("sync_passphrase") == "s3cret-pp"
+        assert "sync_password_enc" not in disk
+        assert "sync_passphrase_enc" not in disk
     # 读回来必须是明文（否则用户重进设置页就没法继续用了）
     s = config.load_settings()
     assert s["sync_password"] == "s3cret-pw"
