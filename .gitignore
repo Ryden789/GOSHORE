@@ -14,7 +14,7 @@ __pycache__/
 # 测试/临时文件
 data/test*.pdf
 scripts/_*.py
-scripts/_e2e_tmp/
+scripts/_*_tmp/
 .tmp/
 
 # 安卓构建工具链与产物

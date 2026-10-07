@@ -132,16 +132,19 @@ def test_common_fraction_table_present():
 # ============================================================
 
 def test_body_has_no_ordered_list_markers():
-    """移动端 m.js 的 md() 只认 '- ' 列表；写成 '1. ' 会散成一堆段落。
+    """行测速查正文统一用 "- " 无序列表。
 
-    双端共用同一份正文，所以这里统一约束成无序列表。
+    背景：移动端 m.js 的 md() 原先只认 "- "，写成 "1. " 会散成一堆段落；
+    双端共用同一份正文，所以行测速查统一约束成无序列表。
+    （移动端 md() 现已补齐对 "1. " / "1、 " 的支持，与桌面端同规则；
+    此处保留该约束作为行测速查的内容风格约定，不影响综应考点里的编号步骤。）
     """
     bad = []
     for g, p in ALL_POINTS:
         for ln in p["body"].split("\n"):
             if re.match(r"^\s*\d+[.、]\s", ln):
                 bad.append(f"{g['name']} · {p['title']} → {ln[:24]}")
-    assert not bad, f"正文里出现有序列表标记（移动端渲染不出列表）：{bad}"
+    assert not bad, f"正文里出现有序列表标记（行测速查统一用无序列表）：{bad}"
 
 
 def test_body_uses_markdown_that_both_renderers_support():

@@ -155,7 +155,9 @@ function md(src) {
   src = src.replace(/`([^`]+)`/g, "<code>$1</code>");
   src = src.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 
-  const lines = src.split("\n");
+  // 剥掉 CRLF 里的 \r：否则 "- 甲\r\n" 会把 \r 带进 <li>，与移动端渲染不一致
+  // （tools/check_md_parity.mjs 守着这一条）。
+  const lines = src.replace(/\r/g, "").split("\n");
   let html = "", i = 0;
   const para = [];
   const flush = () => {

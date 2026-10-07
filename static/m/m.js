@@ -4954,27 +4954,51 @@ async function renderHistory() {
 }
 
 
-/* ---------- 轻量 Markdown（解析用） ---------- */
+/* ---------- 轻量 Markdown（解析用） ----------
+   规则与桌面端 static/app.js 的 md() 逐条对齐（tools/check_md_parity.mjs 守着）：
+   · 无序 `- ` / `* `；有序 `1. ` / `1、 `（都要求后面有空格，行首不留缩进）
+   · 标题 `##`~`######`（单个 `#` 不算标题，与桌面端一致）
+   · 行内 `code`、`**加粗**`、图片 `![alt](url)`、`[[双链]]` 取显示名
+   · 连续普通行合并进同一个 <p> 并用 <br> 换行（桌面端同款，避免移动端双倍行距）
+   · `>` 不构成引用块——桌面端 esc 先于分行，`>` 早已变成 `&gt;`，两端都是普通文本
+   只差标签名与 class：桌面 <strong>/<h4>/<ul>、移动 <b>/<div class="md-h">/<ul class="md-list">。
+   校验器按「块序列 + 块内文本」归一后比对，标签差异不算不一致。
+   刻意保留的差异：空输入返回占位文案（桌面返回空串）；裸 HTML 一律转义
+   （桌面有白名单放行 <br>/<sub> 等题库原文标签，移动更保守，防注入）。 */
+function stripWl(s) {
+  return String(s).replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, p, l) => l || p.split("/").pop());
+}
 
 function md(text) {
-  const lines = String(text ?? "").replace(/\r/g, "").split("\n");
+  const lines = stripWl(String(text ?? "")).replace(/\r/g, "").split("\n");
   const inline = t => esc(t)
-    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>");
-  let html = "", inList = false;
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, a, u) => `<img alt="${a}" src="${u}">`)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  let html = "", listTag = "";
+  const para = [];
+  const flushPara = () => { if (para.length) { html += `<p class="md-p">${para.join("<br>")}</p>`; para.length = 0; } };
+  const closeList = () => { if (listTag) { html += `</${listTag}>`; listTag = ""; } };
   for (const ln of lines) {
-    const li = ln.match(/^\s*[-*]\s+(.*)$/);
-    const hd = ln.match(/^(#{1,4})\s+(.*)$/);
-    if (li) {
-      if (!inList) { html += '<ul class="md-list">'; inList = true; }
-      html += "<li>" + inline(li[1]) + "</li>";
+    const ul = ln.match(/^[-*]\s+(.*)$/);
+    const ol = ln.match(/^\d+[.、]\s+(.*)$/);
+    const hd = ln.match(/^(#{2,6})\s+(.*)$/);
+    if (ul || ol) {
+      flushPara();
+      const tag = ul ? "ul" : "ol";
+      if (listTag !== tag) { closeList(); html += `<${tag} class="md-list">`; listTag = tag; }
+      html += "<li>" + inline((ul || ol)[1]) + "</li>";
+    } else if (hd) {
+      flushPara(); closeList();
+      html += `<div class="md-h">${inline(hd[2])}</div>`;
+    } else if (ln.trim() === "") {
+      flushPara(); closeList();
     } else {
-      if (inList) { html += "</ul>"; inList = false; }
-      if (hd) html += `<div class="md-h">${inline(hd[2])}</div>`;
-      else if (ln.trim()) html += `<p class="md-p">${inline(ln)}</p>`;
+      closeList();
+      para.push(inline(ln));
     }
   }
-  if (inList) html += "</ul>";
+  flushPara(); closeList();
   return html || '<p class="muted">（无内容）</p>';
 }
 
