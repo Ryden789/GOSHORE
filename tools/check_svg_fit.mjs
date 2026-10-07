@@ -5,6 +5,7 @@
 // 这里用最小 DOM 桩把真实前端脚本求值出来，再对生成的 SVG 做几何校验：
 //   1) 根 <svg> 必须有 viewBox，且宽度是 100%（不得写死像素宽）
 //   2) 所有文字/圆点/多边形/线条都要落在 viewBox 内（含估算的文字宽度）
+//      —— 文字已接入全站字号缩放（--fs），故按**特大档**估宽，保证放大后也不裁切。
 //
 // 用法：node tools/check_svg_fit.mjs
 import fs from "node:fs";
@@ -13,6 +14,10 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// 与 static/styles.css / static/m/m.css 的 html[data-fontsize="xl"] { --fs: 1.35 } 保持一致。
+// 改档位跨度时必须同步这里，否则「放大后文字出界」会漏检。
+const FS_MAX = 1.35;
 
 /* ---------------- 最小 DOM 桩 ---------------- */
 
@@ -139,7 +144,13 @@ function checkSvg(name, svg, problems) {
     const body = m[2].replace(/<[^>]*>/g, "");
     const x = Number((attrs.match(/\sx\s*=\s*"([-\d.]+)"/) || [])[1]);
     const y = Number((attrs.match(/\sy\s*=\s*"([-\d.]+)"/) || [])[1]);
-    const fs = Number((attrs.match(/font-size\s*=\s*"([-\d.]+)"/) || [])[1] || 12);
+    // 字号：既支持裸属性 font-size="22"，也支持已接入全站缩放的
+    // style="font-size:calc(22px * var(--fs))"。后者按**特大档**估宽 ——
+    // 四档切换后文字会变大，必须连最宽那一档也放得进视窗。
+    const styleFs = (attrs.match(/font-size\s*:\s*calc\(\s*([\d.]+)px\s*\*\s*var\(--fs\)\s*\)/) || [])[1];
+    const attrFs = (attrs.match(/font-size\s*=\s*"([-\d.]+)"/) || [])[1];
+    const fsBase = Number(attrFs || styleFs || 12);
+    const fs = styleFs ? fsBase * FS_MAX : fsBase;   // 估宽用的最坏字号
     const anchor = (attrs.match(/text-anchor\s*=\s*"(\w+)"/) || [])[1] || "start";
     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
     const w = textWidth(body, fs);
@@ -150,7 +161,7 @@ function checkSvg(name, svg, problems) {
     out(`文字「${body}」`, right, y - fs);
     out(`文字「${body}」`, left, y + fs * 0.35);
     out(`文字「${body}」`, right, y + fs * 0.35);
-    if (fs < 10) problems.push(`${name}: 文字「${body}」字号 ${fs} < 10px`);
+    if (fsBase < 10) problems.push(`${name}: 文字「${body}」字号 ${fsBase} < 10px`);
   }
 
   // 圆点
@@ -271,6 +282,8 @@ const badCases = [
   ["写死像素宽", `<svg width="120" height="120" viewBox="0 0 120 120"><circle cx="60" cy="60" r="40"/></svg>`],
   ["缺 viewBox", `<svg width="100%"><circle cx="60" cy="60" r="40"/></svg>`],
   ["文字出界", `<svg viewBox="0 0 120 120" width="100%"><text x="118" y="60" text-anchor="start" font-size="12">很长的模块名字</text></svg>`],
+  // 已接入全站缩放的形式：设计字号 12 在 md 下恰好贴边，特大档（×1.35）必然出界
+  ["缩放后文字出界", `<svg viewBox="0 0 120 120" width="100%"><text x="118" y="60" text-anchor="start" style="font-size:calc(12px * var(--fs))">很长的模块名字</text></svg>`],
   ["图形出界", `<svg viewBox="0 0 120 120" width="100%"><circle cx="115" cy="60" r="30"/></svg>`],
 ];
 const selfProblems = [];

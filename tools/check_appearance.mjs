@@ -16,7 +16,10 @@
 //   6) N4 四档字号 + 旧 U-7 三档（s/m/b）迁移、行高宽松开关、data-* 落位；
 //   7) 双端块源码逐字节一致（防漂移）；
 //   8) 两端 CSS 都有夜间覆写块与语义变量、字号档位变量、index.html 有防闪烁脚本、
-//      缓存版本已升级、设置页已接线。
+//      缓存版本已升级、设置页已接线；
+//   9) 全站缩放：--fs 因子单调递增且跨度 ≥1.5 倍、无裸 font-size: Npx
+//      （CSS 规则 / 内联样式 / SVG 属性三处都不许漏）、body 与 --base-font /
+//      --read-font 都由 --fs 派生。
 //
 // 用法：node tools/check_appearance.mjs
 import fs from "node:fs";
@@ -492,6 +495,72 @@ for (const s of SOURCES) {
   ok(!/body\.bigfont|body\.smallfont/.test(css), `${s.label} 不该再依赖 body.bigfont/smallfont`);
 }
 
+// 7.5 全站缩放：--fs 因子驱动一切，且必须「明显」且「到处都生效」
+//
+// 背景缺陷：原先只有 --base-font / --read-font 两个变量接了档位，全站 685 处
+// font-size 写死 px，于是「只有设置页看着变了、其它页面纹丝不动」。
+// 这里把「因子单调递增 + 无裸 px + body 走变量 + 变量本身由 --fs 派生」钉死。
+{
+  const tier = (css, k) => {
+    const m = css.match(new RegExp(`html\\[data-fontsize="${k}"\\]\\s*\\{[^}]*--fs\\s*:\\s*([0-9.]+)`));
+    return m ? parseFloat(m[1]) : null;
+  };
+  const BARE = /(?<![\w-])font-size\s*:\s*[0-9.]+px/g;
+  const ANY = /(?<![\w-])font-size\s*:\s*([^;{}\n]*)/g;
+  // 合法值：引用 --fs，或引用由 --fs 派生的 --base-font / --read-font
+  // （如 calc(var(--read-font) + 5px)）。写死 px/em/rem 一律不合格。
+  const scaled = v => /var\(--(?:fs|base-font|read-font)\)/.test(v);
+
+  for (const s of SOURCES) {
+    const { css, src } = IMPLS[s.label];
+
+    // (a) 因子存在 + 四档覆写
+    has(css, "--fs:", `${s.label} 的 CSS 应定义无单位缩放因子 --fs`);
+    const sm = tier(css, "sm"), lg = tier(css, "lg"), xl = tier(css, "xl");
+    ok(sm !== null && lg !== null && xl !== null,
+      `${s.label} 的 sm/lg/xl 三档都应覆写 --fs（实际 ${sm} / ${lg} / ${xl}）`);
+
+    if (sm !== null && lg !== null && xl !== null) {
+      // (b) 单调递增，且跨度要「一眼可辨」
+      ok(sm < 1 && 1 < lg && lg < xl,
+        `${s.label} 的 --fs 应满足 sm<1<lg<xl（实际 ${sm} / 1 / ${lg} / ${xl}）`);
+      ok(xl / sm >= 1.5,
+        `${s.label} 小↔特大应 ≥1.5 倍才算「明显」（实际 ${(xl / sm).toFixed(2)}）`);
+      ok(lg / sm >= 1.3 && xl / lg >= 1.1,
+        `${s.label} 相邻档差距过小（sm→lg ${(lg / sm).toFixed(2)}、lg→xl ${(xl / lg).toFixed(2)}）`);
+    }
+
+    // (c) 不能有裸 font-size: Npx —— 漏一处，那处就不跟着缩放
+    const bareCss = (css.match(BARE) || []).length;
+    ok(bareCss === 0, `${s.label} 的 CSS 不应再有裸 font-size: Npx（漏了 ${bareCss} 处）`);
+    const bareJs = (src.match(BARE) || []).length;
+    ok(bareJs === 0, `${s.label} 的内联样式不应再有裸 font-size: Npx（漏了 ${bareJs} 处）`);
+
+    // (d) 每条 font-size 声明都必须接上 --fs
+    const bad = [...css.matchAll(ANY)].map(m => m[1].trim()).filter(v => !scaled(v));
+    ok(bad.length === 0,
+      `${s.label} 的 font-size 必须都接上 var(--fs)（可疑 ${bad.length} 处：${bad.slice(0, 3).join(" / ")}）`);
+    ok((css.match(/calc\([0-9.]+px\s*\*\s*var\(--fs\)\)/g) || []).length >= 50,
+      `${s.label} 应有大量 font-size 走 calc 缩放（否则就是没改到）`);
+
+    // (e) body 字号必须来自变量，写死 px 会让整站缩放失效
+    const body = css.match(/(?:^|\n)body\s*\{[^}]*\}/);
+    ok(body && /font-size\s*:\s*var\(--base-font\)/.test(body[0]),
+      `${s.label} 的 body 字号应引用 var(--base-font)`);
+
+    // (f) 基数本身要由 --fs 派生
+    ok(/--base-font\s*:\s*calc\([0-9.]+px\s*\*\s*var\(--fs\)\)/.test(css),
+      `${s.label} 的 --base-font 应 = calc(Npx * var(--fs))`);
+    ok(/--read-font\s*:\s*calc\([0-9.]+px\s*\*\s*var\(--fs\)\)/.test(css),
+      `${s.label} 的 --read-font 应 = calc(Npx * var(--fs))`);
+
+    // (g) SVG 图表的 <text> 吃不到 CSS 规则，必须内联接上 --fs
+    const svgBare = src.match(/(?<=\s)font-size="[0-9.]+"/g) || [];
+    ok(svgBare.length === 0,
+      `${s.label} 的 SVG <text> 不应再用裸 font-size="N" 属性（漏了 ${svgBare.length} 处）`);
+  }
+}
+
 /* ---------------- 8. 自检：篡改必须被抓到 ---------------- */
 {
   // 把 resolve 的 auto 分支故意写反，同样的断言应当失败 —— 证明上面不是空断言
@@ -516,4 +585,4 @@ if (problems.length) {
   for (const p of problems) console.log("  - " + p);
   process.exit(1);
 }
-console.log("✓ N5/N4 外观偏好校验全部通过：主题三态、跟随系统、字号四档与旧值迁移、双端一致。");
+console.log("✓ N5/N4 外观偏好校验全部通过：主题三态、跟随系统、字号四档与旧值迁移、全站 --fs 缩放、双端一致。");

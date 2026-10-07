@@ -40,6 +40,33 @@ def record(ok, name, detail=""):
 
 BASE = ""  # 服务器起来后赋值
 
+# 量「真实渲染字号」的探针：统计页面上所有**可见文字叶子元素**的 computed font-size。
+# 只量 <html> 上的 --read-font 变量是不够的 —— 变量变了、元素却写死 px 时它照样通过，
+# 这正是「只有设置页看着变了、其它页面纹丝不动」能溜过测试的原因。
+FONT_PROBE = """() => {
+  const out = [];
+  document.querySelectorAll('body *').forEach(el => {
+    if (el.children.length) return;                 // 只看叶子，避免容器重复计数
+    if (!(el.textContent || '').trim()) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return;
+    if (parseFloat(cs.opacity) === 0) return;
+    const fs = parseFloat(cs.fontSize);
+    if (fs > 0) out.push(fs);
+  });
+  if (!out.length) return null;
+  out.sort((a, b) => a - b);
+  const sum = out.reduce((a, b) => a + b, 0);
+  return {
+    n: out.length,
+    median: +out[Math.floor(out.length / 2)].toFixed(2),
+    mean: +(sum / out.length).toFixed(2),
+    min: out[0], max: out[out.length - 1],
+  };
+}"""
+
 
 def http_get(path, expect=200):
     try:
@@ -563,36 +590,75 @@ def check_browser():
         except Exception as e:
             record(False, "N5 夜间模式（移动）", f"异常：{e}")
 
-        # ---- N4 字号四档（移动端）：切档即时生效（正文字号真的变大）→ 特大档不横向溢出
+        # ---- N4 字号四档（移动端）：不只是变量变，**非设置页的真实文字**也要跟着变
+        #
+        # 为什么每次都整页 reload：设置页是从别的路由切回来时**重新渲染**的，
+        # 直接点分段控件会撞上「节点刚渲染完就被替换」的竞态（Playwright 报
+        # element is not stable / detached，偶发假红）。整页加载后文档全新、节点稳定。
         try:
             problems = []
-            pg.goto(BASE + "/#/settings", wait_until="domcontentloaded", timeout=20000)
-            pg.wait_for_selector("#fontPick .type-check", timeout=20000)
+
+            def open_settings():
+                pg.evaluate("location.hash = '#/settings'")
+                pg.reload(wait_until="domcontentloaded", timeout=20000)
+                pg.wait_for_selector("#fontPick .type-check", timeout=20000)
+                pg.wait_for_timeout(400)
+
+            def pick_and_measure(idx, hashes):
+                """点第 idx 档 → 逐个切到目标页 → 量可见文字的真实 computed font-size。"""
+                open_settings()
+                pg.locator("#fontPick .type-check").nth(idx).click(timeout=15000)
+                pg.wait_for_timeout(250)
+                eff = pg.evaluate("document.documentElement.dataset.fontsize")
+                out = {}
+                for h in hashes:
+                    pg.evaluate("location.hash = %r" % h)
+                    pg.wait_for_timeout(600)
+                    out[h] = pg.evaluate(FONT_PROBE)
+                return eff, out
+
+            open_settings()
             n_font = pg.locator("#fontPick .type-check").count()
             if n_font != 4:
                 problems.append(f"字号分段控件应有 4 档，实际 {n_font}")
-            pg.locator("#fontPick .type-check").nth(0).click()   # 小
-            pg.wait_for_timeout(200)
-            st_sm = pg.evaluate(
-                "parseFloat(getComputedStyle(document.documentElement)"
-                ".getPropertyValue('--read-font'))")
-            pg.locator("#fontPick .type-check").nth(3).click()   # 特大
-            pg.wait_for_timeout(200)
-            st_xl = pg.evaluate(
-                "parseFloat(getComputedStyle(document.documentElement)"
-                ".getPropertyValue('--read-font'))")
-            eff = pg.evaluate("document.documentElement.dataset.fontsize")
-            if eff != "xl":
-                problems.append(f"点「特大」后 data-fontsize 应为 xl，实际 {eff!r}")
-            if not (st_xl > st_sm):
-                problems.append(f"特大档正文应大于小档：sm={st_sm} xl={st_xl}")
+
+            pages = ["#/home", "#/all"]
+            eff_sm, sm = pick_and_measure(0, pages)     # 小
+            eff_xl, xl = pick_and_measure(3, pages)     # 特大
+            if eff_sm != "sm":
+                problems.append(f"点「小」后 data-fontsize 应为 sm，实际 {eff_sm!r}")
+            if eff_xl != "xl":
+                problems.append(f"点「特大」后 data-fontsize 应为 xl，实际 {eff_xl!r}")
+
+            ratios = []
+            for name, h in (("首页", "#/home"), ("题库", "#/all")):
+                a, b = sm[h], xl[h]
+                if not a or not b:
+                    problems.append(f"{name} 未采到任何可见文字元素")
+                    continue
+                if b["n"] < 8:
+                    problems.append(f"{name} 可见文字元素太少（{b['n']}），采样不可信")
+                ratio = b["median"] / a["median"]
+                ratios.append(f"{name}中位 {a['median']}→{b['median']}（×{ratio:.2f}）")
+                if ratio < 1.4:
+                    problems.append(
+                        f"{name}小→特大的**真实渲染**字号只放大 {ratio:.2f} 倍"
+                        f"（中位数 {a['median']}→{b['median']}）——该页文字没接上缩放")
+
             # 特大档下整页不得横向溢出（表格/公式区除外，它们各自可滚动）
             ovf = pg.evaluate(
                 "document.documentElement.scrollWidth - document.documentElement.clientWidth")
             if ovf > 1:
                 problems.append(f"特大档下页面横向溢出 {ovf}px")
-            record(not problems, "N4 字号（移动）：四档切换生效 + 特大档不横向溢出",
-                   "；".join(problems) if problems else f"--read-font {st_sm} → {st_xl}，溢出 {ovf}px")
+
+            # 复原为「标准」：全站缩放后 xl 会明显改变排版，留着会影响后续用例
+            open_settings()
+            pg.locator("#fontPick .type-check").nth(1).click(timeout=15000)
+            pg.wait_for_timeout(250)
+
+            record(not problems, "N4 字号（移动）：四档切换 + 非设置页真实文字同步缩放",
+                   "；".join(problems) if problems else
+                   "、".join(ratios) + f"，溢出 {ovf}px")
         except Exception as e:
             record(False, "N4 字号（移动）", f"异常：{e}")
 
@@ -647,13 +713,22 @@ def check_browser():
             pg.click("#srGo")
             pg.wait_for_timeout(1200)
             # 历史标签应出现
-            pg.wait_for_selector("#shWrap .sh-tag", timeout=8000)
+            pg.wait_for_selector("#shWrap .sh-tag", timeout=15000)
             n_tags = pg.locator("#shWrap .sh-tag").count()
             if n_tags < 1:
                 problems.append("有结果搜索后应出现历史标签")
             # 点第一个标签 → 应再次发起搜索（结果数文本更新）
+            # 不写死等待时长：题库近 3 万条，计数查询偶发 >1.2s，固定 sleep 会让
+            # 这条用例假红（还会连带触发「响应回来时视图已卸载」的空指针）。
+            # 改为等计数文案真正落定（最多 15s），超时仍算失败。
             pg.locator("#shWrap .sh-tag").first.click()
-            pg.wait_for_timeout(1200)
+            try:
+                pg.wait_for_function(
+                    "() => { const e = document.getElementById('srCount');"
+                    " return !!e && !/正在检索/.test(e.textContent); }",
+                    timeout=15000)
+            except Exception:
+                pass
             cnt = (pg.locator("#srCount").inner_text() or "").strip()
             if "找到" not in cnt:
                 problems.append(f"点历史标签应触发再搜，实际计数文案 {cnt!r}")
@@ -822,6 +897,45 @@ def check_browser():
                    "；".join(problems) if problems
                    else f"动画 1 次，签名 {log[0] if log else '-'}")
 
+        # ---- N4 字号：全路由 × 特大档零横向溢出
+        # 全站字号缩放后最容易踩的坑：某个宫格/表格用了 1fr 或固定宽度，
+        # 字号放大后把文档撑宽（实测 #/all 的 .hub-grid 在特大档 +46px）。
+        # 只测一两个页面盖不住，所以这里把 33 个路由全扫一遍。
+        # 注意：每页要等够 800ms 让该页的接口请求落地 —— 否则「请求还在飞就切走」
+        # 会触发各页异步回调写已卸载 DOM 的报错，那是另一个问题（见交接文档），
+        # 不该由这条用例来背。
+        try:
+            problems = []
+            pg.evaluate("location.hash = '#/settings'")
+            pg.reload(wait_until="domcontentloaded", timeout=20000)
+            pg.wait_for_selector("#fontPick .type-check", timeout=20000)
+            pg.wait_for_timeout(400)
+            pg.locator("#fontPick .type-check").nth(3).click(timeout=15000)   # 特大
+            pg.wait_for_timeout(250)
+            bad = []
+            for route in routes:
+                pg.evaluate(f"location.hash = '#/{route}'")
+                pg.wait_for_timeout(800)
+                ovf = pg.evaluate(
+                    "document.documentElement.scrollWidth"
+                    " - document.documentElement.clientWidth")
+                if ovf > 1:
+                    bad.append(f"#{route} +{ovf}px")
+            if bad:
+                problems.append("特大档横向溢出：" + "、".join(bad[:6]))
+            # 复原为「标准」
+            pg.evaluate("location.hash = '#/settings'")
+            pg.reload(wait_until="domcontentloaded", timeout=20000)
+            pg.wait_for_selector("#fontPick .type-check", timeout=20000)
+            pg.wait_for_timeout(400)
+            pg.locator("#fontPick .type-check").nth(1).click(timeout=15000)
+            pg.wait_for_timeout(250)
+            record(not problems, "N4 字号：全路由 × 特大档零横向溢出",
+                   "；".join(problems) if problems
+                   else f"{len(routes)} 个路由全部无横向溢出")
+        except Exception as e:
+            record(False, "N4 字号：全路由 × 特大档零横向溢出", f"异常：{e}")
+
         # ---- 做题流闭环：组卷 5 题 → 判分/跳过 → 结算数据正确
         try:
             pg.evaluate("location.hash = '#/practice'")
@@ -914,7 +1028,16 @@ def check_browser():
             # route() 的 leave()：答第 2 题后**立刻切页**，草稿也必须已落盘
             # （节流窗口内本来不会写，靠 route() → DraftPaper.leave() 强制落）
             pg2.locator("#next").click()
-            pg2.wait_for_timeout(200)
+            # 等第 2 题真的渲染出来再点选项：只等固定 200ms 会点到上一题的残留 DOM，
+            # 于是 answers[1] 始终为空 —— 实测约 1/5 概率假红（e2e5 就撞上了）。
+            try:
+                pg2.wait_for_function(
+                    "() => { const t = document.querySelector('.paper-runner-top span');"
+                    " return !!t && /第\\s*2\\s*\\//.test(t.textContent); }",
+                    timeout=8000)
+            except Exception:
+                pass
+            pg2.wait_for_timeout(120)
             pg2.locator(".option").first.click()
             pg2.wait_for_timeout(400)
             # 切页触发 hashchange → route() → DraftPaper.leave() 强制落盘。
@@ -989,27 +1112,55 @@ def check_browser():
             record(not problems, "N5 夜间模式（桌面）：三态切换 / 暗底生效",
                    "；".join(problems) if problems else f"dark({bg}) → {eff2}({bg2})")
 
-            # N4 字号（桌面）：同一套共享块 + 变量缩放，特大档同样要真的变大
+            # N4 字号（桌面）：同一套共享块，非设置页的真实文字同样要跟着缩放
+            # （与移动端同因：整页 reload 后再点，避开设置页重渲染的点击竞态）
             problems = []
-            pg3.evaluate("location.hash = '#/settings'")
-            pg3.wait_for_selector("#fontPick .type-check", timeout=20000)
-            pg3.locator("#fontPick .type-check").nth(0).click()
-            pg3.wait_for_timeout(200)
-            d_sm = pg3.evaluate(
-                "parseFloat(getComputedStyle(document.documentElement)"
-                ".getPropertyValue('--read-font'))")
-            pg3.locator("#fontPick .type-check").nth(3).click()
-            pg3.wait_for_timeout(200)
-            d_xl = pg3.evaluate(
-                "parseFloat(getComputedStyle(document.documentElement)"
-                ".getPropertyValue('--read-font'))")
-            d_eff = pg3.evaluate("document.documentElement.dataset.fontsize")
-            if d_eff != "xl":
-                problems.append(f"桌面端点「特大」后 data-fontsize 应为 xl，实际 {d_eff!r}")
-            if not (d_xl > d_sm):
-                problems.append(f"桌面端特大档正文应大于小档：sm={d_sm} xl={d_xl}")
-            record(not problems, "N4 字号（桌面）：四档切换生效",
-                   "；".join(problems) if problems else f"--read-font {d_sm} → {d_xl}")
+
+            def d_open_settings():
+                pg3.evaluate("location.hash = '#/settings'")
+                pg3.reload(wait_until="domcontentloaded", timeout=20000)
+                pg3.wait_for_selector("#fontPick .type-check", timeout=20000)
+                pg3.wait_for_timeout(400)
+
+            def d_pick_and_measure(idx, hashes):
+                d_open_settings()
+                pg3.locator("#fontPick .type-check").nth(idx).click(timeout=15000)
+                pg3.wait_for_timeout(250)
+                eff = pg3.evaluate("document.documentElement.dataset.fontsize")
+                out = {}
+                for h in hashes:
+                    pg3.evaluate("location.hash = %r" % h)
+                    pg3.wait_for_timeout(800)      # 桌面首页异步渲染 + .rise 入场
+                    out[h] = pg3.evaluate(FONT_PROBE)
+                return eff, out
+
+            d_eff_sm, d_sm_map = d_pick_and_measure(0, ["#/home"])
+            d_eff_xl, d_xl_map = d_pick_and_measure(3, ["#/home"])
+            d_sm, d_xl = d_sm_map["#/home"], d_xl_map["#/home"]
+
+            if d_eff_sm != "sm":
+                problems.append(f"桌面端点「小」后 data-fontsize 应为 sm，实际 {d_eff_sm!r}")
+            if d_eff_xl != "xl":
+                problems.append(f"桌面端点「特大」后 data-fontsize 应为 xl，实际 {d_eff_xl!r}")
+            if not d_sm or not d_xl:
+                problems.append("桌面端首页未采到可见文字元素")
+                d_ratio = 1.0
+            else:
+                if d_xl["n"] < 8:
+                    problems.append(f"桌面端首页可见文字元素太少（{d_xl['n']}），采样不可信")
+                d_ratio = d_xl["median"] / d_sm["median"]
+                if d_ratio < 1.4:
+                    problems.append(
+                        f"桌面端首页真实渲染字号只放大 {d_ratio:.2f} 倍"
+                        f"（中位数 {d_sm['median']}→{d_xl['median']}）——该页文字没接上缩放")
+            # 复原为「标准」
+            d_open_settings()
+            pg3.locator("#fontPick .type-check").nth(1).click(timeout=15000)
+            pg3.wait_for_timeout(250)
+
+            record(not problems, "N4 字号（桌面）：四档切换 + 首页真实文字同步缩放",
+                   "；".join(problems) if problems else
+                   f"首页中位 {d_sm['median']}→{d_xl['median']}（×{d_ratio:.2f}）")
 
             # G2 每日目标（桌面）：目标生效 → 首页进度环 → 归零隐藏
             problems = []
@@ -1059,7 +1210,14 @@ def check_browser():
             if d_tags < 1 and not problems:
                 problems.append("历史标签数为 0")
             pg3.locator("#shWrap .sh-tag").first.click()
-            pg3.wait_for_timeout(1400)
+            # 同移动端：等计数文案落定，不写死 sleep（题库大，计数查询偶发变慢）
+            try:
+                pg3.wait_for_function(
+                    "() => { const e = document.getElementById('rcount');"
+                    " return !!e && !/正在检索/.test(e.textContent); }",
+                    timeout=15000)
+            except Exception:
+                pass
             d_cnt = (pg3.locator("#rcount").inner_text() or "").strip()
             if "找到" not in d_cnt:
                 problems.append(f"桌面端点历史标签应触发再搜，实际 {d_cnt!r}")

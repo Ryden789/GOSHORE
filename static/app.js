@@ -17,7 +17,7 @@ function toast(msg, ms = 3200) {
   if (!t) {
     t = document.createElement("div");
     t.id = "toastBox";
-    t.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink,#333);color:#fff;padding:10px 18px;border-radius:8px;font-size:13.5px;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.25);opacity:0;transition:opacity .25s;pointer-events:none;max-width:80vw";
+    t.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink,#333);color:#fff;padding:10px 18px;border-radius:8px;font-size:calc(13.5px * var(--fs));z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.25);opacity:0;transition:opacity .25s;pointer-events:none;max-width:80vw";
     document.body.appendChild(t);
   }
   t.textContent = msg;
@@ -50,7 +50,7 @@ function confirmBox(msg) {
     wrap.style.cssText = "position:fixed;inset:0;background:rgba(43,38,32,.35);z-index:10000;display:flex;align-items:center;justify-content:center";
     wrap.innerHTML = `
       <div style="background:var(--paper,#faf7ef);border:1px solid var(--line,#d8d2c4);border-radius:12px;padding:24px 28px;max-width:400px;box-shadow:0 8px 32px rgba(43,38,32,.18)">
-        <div style="font-size:15px;color:var(--ink,#2b2620);line-height:1.6;margin-bottom:20px">${esc(msg)}</div>
+        <div style="font-size:calc(15px * var(--fs));color:var(--ink,#2b2620);line-height:1.6;margin-bottom:20px">${esc(msg)}</div>
         <div style="display:flex;gap:10px;justify-content:flex-end">
           <button class="btn btn-sm" id="cfNo" style="min-width:72px">取消</button>
           <button class="btn btn-sm btn-primary" id="cfYes" style="min-width:72px">确定</button>
@@ -221,9 +221,9 @@ function emptyState(title, desc, links) {
   const btns = (links || []).map(([label, href]) =>
     `<a class="btn btn-primary" href="${href}" style="margin:4px 6px 0 0">${esc(label)}</a>`).join("");
   return `<div class="empty-state" style="text-align:center;padding:30px 18px">
-    <div style="font-size:30px;line-height:1;margin-bottom:12px">🚧</div>
-    <h3 style="margin:0 0 10px;font-size:16px">${esc(title)}</h3>
-    <p style="color:var(--ink-2);font-size:13.5px;line-height:1.9;margin:0">${desc}</p>
+    <div style="font-size:calc(30px * var(--fs));line-height:1;margin-bottom:12px">🚧</div>
+    <h3 style="margin:0 0 10px;font-size:calc(16px * var(--fs))">${esc(title)}</h3>
+    <p style="color:var(--ink-2);font-size:calc(13.5px * var(--fs));line-height:1.9;margin:0">${desc}</p>
     ${btns ? `<div style="margin-top:14px">${btns}</div>` : ""}
   </div>`;
 }
@@ -316,7 +316,9 @@ const Theme = {
 /* N4 字号与阅读偏好 · 网页端（app.js / m.js 逐字节一致）。
    四档 Pref('fontsize') ∈ 'sm' | 'md' | 'lg' | 'xl'，结果落到 <html data-fontsize>，
    另有一个可选「行高宽松」开关 Pref('lhloose') → <html data-lineheight="loose">。
-   CSS 只缩放**正文**基数（--base-font / --read-font），UI 不受影响；
+   CSS 用无单位缩放因子 --fs 驱动**全站**文字：所有 font-size 都写成
+   calc(Npx * var(--fs))，--base-font / --read-font 亦由它派生，
+   相邻档约 ±16%、sm↔xl 约 1.6 倍；
    桌面端页面内联脚本会先跑一次防闪，这里是兜底 + 设置页接线。 */
 const FontSize = {
   KEY: "fontsize",
@@ -387,7 +389,7 @@ const GoalRing = {
         stroke-dasharray="${dash} ${(c - +dash).toFixed(1)}"
         transform="rotate(-90 ${cx} ${cx})"/>
       <text x="${cx}" y="${cx + 5}" text-anchor="middle"
-        style="font:700 20px/1 var(--mono);fill:${color}">${pct}%</text>
+        style="font:700 calc(20px * var(--fs))/1 var(--mono);fill:${color}">${pct}%</text>
     </svg>`;
   },
   /** 环旁文案：题量/分钟双行，or 单目标；并给出连续达标天数 */
@@ -437,7 +439,7 @@ const GoalRing = {
         stroke-linecap="round" stroke-dasharray="${dash} ${(c - +dash).toFixed(1)}"
         transform="rotate(-90 ${cx} ${cx})"/>
       <text x="${cx}" y="${cx + 5}" text-anchor="middle"
-        style="font:700 20px/1 var(--mono);fill:${color || "var(--cinnabar)"}">${p}%</text>
+        style="font:700 calc(20px * var(--fs))/1 var(--mono);fill:${color || "var(--cinnabar)"}">${p}%</text>
     </svg>`;
   },
 };
@@ -1124,7 +1126,7 @@ function route() {
       view.classList.remove("route-loading");
       view.innerHTML = `<div class="panel" style="margin-top:24px">
         <h3>页面加载出错</h3>
-        <p style="color:var(--ink-2);font-size:14px">${esc(String((err && err.message) || err))}</p>
+        <p style="color:var(--ink-2);font-size:calc(14px * var(--fs))">${esc(String((err && err.message) || err))}</p>
         <button class="btn btn-primary" onclick="location.reload()">刷新重试</button>
       </div>`;
     });
@@ -1278,7 +1280,7 @@ async function renderHome() {
     <div class="panel rise rise-2" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <div>
         <h3 style="margin:0 0 4px">🎯 今日推荐练习</h3>
-        <p style="margin:0;font-size:13px;color:var(--ink-2)">按掌握度智能组卷 15 题：错得多、久未练的题优先出现</p>
+        <p style="margin:0;font-size:calc(13px * var(--fs));color:var(--ink-2)">按掌握度智能组卷 15 题：错得多、久未练的题优先出现</p>
       </div>
       <button class="btn btn-primary" id="recGo">生成推荐练习</button>
     </div>
@@ -1286,7 +1288,7 @@ async function renderHome() {
     <div class="panel rise rise-2" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <div>
         <h3 style="margin:0 0 4px">📋 今日学习计划</h3>
-        <p style="margin:0;font-size:13px;color:var(--ink-2)">${(pl.summary.today || []).length
+        <p style="margin:0;font-size:calc(13px * var(--fs));color:var(--ink-2)">${(pl.summary.today || []).length
           ? `${pl.summary.today.map(t => `${esc(t.module)} ${t.n} 题`).join(" · ")}　<span style="color:var(--ink-3)">（计划完成 ${pl.summary.done}/${pl.summary.total} 题）</span>`
           : "还没有计划——按能力雷达生成个性化路径，弱项自动加权"}</p>
       </div>
@@ -1306,7 +1308,7 @@ async function renderHome() {
           </div>
         </div>
         <div class="panel">
-          <h3>模块正确率 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">作答 ≥3 次的模块</span></h3>
+          <h3>模块正确率 <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">作答 ≥3 次的模块</span></h3>
           ${s.module_stats.length ? `<div class="mod-bars">
             ${s.module_stats.map(m => `
               <div class="mod-bar-row">
@@ -1323,7 +1325,7 @@ async function renderHome() {
           ${svg}
         </div>
         <div class="panel">
-          <h3>学习时长 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">今日 ${st.today_minutes} 分钟 · 日均 ${st.avg_daily} 分钟 · 累计 ${st.total_minutes} 分钟</span></h3>
+          <h3>学习时长 <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">今日 ${st.today_minutes} 分钟 · 日均 ${st.avg_daily} 分钟 · 累计 ${st.total_minutes} 分钟</span></h3>
           <div class="bar-chart bar-chart-thin">
             ${st.daily.map((d, i) => `
               <div class="bar-col" title="${d.date}：${d.minutes} 分钟">
@@ -1346,7 +1348,7 @@ async function renderHome() {
 
     <div class="dash-grid rise rise-3" style="margin-top:16px">
       <div class="panel">
-        <h3>错因分布 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">在错题本里为错题打标后更准</span></h3>
+        <h3>错因分布 <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">在错题本里为错题打标后更准</span></h3>
         ${s.reason_dist.length ? `<div class="pie-wrap">${pieSvg(s.reason_dist)}</div>` : `<div class="empty" style="padding:20px">还没有错题数据</div>`}
       </div>
       <div class="panel">
@@ -1603,7 +1605,7 @@ async function renderDoc(id, tabName) {
         const isImgQ = /<img|\/img\?path=/.test((d.stem || "") + JSON.stringify(d.options || []));
         $("#answerBar").innerHTML = `
           ${correct ? '<span class="badge ok">回答正确</span>' : '<span class="badge no">回答错误</span>'}
-          <span style="color:var(--ink-3);font-size:13px;font-family:var(--mono)">用时 ${(ms / 1000).toFixed(1)}s</span>
+          <span style="color:var(--ink-3);font-size:calc(13px * var(--fs));font-family:var(--mono)">用时 ${(ms / 1000).toFixed(1)}s</span>
           <button class="btn btn-sm" id="showDraft">📄 看底稿解析</button>
           <button class="btn btn-sm btn-primary" id="askAi"${!online ? ' disabled title="当前离线，可看底稿解析"' : ''}>让 AI 讲这道题</button>
           <button class="btn btn-sm" id="variantBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式题（AI 无法读取图形）"' : ''}>🧬 变式题</button>
@@ -1629,7 +1631,7 @@ async function renderDoc(id, tabName) {
             panel.className = "panel";
             panel.style.marginTop = "12px";
             panel.innerHTML = `
-              <h4 style="margin:0 0 8px;font-size:16px">🧬 变式题（AI 生成，已通过交叉验证）</h4>
+              <h4 style="margin:0 0 8px;font-size:calc(16px * var(--fs))">🧬 变式题（AI 生成，已通过交叉验证）</h4>
               <div class="stem">${md(q.stem)}</div>
               <div class="options">
                 ${q.options.map(o => `<div class="option" data-l="${o.label}"><span class="ol">${o.label}</span><span>${esc(o.text)}</span></div>`).join("")}
@@ -1665,7 +1667,7 @@ async function renderDoc(id, tabName) {
           panel.id = "draftPanel";
           panel.className = "panel";
           panel.style.marginTop = "12px";
-          panel.innerHTML = `<h4 style="margin:0 0 8px;font-size:16px">底稿解析</h4>${draftHtml}`;
+          panel.innerHTML = `<h4 style="margin:0 0 8px;font-size:calc(16px * var(--fs))">底稿解析</h4>${draftHtml}`;
           bar.parentElement.appendChild(panel);
         };
         bindMark();
@@ -2105,11 +2107,11 @@ function reasonDonut(items) {
       A${r} ${r} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)} Z" fill="${col}"/>`;
   }).join("");
   const legend = data.map((d, i) => `
-    <div style="display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 0">
+    <div style="display:flex;align-items:center;gap:8px;font-size:calc(13px * var(--fs));padding:3px 0">
       <span style="width:10px;height:10px;border-radius:2px;background:${DONUT_COLORS[i % DONUT_COLORS.length]}"></span>
       <span style="flex:1">${esc(d.reason)}</span>
       <b>${d.c}</b>
-      <span style="color:var(--ink-3);font-size:12px;width:38px;text-align:right">${Math.round(d.c / total * 100)}%</span>
+      <span style="color:var(--ink-3);font-size:calc(12px * var(--fs));width:38px;text-align:right">${Math.round(d.c / total * 100)}%</span>
     </div>`).join("");
   return `<div class="panel rise rise-1">
     <h3 style="margin:0 0 10px">错因分布</h3>
@@ -2117,8 +2119,8 @@ function reasonDonut(items) {
       <svg viewBox="0 0 140 140" width="100%" role="img" aria-label="错因分布圆环"
            style="flex:0 1 140px;min-width:92px;height:auto;display:block">
         ${arcs}
-        <text x="${C}" y="${C - 2}" text-anchor="middle" font-size="22" font-weight="700" fill="var(--ink-1)">${total}</text>
-        <text x="${C}" y="${C + 16}" text-anchor="middle" font-size="11" fill="var(--ink-3)">道错题</text>
+        <text x="${C}" y="${C - 2}" text-anchor="middle" style="font-size:calc(22px * var(--fs))" font-weight="700" fill="var(--ink-1)">${total}</text>
+        <text x="${C}" y="${C + 16}" text-anchor="middle" style="font-size:calc(11px * var(--fs))" fill="var(--ink-3)">道错题</text>
       </svg>
       <div style="flex:1;min-width:190px">${legend}</div>
     </div>
@@ -2164,7 +2166,7 @@ async function renderWrong() {
             </div>
             ${ai[it.id] ? `<div class="doubt-note" data-ai-note="${it.id}" style="margin-top:6px">
               <b>AI 归因：${esc(ai[it.id].category)}</b>${ai[it.id].specific ? ` · ${esc(ai[it.id].specific)}` : ""}
-              ${ai[it.id].advice ? `<div style="color:var(--ink-3);font-size:12.5px">建议：${esc(ai[it.id].advice)}</div>` : ""}
+              ${ai[it.id].advice ? `<div style="color:var(--ink-3);font-size:calc(12.5px * var(--fs))">建议：${esc(ai[it.id].advice)}</div>` : ""}
             </div>` : ""}
           </div>
           <div class="doc-side">
@@ -2642,7 +2644,7 @@ async function renderArgumentQuiz() {
             return `<button class="btn arg-type-chip" data-type="${esc(t.type)}">${esc(t.type)}<small>${t.count}题 · ${acc}</small></button>`;
           }).join("")}
         </div>
-        <div style="color:var(--ink-3);font-size:12.5px;margin-top:12px">共 ${stats.reduce((a,b)=>a+b.count,0)} 题</div>
+        <div style="color:var(--ink-3);font-size:calc(12.5px * var(--fs));margin-top:12px">共 ${stats.reduce((a,b)=>a+b.count,0)} 题</div>
       </div>`;
     $$("[data-n]").forEach(b => b.onclick = () => {
       perBatch = parseInt(b.dataset.n);
@@ -2672,7 +2674,7 @@ async function renderArgumentQuiz() {
       <div class="panel arg-quiz-q">
         <div class="arg-quiz-prog" style="display:flex;justify-content:space-between;align-items:center">
           <span>第 ${idx + 1}/${draw.items.length} 题 · 来源：${esc(q.src)}${idx === 0 && draw.note ? ` · ${esc(draw.note)}` : ""}</span>
-          <span style="color:var(--ink-3);font-size:12.5px">${mode === "choice" ? "选择模式" : "默写模式"}</span>
+          <span style="color:var(--ink-3);font-size:calc(12.5px * var(--fs))">${mode === "choice" ? "选择模式" : "默写模式"}</span>
         </div>
         <blockquote class="arg-quote">${esc(q.quote)}</blockquote>
         ${mode === "choice" ? `
@@ -2730,7 +2732,7 @@ async function renderArgumentQuiz() {
       <div class="arg-score-card">
         <div class="arg-score-num">${right}<small>/${draw.items.length}</small></div>
         <div class="arg-score-verdict">${right >= draw.items.length * 0.8 ? "语感很准，继续保持" : "把 10 类错误的典型例句再过一遍"}</div>
-        ${draw.note ? `<div style="color:var(--ink-3);font-size:12.5px;margin-top:4px">${esc(draw.note)}</div>` : ""}
+        ${draw.note ? `<div style="color:var(--ink-3);font-size:calc(12.5px * var(--fs));margin-top:4px">${esc(draw.note)}</div>` : ""}
         <div class="arg-score-actions">
           <a class="btn btn-primary" href="#/argument-quiz" onclick="location.reload()">再来一组</a>
           <a class="btn" href="#/argument">返回</a>
@@ -2763,7 +2765,7 @@ async function renderMarks() {
             <div class="doc-title">${esc(it.title)}</div>
             <div class="doc-sub">${esc([it.kaodian, it.region + " " + it.year].filter(Boolean).join(" · "))}</div>
           </div>
-          <span style="color:var(--amber);font-size:16px">★</span>
+          <span style="color:var(--amber);font-size:calc(16px * var(--fs))">★</span>
         </div>`).join("")
     : `<div class="empty">还没有收藏 —— 在题目「作答」页点 ☆ 收藏</div>`;
   $$("#list .doc-item").forEach(el =>
@@ -2836,12 +2838,12 @@ async function renderPaper(auto = "") {
               </span>
             </span>
             <span>题量 <input type="number" id="pN" value="10" min="3" max="30" style="width:70px"/></span>
-            <span>限时 <input type="number" id="pMin" value="0" min="0" max="180" style="width:70px"/><span style="font-size:12px;color:var(--ink-3)"> 分钟（0=不限）</span></span>
+            <span>限时 <input type="number" id="pMin" value="0" min="0" max="180" style="width:70px"/><span style="font-size:calc(12px * var(--fs));color:var(--ink-3)"> 分钟（0=不限）</span></span>
             <span class="type-checks" id="pExam" style="display:inline-flex;vertical-align:middle">
               <div class="type-check" data-e="1" title="全屏作答 + 标准化答题卡 + 交卷统一判分">考场模式</div>
             </span>
           </div>
-          <div style="font-size:12.5px;color:var(--ink-3);margin-top:6px">
+          <div style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin-top:6px">
             智能模式按掌握度加权抽题（错得多、久未练的优先）；随机模式纯随机；顺序模式按题目编号推进；考场模式＝全屏 + 答题卡 + 交卷统一判分
           </div>
         </div>
@@ -2856,7 +2858,7 @@ async function renderPaper(auto = "") {
             <button class="btn tpl-btn" data-tpl="guokao">国考行测 · 135题/120分钟</button>
             <button class="btn tpl-btn" data-tpl="shiye_c">事业单位C类 · 100题/90分钟</button>
           </div>
-          <div id="tplMsg" style="font-size:13px;color:var(--amber);margin-top:6px"></div>
+          <div id="tplMsg" style="font-size:calc(13px * var(--fs));color:var(--amber);margin-top:6px"></div>
         </div>
       </div>
     </div>
@@ -2865,10 +2867,10 @@ async function renderPaper(auto = "") {
         <div class="cfg-group">
           <div class="cfg-label">疑点陷阱题集（官方答案存疑题 · 防坑强化训练）</div>
           <div class="cfg-inline" id="trapRow">
-            <span id="trapCnt" style="font-size:13px;color:var(--ink-3)">加载中…</span>
+            <span id="trapCnt" style="font-size:calc(13px * var(--fs));color:var(--ink-3)">加载中…</span>
             <button class="btn" id="trapStart" disabled>开始陷阱训练</button>
           </div>
-          <div style="font-size:12.5px;color:var(--ink-3);margin-top:6px">来自疑点复核工作台已「确认问题」的题：这些题的官方答案被判定存疑，训练目标是识别陷阱与命题破绽，而非背答案</div>
+          <div style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin-top:6px">来自疑点复核工作台已「确认问题」的题：这些题的官方答案被判定存疑，训练目标是识别陷阱与命题破绽，而非背答案</div>
         </div>
       </div>
     </div>
@@ -2880,7 +2882,7 @@ async function renderPaper(auto = "") {
             <select id="examSel" style="min-width:280px"><option value="">加载中…</option></select>
             <button class="btn btn-primary" id="examStart" disabled>开始整卷</button>
           </div>
-          <div id="examMsg" style="font-size:13px;color:var(--ink-3);margin-top:6px"></div>
+          <div id="examMsg" style="font-size:calc(13px * var(--fs));color:var(--ink-3);margin-top:6px"></div>
         </div>
       </div>
     </div>
@@ -2891,10 +2893,10 @@ async function renderPaper(auto = "") {
           <div class="cfg-inline">
             <button class="btn btn-primary" id="ceStart">开始C类职测整卷</button>
           </div>
-          <div style="font-size:13px;color:var(--ink-3);margin-top:6px">
+          <div style="font-size:calc(13px * var(--fs));color:var(--ink-3);margin-top:6px">
             常识20×1分 · 言语25×1.6分 · 数量分析15×2分 · 判断30×1.5分 · 综合分析10×1.5分（策略制定+实验设计）
           </div>
-          <div id="ceMsg" style="font-size:13px;color:var(--ink-3);margin-top:4px"></div>
+          <div id="ceMsg" style="font-size:calc(13px * var(--fs));color:var(--ink-3);margin-top:4px"></div>
         </div>
       </div>
     </div>
@@ -3347,7 +3349,7 @@ async function runPaper(ids, opt = {}) {
 
   function daubPanel() {
     return `<div class="exam-daub">
-      <div style="font-size:12px;color:var(--ink-3);margin:2px 0 6px">直接点选项涂卡（题目区可只读，不强制作答）· 交卷后统一判分</div>
+      <div style="font-size:calc(12px * var(--fs));color:var(--ink-3);margin:2px 0 6px">直接点选项涂卡（题目区可只读，不强制作答）· 交卷后统一判分</div>
       ${docs.map((_, i) => {
         const a = answers[i];
         return `<div class="daub-row" data-i="${i}">
@@ -3596,8 +3598,8 @@ async function runPaper(ids, opt = {}) {
     }).join("");
     const paceHtml = paceRows ? `
       <div style="text-align:left;margin-top:14px">
-        <h4 style="margin:0 0 6px;font-size:14px">节奏报告 <span style="font-size:12px;color:var(--ink-3)">建议顺序：常识→言语→判断→资料→综合→数量，先把确定性分数拿满</span></h4>
-        <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <h4 style="margin:0 0 6px;font-size:calc(14px * var(--fs))">节奏报告 <span style="font-size:calc(12px * var(--fs));color:var(--ink-3)">建议顺序：常识→言语→判断→资料→综合→数量，先把确定性分数拿满</span></h4>
+        <table style="width:100%;border-collapse:collapse;font-size:calc(13px * var(--fs))">
           <tr style="color:var(--ink-3)"><th align="left" style="padding:4px 8px">模块</th><th style="padding:4px 8px">实际用时</th><th style="padding:4px 8px">建议用时</th><th style="padding:4px 8px">判定</th></tr>
           ${paceRows}
         </table>
@@ -3723,7 +3725,7 @@ async function renderExam() {
     });
     if (r.short && r.short.length) {
       const warn = document.createElement("div");
-      warn.style.cssText = "color:var(--amber);font-size:12.5px;margin:6px 0";
+      warn.style.cssText = "color:var(--amber);font-size:calc(12.5px * var(--fs));margin:6px 0";
       warn.textContent = `⚠ 题库不足，已按实际量出题：${r.short.join("、")}`;
       $("#examBody").prepend(warn);
     }
@@ -3788,7 +3790,7 @@ async function renderShareOpen(code) {
   } catch (e) {
     view.innerHTML = `<div class="page-head"><h1 class="page-title">分享题单</h1></div>
       <div class="panel"><p style="color:var(--cinnabar);font-weight:600">分享码无效或已损坏</p>
-      <p style="color:var(--ink-3);font-size:13px">${esc(String(e.message || e))}</p>
+      <p style="color:var(--ink-3);font-size:calc(13px * var(--fs))">${esc(String(e.message || e))}</p>
       <button class="btn btn-primary" onclick="location.hash='#/share'">返回分享页</button></div>`;
     return;
   }
@@ -3821,11 +3823,11 @@ async function renderShareOpen(code) {
         <button class="btn" id="shareCopy">复制分享链接</button>
         <button class="btn" id="shareBack">返回</button>
       </div>
-      <div style="font-size:12.5px;color:var(--ink-3);margin-top:8px">
+      <div style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin-top:8px">
         挑战按考场模式进行：全屏作答 + 答题卡，交卷后统一判分，成绩自动上榜。
       </div>
       <div id="pkBox" style="margin-top:16px">
-        <h4 style="margin:0 0 8px;font-size:14px">PK 榜</h4>
+        <h4 style="margin:0 0 8px;font-size:calc(14px * var(--fs))">PK 榜</h4>
         ${pkTable(pk.records, null)}
       </div>
     </div>
@@ -3853,7 +3855,7 @@ async function renderShareOpen(code) {
           });
           const box = $("#pkBox");
           if (box) {
-            box.innerHTML = `<h4 style="margin:0 0 8px;font-size:14px">PK 榜（你已上榜）</h4>${pkTable(out.records, out.id)}`;
+            box.innerHTML = `<h4 style="margin:0 0 8px;font-size:calc(14px * var(--fs))">PK 榜（你已上榜）</h4>${pkTable(out.records, out.id)}`;
           }
           const ms = $("#myScore"), msub = $("#mySub");
           if (ms) ms.textContent = `${res.ok}/${res.total} · ${res.total ? Math.round(res.ok / res.total * 100) : 0}%`;
@@ -3912,7 +3914,7 @@ async function renderShare(code = "") {
       ${mine.length ? `<div style="margin-top:8px">${mine.map(s => `
         <div class="share-row">
           <div>
-            <div style="font-weight:600">${esc(s.title || "未命名题单")} <span style="color:var(--ink-3);font-size:12.5px">· ${(s.ids || []).length} 题 · 被打开 ${s.plays || 0} 次</span></div>
+            <div style="font-weight:600">${esc(s.title || "未命名题单")} <span style="color:var(--ink-3);font-size:calc(12.5px * var(--fs))">· ${(s.ids || []).length} 题 · 被打开 ${s.plays || 0} 次</span></div>
             <div class="share-code">${esc(s.code)}</div>
           </div>
           <div style="display:flex;gap:8px;flex-shrink:0">
@@ -3952,7 +3954,7 @@ async function renderShare(code = "") {
       const url = `${location.origin}/#/share/${out.code}`;
       $("#shareOut").innerHTML = `
         <div class="share-out">
-          <div style="font-size:13px;color:var(--ink-2)">已生成 · ${out.count} 题${out.result ? " · 已附带你的成绩（对方可 PK）" : ""}</div>
+          <div style="font-size:calc(13px * var(--fs));color:var(--ink-2)">已生成 · ${out.count} 题${out.result ? " · 已附带你的成绩（对方可 PK）" : ""}</div>
           <textarea class="share-code-box" readonly rows="3">${esc(url)}</textarea>
           <div class="cfg-inline" style="margin-top:8px">
             <button class="btn btn-primary btn-sm" id="copyUrl">复制分享链接</button>
@@ -4103,7 +4105,7 @@ function renderSpeed() {
     const h = await api("/api/speed/history");
     $("#history").innerHTML = h.items.length
       ? h.items.slice(0, 8).map(r =>
-          `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:13px">
+          `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:calc(13px * var(--fs))">
              <span>${r.correct}/${r.total} 正确${r.config.challenge ? " · 60s" : ""}</span>
              <span style="color:var(--ink-3)">${new Date(r.created_at * 1000).toLocaleDateString("zh-CN")}</span>
            </div>`).join("")
@@ -4509,9 +4511,9 @@ async function renderDoubts(page = 1, status = "") {
           <div class="imp-item" style="display:flex;gap:12px;align-items:flex-start">
             <div style="flex:1">
               <div><b style="color:${STATUS_COLOR[it.status] || "var(--ink-3)"}">[${STATUS_LABEL[it.status] || it.status}]</b> ${esc(it.qid)} · ${esc(it.region)} ${esc(it.year)}${it.doc_id ? ` · <a href="#/doc/${it.doc_id}" class="rel-link">查看原题</a>` : ""}</div>
-              <div style="margin-top:4px;font-size:14px">${esc(it.descr)}</div>
+              <div style="margin-top:4px;font-size:calc(14px * var(--fs))">${esc(it.descr)}</div>
               <div class="imp-meta">${esc(it.kaodian_path)}</div>
-              ${it.ai_note ? `<div class="ai-note" style="margin-top:6px;padding:8px;background:var(--bg-2);border-left:3px solid var(--indigo);font-size:13px">${md(it.ai_note)}</div>` : ""}
+              ${it.ai_note ? `<div class="ai-note" style="margin-top:6px;padding:8px;background:var(--bg-2);border-left:3px solid var(--indigo);font-size:calc(13px * var(--fs))">${md(it.ai_note)}</div>` : ""}
             </div>
             <div style="display:flex;flex-direction:column;gap:4px;min-width:120px">
               <button class="btn btn-sm" data-ai="${it.qid}"${!it.doc_id ? ' disabled title="题库无原题"' : ''}>🤖 AI 复核</button>
@@ -4672,9 +4674,9 @@ async function renderSettings() {
         <div class="hint">夜间为「宣纸夜景」：暖灰墨底 + 米白文字，护眼不刺目；选「跟随系统」则随系统深浅自动切换。</div>
       </div>
       <div class="field">
-        <label>正文字号</label>
+        <label>字号</label>
         <div class="type-checks" id="fontPick">${FontSize.pickerHtml()}</div>
-        <div class="hint">只缩放题目与长文的正文字号，导航/按钮等界面元素不受影响。</div>
+        <div class="hint">作用于全站文字：题目、长文与界面元素一起缩放，四档差距明显（小 ↔ 特大约 1.6 倍）。</div>
       </div>
       <div class="field">
         <label class="cb"><input type="checkbox" id="fontLoose" ${FontSize.loose() ? "checked" : ""}/> 行高宽松</label>
@@ -4734,7 +4736,7 @@ async function renderSettings() {
         <span>地区 <input id="expRegion" placeholder="如：国家" style="width:90px"/></span>
         <span>年份 <input id="expYear" placeholder="如：2024" style="width:80px"/></span>
         <span>题量 <select id="expLimit"><option>50</option><option selected>100</option><option>200</option><option>500</option></select></span>
-        <span><label style="font-size:13px"><input type="checkbox" id="expAns" checked/> 附答案解析</label></span>
+        <span><label style="font-size:calc(13px * var(--fs))"><input type="checkbox" id="expAns" checked/> 附答案解析</label></span>
         <button class="btn btn-primary" id="expGo">生成导出页</button>
       </div>
     </div>
@@ -4966,13 +4968,13 @@ async function renderWordfill() {
         </div>
         <div class="cfg-inline">
           <span>题量 <input type="number" id="wfN" value="${cfg.n}" min="3" max="10" style="width:70px"/></span>
-          <span style="color:var(--ink-3);font-size:13px">AI 生成会稍慢（约 3~8 秒/题），生成后自动入库</span>
+          <span style="color:var(--ink-3);font-size:calc(13px * var(--fs))">AI 生成会稍慢（约 3~8 秒/题），生成后自动入库</span>
         </div>
         <div><button class="btn btn-primary" id="wfStart">开始练习</button></div>
       </div>
       <div class="panel">
         <h3>说明</h3>
-        <p style="margin:0;color:var(--ink-2);font-size:13.5px;line-height:1.8">
+        <p style="margin:0;color:var(--ink-2);font-size:calc(13.5px * var(--fs));line-height:1.8">
           词语填空由 DeepSeek 现场命制，题材覆盖政治、经济、文化、科技；每题含逐空解析与干扰项辨析。<br>
           当前为 <b>生成式题库</b>（已生成 ${stats.total_questions} 道），生成过的题目会保存下来供复习；
           答错会自动计入统计。后续如需接入真题题库，可在 vault 中添加「言语理解」分类。
@@ -5006,8 +5008,8 @@ async function renderWordfill() {
 
   async function start() {
     body.innerHTML = `<div class="panel" style="text-align:center;padding:60px 0">
-      <div style="font-size:16px;color:var(--ink-2)">DeepSeek 正在命题中，请稍候…</div>
-      <div style="margin-top:8px;font-size:13px;color:var(--ink-3)">通常需要 5~15 秒</div>
+      <div style="font-size:calc(16px * var(--fs));color:var(--ink-2)">DeepSeek 正在命题中，请稍候…</div>
+      <div style="margin-top:8px;font-size:calc(13px * var(--fs));color:var(--ink-3)">通常需要 5~15 秒</div>
     </div>`;
     try {
       const res = await api("/api/wordfill/practice", cfg);
@@ -5039,7 +5041,7 @@ async function renderWordfill() {
           <span class="tag">${esc(q.category)} · ${esc(q.difficulty === "easy" ? "入门" : q.difficulty === "hard" ? "困难" : "中等")}</span>
           <button class="btn btn-sm" id="wfQuit" style="margin-left:auto;color:var(--ink-3)">退出</button>
         </div>
-        <div class="stem" style="font-size:16px;line-height:2">${esc(q.passage)}</div>
+        <div class="stem" style="font-size:calc(16px * var(--fs));line-height:2">${esc(q.passage)}</div>
         <div class="options">
           ${q.options.map(o => `
             <div class="option" data-label="${o.label}">
@@ -5229,7 +5231,7 @@ async function renderCards() {
             </div>
           </div>
           <div class="answer-bar" style="justify-content:center;gap:10px">
-            <span style="color:var(--ink-3);font-size:13px">自评：</span>
+            <span style="color:var(--ink-3);font-size:calc(13px * var(--fs))">自评：</span>
             <button class="btn btn-sm" style="color:var(--bamboo)" data-lv="2">认识</button>
             <button class="btn btn-sm" style="color:var(--amber)" data-lv="1">模糊</button>
             <button class="btn btn-sm" style="color:var(--cinnabar)" data-lv="0">不会</button>
@@ -5302,7 +5304,7 @@ async function renderCards() {
             <span>${esc(c.module)}${c.category ? " · " + esc(c.category) : ""} · 看义选词</span>
             <span>${idx + 1} / ${cards.length}</span>
           </div>
-          <div style="font-size:13px;color:var(--ink-3);margin-top:12px">根据辨析要点，选出对应的词语：</div>
+          <div style="font-size:calc(13px * var(--fs));color:var(--ink-3);margin-top:12px">根据辨析要点，选出对应的词语：</div>
           <div class="qz-stem">${esc(stem)}</div>
           <div id="qzOpts">
             ${opts.map(o => `<button class="qz-opt" data-id="${o.id}">${esc(o.stem)}</button>`).join("")}
@@ -5395,7 +5397,7 @@ async function renderCards() {
             <div id="rcJudge" class="rc-judge"></div>
             ${md(c.analysis || c.answer || "")}
             <div class="answer-bar" style="justify-content:center;margin-top:12px">
-              <span style="color:var(--ink-3);font-size:13px">自评（可覆盖自动判断）：</span>
+              <span style="color:var(--ink-3);font-size:calc(13px * var(--fs))">自评（可覆盖自动判断）：</span>
               <button class="btn btn-sm" style="color:var(--bamboo)" data-lv="2">认识</button>
               <button class="btn btn-sm" style="color:var(--amber)" data-lv="1">模糊</button>
               <button class="btn btn-sm" style="color:var(--cinnabar)" data-lv="0">不会</button>
@@ -5408,8 +5410,8 @@ async function renderCards() {
         const pct = Math.round(judge.ratio * 100);
         const jd = $("#rcJudge");
         jd.innerHTML = judge.correct
-          ? `<span style="color:var(--bamboo)">✔ 回答正确</span> <span style="color:var(--ink-3);font-size:13px;font-weight:400">（匹配度 ${pct}%）</span>`
-          : `<span style="color:var(--cinnabar)">✘ 回答错误</span> <span style="color:var(--ink-3);font-size:13px;font-weight:400">（匹配度 ${pct}%）</span>`;
+          ? `<span style="color:var(--bamboo)">✔ 回答正确</span> <span style="color:var(--ink-3);font-size:calc(13px * var(--fs));font-weight:400">（匹配度 ${pct}%）</span>`
+          : `<span style="color:var(--cinnabar)">✘ 回答错误</span> <span style="color:var(--ink-3);font-size:calc(13px * var(--fs));font-weight:400">（匹配度 ${pct}%）</span>`;
         $$("[data-lv]", body).forEach(b => b.classList.remove("rc-lv-suggest"));
         const sb = body.querySelector(`[data-lv="${judge.correct ? 2 : 0}"]`);
         if (sb) sb.classList.add("rc-lv-suggest");
@@ -5480,7 +5482,7 @@ async function renderCards() {
           <div class="cp-item"><span class="cp-num" style="color:var(--amber)">${vague.length}</span><span class="cp-lbl">模糊</span></div>
         </div>
         <div class="cfg-inline" style="margin-top:12px">
-          <span style="color:var(--ink-3);font-size:13px">用这些词专项练习：</span>
+          <span style="color:var(--ink-3);font-size:calc(13px * var(--fs))">用这些词专项练习：</span>
           <button class="btn btn-sm" id="wFlip">翻转记忆</button>
           <button class="btn btn-sm" id="wRecall">看词写意</button>
           <button class="btn btn-sm" id="wQuiz">看义选词</button>
@@ -5600,7 +5602,7 @@ async function renderShizheng() {
     const generated = r.items.length ? r.items.map(it => `
       <div class="panel rise" style="${it.period === r.current ? "border-left:4px solid var(--cinnabar)" : "border-left:4px solid var(--indigo)"}">
         <details ${it.period === r.current ? "open" : ""}>
-          <summary style="cursor:pointer;font-weight:700">${it.period === r.current ? "🔴 当前期：" : ""}${esc(it.period)}<span style="font-weight:400;color:var(--ink-3);font-size:12px;margin-left:8px">${new Date(it.created_at * 1000).toLocaleDateString("zh-CN")} 生成</span></summary>
+          <summary style="cursor:pointer;font-weight:700">${it.period === r.current ? "🔴 当前期：" : ""}${esc(it.period)}<span style="font-weight:400;color:var(--ink-3);font-size:calc(12px * var(--fs));margin-left:8px">${new Date(it.created_at * 1000).toLocaleDateString("zh-CN")} 生成</span></summary>
           <div class="sz-content" style="margin-top:10px">${md(it.content)}</div>
           <div class="sz-steps">
             <span class="sz-step on">① 阅读摘要</span><span class="sz-step-arrow">→</span>
@@ -5609,7 +5611,7 @@ async function renderShizheng() {
           </div>
           <div style="margin-top:8px;padding-top:10px;border-top:1px dashed var(--line)">
             <button class="btn btn-sm sz-quiz-btn" data-p="${esc(it.period)}">📝 开始自测</button>
-            <span style="font-size:12px;color:var(--ink-3);margin-left:8px">学习模式：先读摘要再做题，答错自动进错题本</span>
+            <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);margin-left:8px">学习模式：先读摘要再做题，答错自动进错题本</span>
           </div>
           <div class="sz-quiz-box" data-p="${esc(it.period)}" style="margin-top:10px"></div>
         </details>
@@ -5683,7 +5685,7 @@ async function renderShizheng() {
                   <div class="szq-opts" style="display:flex;flex-direction:column;gap:4px;margin-top:6px">
                     ${q.options.map((o, oi) => `<button class="btn btn-sm szq-opt" data-k="${o.trim()[0] || String.fromCharCode(65 + oi)}">${esc(o)}</button>`).join("")}
                   </div>
-                  <div class="szq-note" style="display:none;margin-top:4px;font-size:12.5px;color:var(--ink-3)"></div>
+                  <div class="szq-note" style="display:none;margin-top:4px;font-size:calc(12.5px * var(--fs));color:var(--ink-3)"></div>
                 </div>`).join("") +
               `<div class="szq-score" style="font-weight:700;color:var(--bamboo)"></div>`;
             box.querySelectorAll(".szq").forEach(el => {
@@ -5810,10 +5812,10 @@ async function renderHistory() {
   body.innerHTML = r.items.length ? r.items.map(it => `
     <div class="panel rise hist-item" data-id="${it.doc_id}" style="cursor:pointer;transition:transform .15s">
       <div style="display:flex;align-items:flex-start;gap:12px">
-        <span style="font-size:20px;line-height:1">${it.correct ? '<span style="color:var(--bamboo)">✓</span>' : '<span style="color:var(--cinnabar)">✗</span>'}</span>
+        <span style="font-size:calc(20px * var(--fs));line-height:1">${it.correct ? '<span style="color:var(--bamboo)">✓</span>' : '<span style="color:var(--cinnabar)">✗</span>'}</span>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;margin-bottom:4px">${esc(it.title)}</div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-3)">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:calc(12.5px * var(--fs));color:var(--ink-3)">
             <span class="tag">${esc(it.module)}</span>
             ${it.kaodian ? `<span class="tag">${esc(it.kaodian)}</span>` : ""}
             ${it.region ? `<span>${esc(it.region)} ${esc(it.year)}</span>` : ""}
@@ -5821,7 +5823,7 @@ async function renderHistory() {
             <span>${fmtTime(it.created_at)}</span>
           </div>
         </div>
-        <span style="color:var(--ink-3);font-size:13px">→</span>
+        <span style="color:var(--ink-3);font-size:calc(13px * var(--fs))">→</span>
       </div>
     </div>`).join("")
     : `<div class="panel empty">还没有做题记录，去题库刷几道吧</div>`;
@@ -5853,7 +5855,7 @@ function gradeRing(score, total) {
     <circle cx="42" cy="42" r="${r}" fill="none" stroke="${color}" stroke-width="7"
       stroke-linecap="round" stroke-dasharray="${(c * pct).toFixed(1)} ${c.toFixed(1)}"
       transform="rotate(-90 42 42)"/>
-    <text x="42" y="47" text-anchor="middle" font-size="17" font-weight="700" fill="${color}">${Math.round(pct * 100)}%</text>
+    <text x="42" y="47" text-anchor="middle" style="font-size:calc(17px * var(--fs))" font-weight="700" fill="${color}">${Math.round(pct * 100)}%</text>
   </svg>`;
 }
 
@@ -5917,7 +5919,7 @@ function gradeResultHtml(d, total) {
 
 function trendSvg(items) {
   if (!items || !items.length) {
-    return `<div style="color:var(--ink-3);font-size:13px;padding:8px 0">暂无批改记录，完成一次批改后这里会显示提分曲线</div>`;
+    return `<div style="color:var(--ink-3);font-size:calc(13px * var(--fs));padding:8px 0">暂无批改记录，完成一次批改后这里会显示提分曲线</div>`;
   }
   const W = 620, H = 150, PL = 40, PR = 14, PT = 14, PB = 26;
   const iw = W - PL - PR, ih = H - PT - PB, n = items.length;
@@ -5929,7 +5931,7 @@ function trendSvg(items) {
   const grid = [0, 0.5, 1].map(r => {
     const y = Y(r).toFixed(1);
     return `<line x1="${PL}" y1="${y}" x2="${PL + iw}" y2="${y}" stroke="var(--line-soft)" stroke-width="1"/>
-      <text x="${PL - 6}" y="${(+y + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--ink-3)">${Math.round(r * 100)}%</text>`;
+      <text x="${PL - 6}" y="${(+y + 3.5).toFixed(1)}" text-anchor="end" style="font-size:calc(10px * var(--fs))" fill="var(--ink-3)">${Math.round(r * 100)}%</text>`;
   }).join("");
   const dots = pts.map((p, i) => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3" fill="#fff" stroke="var(--cinnabar)" stroke-width="2"><title>${items[i].score}/${items[i].total}（${Math.round(items[i].rate * 100)}%）</title></circle>`).join("");
   const first = items[0], last = items[n - 1];
@@ -5958,14 +5960,14 @@ async function renderGrade() {
     </div>
     <div class="panel rise rise-1">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
-        <select id="gZhenti" style="padding:8px 10px;font-size:14px;max-width:340px">
+        <select id="gZhenti" style="padding:8px 10px;font-size:calc(14px * var(--fs));max-width:340px">
           <option value="">📄 从真题库选题（${qs.items.length} 道）…</option>
           ${qs.items.map(q => `<option value="${esc(q.id)}">[${esc(q.exam)}] ${esc(q.title)}（${q.total_score}分）</option>`).join("")}
         </select>
-        <select id="gCat" style="padding:8px 10px;font-size:14px">
+        <select id="gCat" style="padding:8px 10px;font-size:calc(14px * var(--fs))">
           ${rub.items.map(r => `<option value="${r.key}">${esc(r.name)}（${esc(r.hint)}）</option>`).join("")}
         </select>
-        <label style="font-size:13px;color:var(--ink-2)">满分 <input id="gTotal" type="number" min="10" max="100" style="width:64px;padding:6px"> </label>
+        <label style="font-size:calc(13px * var(--fs));color:var(--ink-2)">满分 <input id="gTotal" type="number" min="10" max="100" style="width:64px;padding:6px"> </label>
       </div>
       <textarea id="gQ" rows="3" placeholder="【题目】粘贴题干，含作答要求与字数限制（必填）" style="width:100%;margin-bottom:8px"></textarea>
       <textarea id="gM" rows="5" placeholder="【给定材料】粘贴题目对应的材料（建议提供，没有材料无法判要点命中）" style="width:100%;margin-bottom:8px"></textarea>
@@ -5973,14 +5975,14 @@ async function renderGrade() {
       <div style="display:flex;gap:10px;align-items:center">
         <button class="btn btn-primary" id="gGo">开始批改</button>
         <button class="btn btn-sm" id="gRef" style="display:none">对照参考答案</button>
-        <span id="gTip" style="font-size:12.5px;color:var(--ink-3)"></span>
+        <span id="gTip" style="font-size:calc(12.5px * var(--fs));color:var(--ink-3)"></span>
       </div>
     </div>
     <div id="gOut"></div>
     <div class="panel rise rise-2" style="margin-top:18px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
         <h3 style="margin:0">📈 提分曲线</h3>
-        <select id="gTrendCat" style="padding:6px 10px;font-size:13px">
+        <select id="gTrendCat" style="padding:6px 10px;font-size:calc(13px * var(--fs))">
           <option value="">全部题型</option>
           ${rub.items.map(r => `<option value="${r.key}">${esc(r.name)}</option>`).join("")}
         </select>
@@ -6036,17 +6038,17 @@ async function renderGrade() {
     })).sort((x, y) => (x.rate === null ? 2 : x.rate) - (y.rate === null ? 2 : y.rate));
     const profHtml = prof.length ? `
       <div style="margin-bottom:12px;padding:10px 12px;background:var(--paper-2,#f7f4ec);border-radius:8px">
-        <div style="font-size:13px;color:var(--ink-2);margin-bottom:6px"><b>📊 失分画像</b><span style="color:var(--ink-3);margin-left:8px">按题型平均得分率，靠前且偏红 = 薄弱环节</span></div>
+        <div style="font-size:calc(13px * var(--fs));color:var(--ink-2);margin-bottom:6px"><b>📊 失分画像</b><span style="color:var(--ink-3);margin-left:8px">按题型平均得分率，靠前且偏红 = 薄弱环节</span></div>
         ${prof.map(p => {
           const pct = p.rate === null ? null : Math.round(p.rate * 100);
           const color = pct === null ? "var(--ink-3)" : pct < 50 ? "var(--cinnabar)" : pct < 70 ? "#c77b1e" : "var(--bamboo)";
           return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
-            <span style="width:120px;font-size:12.5px;text-align:right;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.name)}</span>
+            <span style="width:120px;font-size:calc(12.5px * var(--fs));text-align:right;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.name)}</span>
             <span style="flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden">
               <span style="display:block;height:100%;width:${pct === null ? 0 : pct}%;background:${color}"></span>
             </span>
-            <span style="width:60px;font-size:12px;color:${color}">${pct === null ? "待解析" : pct + "%"}</span>
-            <span style="width:44px;font-size:12px;color:var(--ink-3)">${p.n}次</span>
+            <span style="width:60px;font-size:calc(12px * var(--fs));color:${color}">${pct === null ? "待解析" : pct + "%"}</span>
+            <span style="width:44px;font-size:calc(12px * var(--fs));color:var(--ink-3)">${p.n}次</span>
           </div>`;
         }).join("")}
       </div>` : "";
@@ -6054,10 +6056,10 @@ async function renderGrade() {
       <div class="gh-item" data-id="${it.id}" style="padding:8px 4px;border-top:1px solid var(--line);cursor:pointer">
         <span class="tag">${esc((rub.items.find(r => r.key === it.category) || {}).name || it.category)}</span>
         <b style="margin-left:6px">${esc(it.summary.replace(/^#+\s*/, ""))}</b>
-        <span style="float:right;color:var(--ink-3);font-size:12px">${new Date(it.created_at * 1000).toLocaleString("zh-CN")}</span>
-        <div style="font-size:12.5px;color:var(--ink-3);margin-top:2px">${esc(it.question.slice(0, 50))}…</div>
+        <span style="float:right;color:var(--ink-3);font-size:calc(12px * var(--fs))">${new Date(it.created_at * 1000).toLocaleString("zh-CN")}</span>
+        <div style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin-top:2px">${esc(it.question.slice(0, 50))}…</div>
       </div>`).join("")
-      : `<div style="color:var(--ink-3);font-size:13px">暂无批改记录</div>`);
+      : `<div style="color:var(--ink-3);font-size:calc(13px * var(--fs))">暂无批改记录</div>`);
     $$(".gh-item").forEach(el => el.onclick = async () => {
       const d = await api("/api/essay/history/" + el.dataset.id);
       let struct = null;
@@ -6076,7 +6078,7 @@ async function renderGrade() {
         ? gradeResultHtml(struct, d.total_score || 0)
         : `<div class="sz-content">${md(d.result)}</div>`;
       $("#gOut").innerHTML = `<div class="panel" style="border-left:4px solid var(--indigo);margin-top:14px">
-        <div style="font-size:12.5px;color:var(--ink-3);margin-bottom:6px">历史批改 · ${new Date(d.created_at * 1000).toLocaleString("zh-CN")}</div>
+        <div style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin-bottom:6px">历史批改 · ${new Date(d.created_at * 1000).toLocaleString("zh-CN")}</div>
         ${inner}</div>`;
       window.scrollTo({ top: $("#gOut").offsetTop - 70, behavior: "smooth" });
     });
@@ -6214,7 +6216,7 @@ async function renderFormula() {
       <div class="panel">
         <details>
           <summary style="cursor:pointer;font-weight:500">📐 公式速查（12 类，考前扫一眼）</summary>
-          <table style="width:100%;margin-top:10px;font-size:13.5px;border-collapse:collapse">
+          <table style="width:100%;margin-top:10px;font-size:calc(13.5px * var(--fs));border-collapse:collapse">
             <tr style="color:var(--ink-3)"><th style="text-align:left;padding:4px 8px">题型</th><th style="text-align:left;padding:4px 8px">已知条件</th><th style="text-align:left;padding:4px 8px">列式</th></tr>
             ${CHEAT.map(r => `<tr style="border-top:1px solid var(--line-soft)">
               <td style="padding:5px 8px;white-space:nowrap"><b>${r[0]}</b></td>
@@ -6241,7 +6243,7 @@ async function renderFormula() {
           api("/api/formula/history"), api("/api/formula/type-stats")]);
         $("#fHist").innerHTML = h.items.length
           ? h.items.slice(0, 8).map(r =>
-              `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:13px">
+              `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:calc(13px * var(--fs))">
                  <span>${r.correct}/${r.total} · 均${(r.avg_ms / 1000).toFixed(1)}秒</span>
                  <span style="color:var(--ink-3)">${new Date(r.created_at * 1000).toLocaleDateString("zh-CN")}</span>
                </div>`).join("")
@@ -6324,7 +6326,7 @@ async function renderFormula() {
     const wrongs = run.records.filter(r => !r.ok);
     body.innerHTML = `
       <div class="panel" style="text-align:center;padding:28px">
-        <div style="font-size:42px;font-weight:700;color:var(--cinnabar);font-family:var(--serif)">${run.correct}<span style="font-size:22px;color:var(--ink-3)"> / ${total}</span></div>
+        <div style="font-size:calc(42px * var(--fs));font-weight:700;color:var(--cinnabar);font-family:var(--serif)">${run.correct}<span style="font-size:calc(22px * var(--fs));color:var(--ink-3)"> / ${total}</span></div>
         <div style="color:var(--ink-2);margin-top:6px">平均 <b>${(avgMs / 1000).toFixed(1)}</b> 秒/题</div>
         <div style="margin:14px auto 0;max-width:360px;height:10px;background:var(--line);border-radius:5px;overflow:hidden">
           <span style="display:block;height:100%;width:${Math.round(run.correct / total * 100)}%;background:var(--bamboo)"></span>
@@ -6334,8 +6336,8 @@ async function renderFormula() {
         <h3 style="margin:0 0 10px">本轮错题（${wrongs.length}）</h3>
         ${wrongs.map(w => `
           <div style="padding:10px 0;border-top:1px solid var(--line-soft)">
-            <div style="font-size:13px;color:var(--ink-3)">${esc(w.p.context)}</div>
-            <div style="margin:6px 0;font-size:13.5px">你选 <b style="color:var(--cinnabar)">${w.picked}</b>
+            <div style="font-size:calc(13px * var(--fs));color:var(--ink-3)">${esc(w.p.context)}</div>
+            <div style="margin:6px 0;font-size:calc(13.5px * var(--fs))">你选 <b style="color:var(--cinnabar)">${w.picked}</b>
               · 正确 <b style="font-family:var(--mono)">${esc(w.p.options.find(o => o.label === w.p.answer).text)}</b></div>
             <div class="f-tiptext">${esc(w.p.tip)}</div>
           </div>`).join("")}
@@ -6413,8 +6415,8 @@ async function renderLogic() {
         <div style="margin-top:10px">
           ${CHEAT_LOGIC.map(r => `
             <div style="padding:7px 0;border-top:1px solid var(--line-soft)">
-              <b style="font-size:13.5px">${r[0]}</b>
-              <div style="font-size:13px;color:var(--ink-2);margin-top:2px">${r[1]}</div>
+              <b style="font-size:calc(13.5px * var(--fs))">${r[0]}</b>
+              <div style="font-size:calc(13px * var(--fs));color:var(--ink-2);margin-top:2px">${r[1]}</div>
             </div>`).join("")}
         </div>
       </details>
@@ -6477,7 +6479,7 @@ async function renderWenxian() {
   body.innerHTML = `
     <div class="panel">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <span style="font-size:14px">专项题库 <b>${nTotal >= 20 ? "已就绪（20 题）" : nTotal + " 题"}</b></span>
+        <span style="font-size:calc(14px * var(--fs))">专项题库 <b>${nTotal >= 20 ? "已就绪（20 题）" : nTotal + " 题"}</b></span>
         <span>题量 <select id="wxN"><option>8</option><option selected>10</option><option>15</option></select></span>
         <button class="btn btn-primary" id="wxStart">开始练习</button>
       </div>
@@ -6487,15 +6489,15 @@ async function renderWenxian() {
       <h3 style="margin:0 0 10px">作答四步法</h3>
       ${STEPS.map(s => `
         <div style="padding:8px 0;border-top:1px solid var(--line-soft)">
-          <b style="font-size:14px">${s[0]}</b>
-          <div style="font-size:13.5px;color:var(--ink-2);margin-top:2px">${s[1]}</div>
+          <b style="font-size:calc(14px * var(--fs))">${s[0]}</b>
+          <div style="font-size:calc(13.5px * var(--fs));color:var(--ink-2);margin-top:2px">${s[1]}</div>
         </div>`).join("")}
     </div>
     <div class="panel">
       <h3 style="margin:0 0 10px">论证评价 · 八类常见错误</h3>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px 18px">
         ${ERR_TYPES.map(e => `
-          <div style="font-size:13.5px;padding:6px 0;border-top:1px solid var(--line-soft)">
+          <div style="font-size:calc(13.5px * var(--fs));padding:6px 0;border-top:1px solid var(--line-soft)">
             <b>${e[0]}</b><span style="color:var(--ink-2);margin-left:6px">${e[1]}</span>
           </div>`).join("")}
       </div>
@@ -6562,7 +6564,7 @@ async function renderMastery(module = "") {
           <div class="type-check ${mstState.onlyPracticed ? "on" : ""}" data-only="1">只看已练</div>
         </span>
       </div>
-      <div style="display:flex;gap:18px;margin-top:12px;font-size:13.5px;flex-wrap:wrap">
+      <div style="display:flex;gap:18px;margin-top:12px;font-size:calc(13.5px * var(--fs));flex-wrap:wrap">
         <span><b style="color:${MASTERY_COLOR.green}">●</b> 已掌握 ${cnt.green || 0}</span>
         <span><b style="color:${MASTERY_COLOR.amber}">●</b> 待巩固 ${cnt.amber || 0}</span>
         <span><b style="color:${MASTERY_COLOR.red}">●</b> 薄弱/未练 ${cnt.red || 0}</span>
@@ -6574,7 +6576,7 @@ async function renderMastery(module = "") {
     </div>
     <div class="panel rise rise-2">
       ${items.length ? `
-      <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+      <table style="width:100%;border-collapse:collapse;font-size:calc(13.5px * var(--fs))">
         <tr style="color:var(--ink-3)">
           <th style="text-align:left;padding:6px 8px">考点</th>
           <th style="text-align:left;padding:6px 8px">模块</th>
@@ -6595,7 +6597,7 @@ async function renderMastery(module = "") {
             <td style="padding:7px 8px;text-align:right;font-family:var(--mono)">${it.mastery.toFixed(2)}</td>
             <td style="padding:7px 8px;text-align:center">
               <span style="color:${MASTERY_COLOR[it.level]}">●</span>
-              <span style="font-size:12px;color:var(--ink-3)">${MASTERY_LABEL[it.level]}</span>
+              <span style="font-size:calc(12px * var(--fs));color:var(--ink-3)">${MASTERY_LABEL[it.level]}</span>
             </td>
           </tr>`).join("")}
       </table>
@@ -6664,8 +6666,8 @@ async function renderTimeAnalysis() {
     </div>
 
     <div class="panel">
-      <h3 style="margin:0 0 10px">各模块节奏 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">超时阈值按模块给（数量 90s / 资料 60s / 言语 45s，其余按建议用时推）</span></h3>
-      <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+      <h3 style="margin:0 0 10px">各模块节奏 <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">超时阈值按模块给（数量 90s / 资料 60s / 言语 45s，其余按建议用时推）</span></h3>
+      <table style="width:100%;border-collapse:collapse;font-size:calc(13.5px * var(--fs))">
         <tr style="color:var(--ink-3)">
           <th style="text-align:left;padding:6px 8px">模块</th>
           <th style="text-align:right;padding:6px 8px">题量</th>
@@ -6691,7 +6693,7 @@ async function renderTimeAnalysis() {
               <span class="track" style="display:inline-block;width:80%;height:8px;background:var(--line-soft);border-radius:5px;overflow:hidden;vertical-align:middle">
                 <span style="display:block;height:100%;width:${ratio}%;background:${over ? "var(--cinnabar)" : "var(--bamboo)"}"></span>
               </span>
-              <span style="font-size:11.5px;color:var(--ink-3);margin-left:6px">建议 ${fmt(ref)}</span>
+              <span style="font-size:calc(11.5px * var(--fs));color:var(--ink-3);margin-left:6px">建议 ${fmt(ref)}</span>
             </td>
           </tr>`;
         }).join("")}
@@ -6700,7 +6702,7 @@ async function renderTimeAnalysis() {
 
     ${d.slow_correct.length ? `
     <div class="panel">
-      <h3 style="margin:0 0 10px">🐢 会做但超时（Top ${d.slow_correct.length}）<span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">正确率没问题，节奏才是——点进去限时重做</span></h3>
+      <h3 style="margin:0 0 10px">🐢 会做但超时（Top ${d.slow_correct.length}）<span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">正确率没问题，节奏才是——点进去限时重做</span></h3>
       <div class="doc-list">
         ${d.slow_correct.map(t => `
           <div class="doc-item" data-id="${t.doc_id}">
@@ -6709,7 +6711,7 @@ async function renderTimeAnalysis() {
               <div class="doc-sub">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))}</div>
             </div>
             <div class="doc-side"><span style="color:var(--cinnabar);font-weight:700">${fmt(secs(t.ms) * 1)}</span>
-              <span style="color:var(--ink-3);font-size:12px"> / 阈值 ${fmt(t.threshold)}</span></div>
+              <span style="color:var(--ink-3);font-size:calc(12px * var(--fs))"> / 阈值 ${fmt(t.threshold)}</span></div>
           </div>`).join("")}
       </div>
     </div>` : ""}
@@ -6760,7 +6762,7 @@ async function renderReport() {
 
   body.innerHTML = `
     <div class="panel" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-      <b style="font-size:15px">${esc(d.range)}</b>
+      <b style="font-size:calc(15px * var(--fs))">${esc(d.range)}</b>
       <div style="display:flex;gap:8px">
         <button class="btn btn-sm" id="rpExport">导出学习报告</button>
         <button class="btn btn-sm" id="rpRefresh">重新生成</button>
@@ -6797,7 +6799,7 @@ async function renderReport() {
     <div class="panel">
       <h3 style="margin:0 0 10px">模块周对比</h3>
       ${d.compare.length ? `
-        <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+        <table style="width:100%;border-collapse:collapse;font-size:calc(13.5px * var(--fs))">
           <tr style="color:var(--ink-3)">
             <th style="text-align:left;padding:6px 8px">模块</th>
             <th style="text-align:right;padding:6px 8px">题量</th>
@@ -6818,12 +6820,12 @@ async function renderReport() {
 
     ${(d.reason_top && d.reason_top.length) ? `
     <div class="panel">
-      <h3 style="margin:0 0 10px">高频错因 TOP${d.reason_top.length} <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">本周答错题的错因归类</span></h3>
+      <h3 style="margin:0 0 10px">高频错因 TOP${d.reason_top.length} <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">本周答错题的错因归类</span></h3>
       ${d.reason_top.map((r, i) => `
         <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line-soft)">
           <span class="tag">#${i + 1}</span>
-          <span style="flex:1;font-size:13.5px">${esc(r.reason)}</span>
-          <span style="color:var(--cinnabar);font-size:13px">${r.c} 题</span>
+          <span style="flex:1;font-size:calc(13.5px * var(--fs))">${esc(r.reason)}</span>
+          <span style="color:var(--cinnabar);font-size:calc(13px * var(--fs))">${r.c} 题</span>
         </div>`).join("")}
     </div>` : ""}
 
@@ -6832,18 +6834,18 @@ async function renderReport() {
       <h3 style="margin:0 0 10px">薄弱考点 TOP${d.weak.length}</h3>
       ${d.weak.map(w => `
         <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line-soft)">
-          <span style="flex:1;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(w.kaodian)}">
+          <span style="flex:1;font-size:calc(13.5px * var(--fs));overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(w.kaodian)}">
             <span class="tag">${esc(w.module)}</span> ${esc(w.kaodian.replace(/^[^\/]+\/\s*/, ""))}
           </span>
-          <span style="color:var(--cinnabar);font-size:13px">${w.rate}%</span>
-          <span style="color:var(--ink-3);font-size:12.5px">${w.ok}/${w.n}</span>
+          <span style="color:var(--cinnabar);font-size:calc(13px * var(--fs))">${w.rate}%</span>
+          <span style="color:var(--ink-3);font-size:calc(12.5px * var(--fs))">${w.ok}/${w.n}</span>
         </div>`).join("")}
     </div>` : ""}
 
     <div class="panel" style="border-left:4px solid var(--cinnabar)">
       <h3 style="margin:0 0 8px">📋 本周建议</h3>
       ${d.advice.map((a, i) =>
-        `<div style="font-size:14px;padding:6px 0;${i ? "border-top:1px solid var(--line-soft)" : ""}">${esc(a)}</div>`).join("")}
+        `<div style="font-size:calc(14px * var(--fs));padding:6px 0;${i ? "border-top:1px solid var(--line-soft)" : ""}">${esc(a)}</div>`).join("")}
     </div>`;
 
   $("#rpRefresh").onclick = renderReport;
@@ -6932,13 +6934,13 @@ async function renderAiAsk() {
     <div class="panel" style="max-width:860px;margin:24px auto 0;display:flex;flex-direction:column;height:calc(100vh - 150px)">
       <div style="display:flex;align-items:center;gap:12px">
         <h3 style="margin:0;flex:1">AI 答疑
-          <span style="color:var(--ink-2);font-size:13px;font-weight:normal">不做题也能问：知识点 · 技巧 · 考情 · 规划</span>
+          <span style="color:var(--ink-2);font-size:calc(13px * var(--fs));font-weight:normal">不做题也能问：知识点 · 技巧 · 考情 · 规划</span>
         </h3>
         <button class="btn" id="aiAskNew">🗑 新对话</button>
       </div>
       <div id="aiAskList" style="flex:1;overflow-y:auto;margin-top:14px;padding-right:6px"></div>
       <div id="aiAskChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
-        ${chips.map(c => `<button class="btn" data-q="${esc(c)}" style="font-size:12.5px;padding:5px 12px">${esc(c)}</button>`).join("")}
+        ${chips.map(c => `<button class="btn" data-q="${esc(c)}" style="font-size:calc(12.5px * var(--fs));padding:5px 12px">${esc(c)}</button>`).join("")}
       </div>
       <div id="aiAskPreviews" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"></div>
       <div style="display:flex;gap:10px;margin-top:12px;align-items:flex-end">
@@ -6947,10 +6949,10 @@ async function renderAiAsk() {
           <input type="file" accept="image/*" multiple style="display:none" id="aiAskFile">
         </label>
         <textarea id="aiAskInput" rows="2" placeholder="随便问点什么…（Enter 发送，Shift+Enter 换行）"
-          style="flex:1;resize:none;padding:10px;border:1px solid var(--line-soft);border-radius:8px;font-family:inherit;font-size:14px;background:transparent;color:inherit"></textarea>
+          style="flex:1;resize:none;padding:10px;border:1px solid var(--line-soft);border-radius:8px;font-family:inherit;font-size:calc(14px * var(--fs));background:transparent;color:inherit"></textarea>
         <button class="btn btn-primary" id="aiAskGo">发送</button>
       </div>
-      <p style="text-align:center;color:var(--ink-2);font-size:12px;margin:8px 0 0">内容由 AI 生成，仅供参考</p>
+      <p style="text-align:center;color:var(--ink-2);font-size:calc(12px * var(--fs));margin:8px 0 0">内容由 AI 生成，仅供参考</p>
     </div>`;
 
   // 全部 DOM 引用在渲染期一次性捕获：流式回调里只写闭包变量，
@@ -6985,7 +6987,7 @@ async function renderAiAsk() {
     previewBox.innerHTML = attachedImages.map((src, i) =>
       `<div style="position:relative;width:64px;height:64px">
         <img src="${src}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;border:1px solid var(--line-soft)">
-        <span data-rm="${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;line-height:1">×</span>
+        <span data-rm="${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:calc(12px * var(--fs));line-height:1">×</span>
       </div>`).join("");
     previewBox.querySelectorAll("[data-rm]").forEach(el => {
       el.onclick = () => { attachedImages.splice(+el.dataset.rm, 1); renderPreviews(); };
@@ -7008,7 +7010,7 @@ async function renderAiAsk() {
     row.style.cssText = "display:flex;margin:10px 0;justify-content:" +
       (role === "user" ? "flex-end" : "flex-start");
     const b = document.createElement("div");
-    b.style.cssText = "max-width:82%;padding:10px 14px;border-radius:12px;font-size:14px;line-height:1.8" +
+    b.style.cssText = "max-width:82%;padding:10px 14px;border-radius:12px;font-size:calc(14px * var(--fs));line-height:1.8" +
       (role === "user"
         ? ";background:var(--cinnabar);color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap"
         : ";background:rgba(0,0,0,.05);border-bottom-left-radius:4px");
@@ -7028,7 +7030,7 @@ async function renderAiAsk() {
 
   const drawAll = () => {
     list.innerHTML = msgs.length ? "" :
-      `<div style="text-align:center;color:var(--ink-2);padding:40px 20px;font-size:13.5px">
+      `<div style="text-align:center;color:var(--ink-2);padding:40px 20px;font-size:calc(13.5px * var(--fs))">
         有什么想问的？考点讲法、速算技巧、备考节奏……<br>不做题也能随便聊。</div>`;
     msgs.forEach(m => bubble(m.role, m.content));
   };
@@ -7059,7 +7061,7 @@ async function renderAiAsk() {
 
     let thinkBox = null, think = "", full = "";
     const b = bubble("ai", "");
-    b.innerHTML = `<div style="color:var(--ink-2);font-size:12.5px">🤔 思考中…</div>`;
+    b.innerHTML = `<div style="color:var(--ink-2);font-size:calc(12.5px * var(--fs))">🤔 思考中…</div>`;
     b.classList.add("cursor-blink");
 
     try {
@@ -7150,7 +7152,7 @@ async function renderZyNotes() {
   } catch (e) {
     body.innerHTML = `<div class="panel" style="margin-top:16px">
       <h3>知识库加载失败</h3>
-      <p style="color:var(--ink-2);font-size:14px">${esc(String((e && e.message) || e))}</p>
+      <p style="color:var(--ink-2);font-size:calc(14px * var(--fs))">${esc(String((e && e.message) || e))}</p>
       <button class="btn btn-primary" id="zyRetry">重试</button>
     </div>`;
     $("#zyRetry").onclick = () => renderZyNotes();
@@ -7172,19 +7174,19 @@ async function renderZyNotes() {
     body.innerHTML = shown.map((g, gi) => `
       <div class="panel rise rise-${Math.min(gi + 1, 3)}">
         <h3 style="margin:0 0 2px"><span style="color:var(--cinnabar);margin-right:6px">${esc(g.icon)}</span>${esc(g.name)}
-          <span style="font-size:12px;color:var(--ink-3);font-weight:400;margin-left:8px">${g.points.length} 个知识点</span></h3>
-        <p style="color:var(--ink-2);font-size:13px;margin:0 0 6px">${esc(g.desc)}</p>
+          <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-weight:400;margin-left:8px">${g.points.length} 个知识点</span></h3>
+        <p style="color:var(--ink-2);font-size:calc(13px * var(--fs));margin:0 0 6px">${esc(g.desc)}</p>
         ${g.points.map(p => `
           <div class="zy-item">
             <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--line-soft);cursor:pointer">
-              <b style="font-size:14px">${esc(p.title)}</b><span style="color:var(--ink-3)">▾</span>
+              <b style="font-size:calc(14px * var(--fs))">${esc(p.title)}</b><span style="color:var(--ink-3)">▾</span>
             </div>
             <div class="zy-body" hidden style="padding:0 2px 12px">
-              <div style="font-size:13.5px;line-height:1.75">${md(p.body)}</div>
+              <div style="font-size:calc(13.5px * var(--fs));line-height:1.75">${md(p.body)}</div>
               ${p.tips && p.tips.length ? `
                 <div style="margin-top:8px;padding:8px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar)">
-                  <b style="font-size:13px">⚠ 易错提醒</b>
-                  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2);line-height:1.7">
+                  <b style="font-size:calc(13px * var(--fs))">⚠ 易错提醒</b>
+                  <ul style="margin:4px 0 0;padding-left:18px;font-size:calc(13px * var(--fs));color:var(--ink-2);line-height:1.7">
                     ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
                   </ul>
                 </div>` : ""}
@@ -7230,7 +7232,7 @@ async function renderXcNotes() {
   } catch (e) {
     body.innerHTML = `<div class="panel">
       <h3>速查手册加载失败</h3>
-      <p style="color:var(--ink-2);font-size:14px">${esc(String((e && e.message) || e))}</p>
+      <p style="color:var(--ink-2);font-size:calc(14px * var(--fs))">${esc(String((e && e.message) || e))}</p>
       <button class="btn btn-primary" id="xcRetry">重试</button>
     </div>`;
     toc.innerHTML = "";
@@ -7242,10 +7244,10 @@ async function renderXcNotes() {
   // 目录：点一下跳到对应模块（搜索时目录同步收窄）
   const drawToc = shown => {
     if (!shown.length) { toc.innerHTML = ""; return; }
-    toc.innerHTML = `<div style="font-size:12px;color:var(--ink-3);margin-bottom:6px">目录 · 共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点</div>
+    toc.innerHTML = `<div style="font-size:calc(12px * var(--fs));color:var(--ink-3);margin-bottom:6px">目录 · 共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         ${shown.map(g => `<a href="javascript:void(0)" class="xc-toc" data-g="${esc(g.key)}"
-          style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--line-soft);border-radius:14px;font-size:12.5px;color:var(--ink-2);text-decoration:none">
+          style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--line-soft);border-radius:14px;font-size:calc(12.5px * var(--fs));color:var(--ink-2);text-decoration:none">
           <b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>${esc(g.name)}
           <span style="color:var(--ink-3)">${g.points.length}</span></a>`).join("")}
       </div>`;
@@ -7272,19 +7274,19 @@ async function renderXcNotes() {
     body.innerHTML = shown.map((g, gi) => `
       <div class="panel rise rise-${Math.min(gi + 1, 3)}" id="xc-${esc(g.key)}">
         <h3 style="margin:0 0 2px"><span style="color:var(--cinnabar);margin-right:6px">${esc(g.icon)}</span>${esc(g.name)}
-          <span style="font-size:12px;color:var(--ink-3);font-weight:400;margin-left:8px">${g.points.length} 个考点</span></h3>
-        <p style="color:var(--ink-2);font-size:13px;margin:0 0 6px">${esc(g.desc)}</p>
+          <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-weight:400;margin-left:8px">${g.points.length} 个考点</span></h3>
+        <p style="color:var(--ink-2);font-size:calc(13px * var(--fs));margin:0 0 6px">${esc(g.desc)}</p>
         ${g.points.map(p => `
           <div class="zy-item">
             <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--line-soft);cursor:pointer">
-              <b style="font-size:14px">${esc(p.title)}</b><span style="color:var(--ink-3)">▾</span>
+              <b style="font-size:calc(14px * var(--fs))">${esc(p.title)}</b><span style="color:var(--ink-3)">▾</span>
             </div>
             <div class="zy-body" hidden style="padding:0 2px 12px">
-              <div style="font-size:13.5px;line-height:1.75">${md(p.body)}</div>
+              <div style="font-size:calc(13.5px * var(--fs));line-height:1.75">${md(p.body)}</div>
               ${p.tips && p.tips.length ? `
                 <div style="margin-top:8px;padding:8px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar)">
-                  <b style="font-size:13px">⚠ 易错提醒</b>
-                  <ul style="margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--ink-2);line-height:1.7">
+                  <b style="font-size:calc(13px * var(--fs))">⚠ 易错提醒</b>
+                  <ul style="margin:4px 0 0;padding-left:18px;font-size:calc(13px * var(--fs));color:var(--ink-2);line-height:1.7">
                     ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
                   </ul>
                 </div>` : ""}
@@ -7341,7 +7343,7 @@ function radarSvg(items) {
     const x0 = anchor === "start" ? p[0] : anchor === "end" ? p[0] - w : p[0] - w / 2;
     boxes.push([x0, p[1] - FS, x0 + w, p[1] + 16]);
     return `<text x="${p[0].toFixed(1)}" y="${(p[1] + 2).toFixed(1)}" text-anchor="${anchor}" font-size="${FS}" fill="var(--ink-2)">${name}</text>
-      <text x="${p[0].toFixed(1)}" y="${(p[1] + 14).toFixed(1)}" text-anchor="${anchor}" font-size="10.5" fill="var(--ink-3)">${pct}</text>`;
+      <text x="${p[0].toFixed(1)}" y="${(p[1] + 14).toFixed(1)}" text-anchor="${anchor}" style="font-size:calc(10.5px * var(--fs))" fill="var(--ink-3)">${pct}</text>`;
   }).join("");
 
   const minX = Math.floor(Math.min(...boxes.map(b => b[0])) - PAD);
@@ -7373,9 +7375,9 @@ async function renderPlan() {
     </div>
     <div class="dash-grid rise rise-1">
       <div class="panel">
-        <h3>能力雷达 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">外圈越大越强，未练显示为最小圈</span></h3>
+        <h3>能力雷达 <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">外圈越大越强，未练显示为最小圈</span></h3>
         <div>${radarSvg(rad)}</div>
-        <div style="margin-top:10px;font-size:12.5px;color:var(--ink-3);line-height:1.9">
+        <div style="margin-top:10px;font-size:calc(12.5px * var(--fs));color:var(--ink-3);line-height:1.9">
           ${rad.map(r => {
             const c = r.level === "弱" ? "var(--cinnabar)" : r.level === "强" ? "var(--bamboo)" : r.level === "未练" ? "var(--ink-3)" : "var(--amber)";
             return `<span style="display:inline-block;min-width:120px">${esc(r.module)}：<b style="color:${c}">${r.level}</b> ${r.n ? `（${r.n} 题）` : ""}</span>`;
@@ -7385,16 +7387,16 @@ async function renderPlan() {
       <div class="panel">
         <h3>生成 / 更新计划</h3>
         <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-          <label style="font-size:13px">考试日期 <input type="date" id="plExam" value="${esc(examDate)}" style="padding:6px 8px"/></label>
-          <label style="font-size:13px">天数 <input type="number" id="plDays" value="14" min="1" max="60" style="width:66px"/></label>
-          <label style="font-size:13px">每日题量 <input type="number" id="plDaily" value="30" min="10" max="200" step="5" style="width:78px"/></label>
+          <label style="font-size:calc(13px * var(--fs))">考试日期 <input type="date" id="plExam" value="${esc(examDate)}" style="padding:6px 8px"/></label>
+          <label style="font-size:calc(13px * var(--fs))">天数 <input type="number" id="plDays" value="14" min="1" max="60" style="width:66px"/></label>
+          <label style="font-size:calc(13px * var(--fs))">每日题量 <input type="number" id="plDaily" value="30" min="10" max="200" step="5" style="width:78px"/></label>
           <button class="btn btn-primary" id="plGen">生成计划</button>
         </div>
-        <p style="font-size:12.5px;color:var(--ink-3);margin:10px 0 0;line-height:1.8">
+        <p style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin:10px 0 0;line-height:1.8">
           算法按「真题模块占比 × 弱项系数」分配题量，弱项占比更高；考点取掌握度红/黄的高频考点轮换。<br/>
           填了考试日期会按剩余天数压缩，并在考前一天安排全真模考。
         </p>
-        <div id="plStat" style="margin-top:12px;font-size:13px;color:var(--ink-2)">
+        <div id="plStat" style="margin-top:12px;font-size:calc(13px * var(--fs));color:var(--ink-2)">
           当前计划：共 <b>${summary.total}</b> 题 · 已完成 <b>${summary.done}</b> 题（${Math.round((summary.rate || 0) * 100)}%）
         </div>
       </div>
@@ -7486,7 +7488,7 @@ function ivResultHtml(d) {
         <circle cx="42" cy="42" r="34" fill="none" stroke="${color}" stroke-width="7" stroke-linecap="round"
           stroke-dasharray="${(2 * Math.PI * 34 * Math.max(0, Math.min(1, total / 100))).toFixed(1)} ${(2 * Math.PI * 34).toFixed(1)}"
           transform="rotate(-90 42 42)"/>
-        <text x="42" y="47" text-anchor="middle" font-size="16" font-weight="700" fill="${color}">${Math.round(total)}</text>
+        <text x="42" y="47" text-anchor="middle" style="font-size:calc(16px * var(--fs))" font-weight="700" fill="${color}">${Math.round(total)}</text>
       </svg>
     </div>
     <div style="flex:1;min-width:0">
@@ -7550,20 +7552,20 @@ async function renderInterview() {
         <div id="ivStats"></div>
       </div>
       <div class="panel">
-        <h3>选题 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">五类结构化面试</span></h3>
+        <h3>选题 <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">五类结构化面试</span></h3>
         ${noQ ? emptyState(
           "面试题库建设中",
           "内置五类结构化面试真题暂未写入数据库（正常情况下首次进入会自动播种）。<br>在恢复之前，可以先用「时政常识」积累素材，或去「题库」按模块刷题。",
           [["去时政常识", "#/shizheng"], ["去题库刷题", "#/paper"]])
         : `<div class="chips" id="ivCats" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
-        <select id="ivSel" style="width:100%;padding:8px 10px;font-size:13.5px"></select>
+        <select id="ivSel" style="width:100%;padding:8px 10px;font-size:calc(13.5px * var(--fs))"></select>
         <div style="margin-top:10px"><button class="btn btn-primary" id="ivStart">开始这道题</button></div>`}
       </div>
     </div>
     <div class="panel rise rise-2" id="ivQ" style="display:none"></div>
     <div id="ivOut"></div>
     <div class="panel rise rise-2" style="margin-top:16px">
-      <h3 style="margin:0 0 8px">练习记录 <span style="font-size:12px;color:var(--ink-3);font-family:var(--sans)">点击查看点评详情</span></h3>
+      <h3 style="margin:0 0 8px">练习记录 <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">点击查看点评详情</span></h3>
       <div id="ivLogs"></div>
     </div>`;
 
@@ -7571,7 +7573,7 @@ async function renderInterview() {
     const s = stats;
     const cat = (s.by_category || []);
     $("#ivStats").innerHTML = s.n ? `
-      <div style="font-size:13px;color:var(--ink-2);line-height:1.9;margin-bottom:8px">
+      <div style="font-size:calc(13px * var(--fs));color:var(--ink-2);line-height:1.9;margin-bottom:8px">
         共练习 <b>${s.n}</b> 次　内容 <b>${s.avg_content ?? "—"}</b> · 逻辑 <b>${s.avg_logic ?? "—"}</b> · 表达 <b>${s.avg_express ?? "—"}</b>
       </div>
       ${cat.map(c => {
@@ -7582,7 +7584,7 @@ async function renderInterview() {
           <span class="gr-dim-bar"><i style="width:${pct}%;background:${color}"></i></span>
           <span class="gr-dim-num">${pct} (${c.n})</span></div>`;
       }).join("")}
-      <div style="font-size:12px;color:var(--ink-3);margin-top:6px">均值偏低的题型排前面 = 优先突破</div>`
+      <div style="font-size:calc(12px * var(--fs));color:var(--ink-3);margin-top:6px">均值偏低的题型排前面 = 优先突破</div>`
       : `<div class="empty" style="padding:16px">还没有练习记录，选一道题开始吧</div>`;
   }
 
@@ -7612,7 +7614,7 @@ async function renderInterview() {
         <span class="tag">${esc(curQ.category)}</span>
         <span id="ivClock" class="iv-clock">未计时</span>
       </div>
-      <div style="font-size:15.5px;line-height:1.8;margin:10px 0;font-family:var(--serif)">${esc(curQ.question)}</div>
+      <div style="font-size:calc(15.5px * var(--fs));line-height:1.8;margin:10px 0;font-family:var(--serif)">${esc(curQ.question)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
         <button class="btn btn-sm" id="ivThink">⏱ 开始思考（${qdata.think_seconds}s）</button>
         <button class="btn btn-sm" id="ivAnswer">✍️ 开始作答（${qdata.answer_seconds}s）</button>
@@ -7621,9 +7623,9 @@ async function renderInterview() {
       <textarea id="ivA" rows="8" placeholder="写下你的作答（一期为文字作答；结构化面试建议分点作答：亮观点 → 分层论证 → 结合岗位表态）" style="width:100%"></textarea>
       <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
         <button class="btn btn-primary" id="ivGo">请 AI 考官点评</button>
-        <span id="gTipIv" style="font-size:12.5px;color:var(--ink-3)"></span>
+        <span id="gTipIv" style="font-size:calc(12.5px * var(--fs));color:var(--ink-3)"></span>
       </div>
-      <div id="ivRefBox" style="display:none;margin-top:12px;padding:10px 13px;background:var(--paper-2);border-radius:8px;font-size:13.5px;line-height:1.8"></div>`;
+      <div id="ivRefBox" style="display:none;margin-top:12px;padding:10px 13px;background:var(--paper-2);border-radius:8px;font-size:calc(13.5px * var(--fs));line-height:1.8"></div>`;
 
     $("#ivThink").onclick = () => startTimer(qdata.think_seconds, "思考");
     $("#ivAnswer").onclick = () => { answerTotal = qdata.answer_seconds; startTimer(qdata.answer_seconds, "作答"); };
@@ -7646,15 +7648,15 @@ async function renderInterview() {
       return `<div class="gh-item" data-id="${l.id}" style="padding:8px 4px;border-top:1px solid var(--line);cursor:pointer">
         <span class="tag">${esc(l.category)}</span>
         <b style="margin-left:6px;color:${color}">${avg} 分</b>
-        <span style="font-size:12px;color:var(--ink-3);margin-left:8px">内容 ${l.content_score} · 逻辑 ${l.logic_score} · 表达 ${l.express_score}</span>
-        <span style="float:right;color:var(--ink-3);font-size:12px">${new Date(l.created_at * 1000).toLocaleString("zh-CN")}</span>
-        <div style="font-size:12.5px;color:var(--ink-3);margin-top:2px">${esc((l.answer || "").slice(0, 60))}…</div>
+        <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);margin-left:8px">内容 ${l.content_score} · 逻辑 ${l.logic_score} · 表达 ${l.express_score}</span>
+        <span style="float:right;color:var(--ink-3);font-size:calc(12px * var(--fs))">${new Date(l.created_at * 1000).toLocaleString("zh-CN")}</span>
+        <div style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin-top:2px">${esc((l.answer || "").slice(0, 60))}…</div>
       </div>`;
-    }).join("") : `<div style="color:var(--ink-3);font-size:13px">暂无练习记录</div>`;
+    }).join("") : `<div style="color:var(--ink-3);font-size:calc(13px * var(--fs))">暂无练习记录</div>`;
     $$("#ivLogs .gh-item").forEach(el => el.onclick = async () => {
       const d = await api("/api/interview/log/" + el.dataset.id);
       $("#ivOut").innerHTML = `<div class="panel" style="border-left:4px solid var(--indigo);margin-top:14px">
-        <div style="font-size:12.5px;color:var(--ink-3);margin-bottom:6px">历史点评 · ${new Date(d.created_at * 1000).toLocaleString("zh-CN")}</div>
+        <div style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin-bottom:6px">历史点评 · ${new Date(d.created_at * 1000).toLocaleString("zh-CN")}</div>
         <div class="sz-content">${md(d.comment)}</div></div>`;
       window.scrollTo({ top: $("#ivOut").offsetTop - 70, behavior: "smooth" });
     });

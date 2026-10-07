@@ -20,9 +20,9 @@ function emptyState(title, desc, links) {
   const btns = (links || []).map(([label, href]) =>
     `<a class="btn btn-primary" href="${href}" style="margin:4px 6px 0 0">${esc(label)}</a>`).join("");
   return `<div class="empty-state" style="text-align:center;padding:26px 14px">
-    <div style="font-size:28px;line-height:1;margin-bottom:10px">🚧</div>
-    <h3 style="margin:0 0 9px;font-size:15px">${esc(title)}</h3>
-    <p class="muted" style="font-size:13px;line-height:1.85;margin:0">${desc}</p>
+    <div style="font-size:calc(28px * var(--fs));line-height:1;margin-bottom:10px">🚧</div>
+    <h3 style="margin:0 0 9px;font-size:calc(15px * var(--fs))">${esc(title)}</h3>
+    <p class="muted" style="font-size:calc(13px * var(--fs));line-height:1.85;margin:0">${desc}</p>
     ${btns ? `<div style="margin-top:13px">${btns}</div>` : ""}
   </div>`;
 }
@@ -105,7 +105,9 @@ const Theme = {
 /* N4 字号与阅读偏好 · 网页端（app.js / m.js 逐字节一致）。
    四档 Pref('fontsize') ∈ 'sm' | 'md' | 'lg' | 'xl'，结果落到 <html data-fontsize>，
    另有一个可选「行高宽松」开关 Pref('lhloose') → <html data-lineheight="loose">。
-   CSS 只缩放**正文**基数（--base-font / --read-font），UI 不受影响；
+   CSS 用无单位缩放因子 --fs 驱动**全站**文字：所有 font-size 都写成
+   calc(Npx * var(--fs))，--base-font / --read-font 亦由它派生，
+   相邻档约 ±16%、sm↔xl 约 1.6 倍；
    桌面端页面内联脚本会先跑一次防闪，这里是兜底 + 设置页接线。 */
 const FontSize = {
   KEY: "fontsize",
@@ -176,7 +178,7 @@ const GoalRing = {
         stroke-dasharray="${dash} ${(c - +dash).toFixed(1)}"
         transform="rotate(-90 ${cx} ${cx})"/>
       <text x="${cx}" y="${cx + 5}" text-anchor="middle"
-        style="font:700 20px/1 var(--mono);fill:${color}">${pct}%</text>
+        style="font:700 calc(20px * var(--fs))/1 var(--mono);fill:${color}">${pct}%</text>
     </svg>`;
   },
   /** 环旁文案：题量/分钟双行，or 单目标；并给出连续达标天数 */
@@ -226,7 +228,7 @@ const GoalRing = {
         stroke-linecap="round" stroke-dasharray="${dash} ${(c - +dash).toFixed(1)}"
         transform="rotate(-90 ${cx} ${cx})"/>
       <text x="${cx}" y="${cx + 5}" text-anchor="middle"
-        style="font:700 20px/1 var(--mono);fill:${color || "var(--cinnabar)"}">${p}%</text>
+        style="font:700 calc(20px * var(--fs))/1 var(--mono);fill:${color || "var(--cinnabar)"}">${p}%</text>
     </svg>`;
   },
 };
@@ -1404,7 +1406,7 @@ async function renderLogin() {
     const items = r.items || [];
     if (items.length) {
       $("#auProfiles").innerHTML =
-        `<div class="muted" style="font-size:13px;margin-bottom:6px">本机已有账号，点击填充：</div>` +
+        `<div class="muted" style="font-size:calc(13px * var(--fs));margin-bottom:6px">本机已有账号，点击填充：</div>` +
         items.map(p => `<span class="chip profile-chip" data-u="${esc(p.username)}">${esc(p.username)}</span>`).join("");
       $$(".profile-chip").forEach(c => c.onclick = () => {
         userEl.value = c.dataset.u;
@@ -1512,7 +1514,7 @@ async function renderTimeAnalysis() {
       return `<div class="card ta-mod">
         <div class="ta-row"><b>${esc(m.module)}</b><span class="muted">${m.n} 题 · 平均 ${fmt(m.avg_s)} · 中位 ${fmt(m.median_s)}</span></div>
         <div class="ta-bar"><span style="width:${ratio}%;background:${over ? "var(--cinnabar)" : "var(--bamboo)"}"></span></div>
-        <div class="muted" style="font-size:12px">超时 ${m.slow} · 会做但超时 ${m.slow_correct} · 建议 ≤ ${fmt(ref)}</div>
+        <div class="muted" style="font-size:calc(12px * var(--fs))">超时 ${m.slow} · 会做但超时 ${m.slow_correct} · 建议 ≤ ${fmt(ref)}</div>
       </div>`;
     }).join("")}
     ${d.slow_correct.length ? `
@@ -1568,7 +1570,7 @@ async function renderReport() {
     <div class="card">
       <h3>本周建议</h3>
       ${(rep.advice || []).length
-        ? rep.advice.map(a => `<div style="padding:7px 0;border-top:1px solid var(--line-soft);font-size:14px">${esc(a)}</div>`).join("")
+        ? rep.advice.map(a => `<div style="padding:7px 0;border-top:1px solid var(--line-soft);font-size:calc(14px * var(--fs))">${esc(a)}</div>`).join("")
         : `<p class="muted" style="margin:0">本周数据不足，先做一套题吧。</p>`}
     </div>`;
 }
@@ -1614,7 +1616,7 @@ function mIvResultHtml(d) {
         <circle cx="36" cy="36" r="29" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="round"
           stroke-dasharray="${(2 * Math.PI * 29 * Math.max(0, Math.min(1, total / 100))).toFixed(1)} ${(2 * Math.PI * 29).toFixed(1)}"
           transform="rotate(-90 36 36)"/>
-        <text x="36" y="41" text-anchor="middle" font-size="14" font-weight="700" fill="${color}">${Math.round(total)}</text>
+        <text x="36" y="41" text-anchor="middle" style="font-size:calc(14px * var(--fs))" font-weight="700" fill="${color}">${Math.round(total)}</text>
       </svg>
     </div>
     <div style="flex:1;min-width:0">
@@ -1682,7 +1684,7 @@ async function renderInterview() {
   function drawStats() {
     const s = stats;
     $("#ivStats").innerHTML = s.n ? `
-      <div class="muted" style="font-size:12.5px;margin-bottom:6px">共 ${s.n} 次 · 内容 ${s.avg_content ?? "—"} · 逻辑 ${s.avg_logic ?? "—"} · 表达 ${s.avg_express ?? "—"}</div>
+      <div class="muted" style="font-size:calc(12.5px * var(--fs));margin-bottom:6px">共 ${s.n} 次 · 内容 ${s.avg_content ?? "—"} · 逻辑 ${s.avg_logic ?? "—"} · 表达 ${s.avg_express ?? "—"}</div>
       ${(s.by_category || []).map(c => mIvBar(c.category + `（${c.n}）`, c.avg)).join("")}`
       : `<p class="muted">还没有练习记录</p>`;
   }
@@ -1709,7 +1711,7 @@ async function renderInterview() {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
           <span class="tag">${esc(curQ.category)}</span><span id="ivClock" class="iv-clock">未计时</span>
         </div>
-        <div style="font-size:14.5px;line-height:1.75;margin:9px 0">${esc(curQ.question)}</div>
+        <div style="font-size:calc(14.5px * var(--fs));line-height:1.75;margin:9px 0">${esc(curQ.question)}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px">
           <button class="btn btn-sm" id="ivThink">⏱ 思考</button>
           <button class="btn btn-sm" id="ivAnswer">✍️ 作答</button>
@@ -1718,7 +1720,7 @@ async function renderInterview() {
         <textarea id="ivA" rows="7" placeholder="写下你的作答（建议分点：亮观点 → 分层论证 → 结合岗位表态）"></textarea>
         <button class="btn btn-primary btn-block" id="ivGo" style="margin-top:10px">请 AI 考官点评</button>
         <span id="gTipIv" class="muted"></span>
-        <div id="ivRefBox" style="display:none;margin-top:10px;padding:9px 11px;background:var(--paper);border-radius:8px;font-size:13px;line-height:1.75"></div>
+        <div id="ivRefBox" style="display:none;margin-top:10px;padding:9px 11px;background:var(--paper);border-radius:8px;font-size:calc(13px * var(--fs));line-height:1.75"></div>
       </div>`;
     $("#ivThink").onclick = () => startTimer(qdata.think_seconds, "思考");
     $("#ivAnswer").onclick = () => { answerTotal = qdata.answer_seconds; startTimer(qdata.answer_seconds, "作答"); };
@@ -1739,7 +1741,7 @@ async function renderInterview() {
       const color = avg >= 80 ? "var(--green)" : avg >= 60 ? "var(--amber)" : "var(--cinnabar)";
       return `<div class="gh-item" data-id="${l.id}">
         <span class="tag">${esc(l.category)}</span><b style="margin-left:6px;color:${color}">${avg}分</b>
-        <span class="muted" style="font-size:11.5px;margin-left:6px">内容 ${l.content_score}·逻辑 ${l.logic_score}·表达 ${l.express_score}</span>
+        <span class="muted" style="font-size:calc(11.5px * var(--fs));margin-left:6px">内容 ${l.content_score}·逻辑 ${l.logic_score}·表达 ${l.express_score}</span>
         <span class="muted gh-date">${new Date(l.created_at * 1000).toLocaleDateString("zh-CN")}</span>
       </div>`;
     }).join("") : `<p class="muted">暂无练习记录</p>`;
@@ -1892,7 +1894,7 @@ async function renderPlan() {
     <div class="card">
       <h3 class="sec">能力雷达</h3>
       ${mRadarSvg(rad)}
-      <div class="muted" style="font-size:12px;line-height:1.9;margin-top:6px">
+      <div class="muted" style="font-size:calc(12px * var(--fs));line-height:1.9;margin-top:6px">
         ${rad.map(r => {
           const c = r.level === "弱" ? "var(--cinnabar)" : r.level === "强" ? "var(--green)" : r.level === "未练" ? "var(--ink-3)" : "var(--amber)";
           return `<span style="display:inline-block;min-width:104px">${esc(r.module)}：<b style="color:${c}">${r.level}</b>${r.n ? `（${r.n}）` : ""}</span>`;
@@ -1908,11 +1910,11 @@ async function renderPlan() {
         <label class="g-total">每日题量 <input type="number" id="plDaily" value="30" min="10" max="200" step="5" style="width:72px"/></label>
       </div>
       <button class="btn btn-primary btn-block" id="plGen">生成计划</button>
-      <p class="muted" style="font-size:12px;line-height:1.8;margin-top:8px">
+      <p class="muted" style="font-size:calc(12px * var(--fs));line-height:1.8;margin-top:8px">
         按「真题模块占比 × 弱项系数」分配题量；考点取掌握度红/黄高频考点轮换。<br/>
         填考试日期会按剩余天数压缩，并在考前一天安排全真模考。
       </p>
-      <div id="plStat" class="muted" style="font-size:12.5px;margin-top:8px">
+      <div id="plStat" class="muted" style="font-size:calc(12.5px * var(--fs));margin-top:8px">
         当前计划：共 <b>${summary.total}</b> 题 · 已完成 <b>${summary.done}</b> 题（${Math.round((summary.rate || 0) * 100)}%）
       </div>
     </div>
@@ -2048,8 +2050,8 @@ async function renderHome() {
       </div>
       ${nextAt ? `
       <div class="rank-track"><span style="width:${rankPct}%"></span></div>
-      <div class="muted" style="font-size:12px">距「${gameRank(nextAt)}」还差 ${nextAt - s.answers_total} 题</div>
-      ` : `<div class="muted" style="font-size:12px;margin-top:6px">已登顶称号榜</div>`}
+      <div class="muted" style="font-size:calc(12px * var(--fs))">距「${gameRank(nextAt)}」还差 ${nextAt - s.answers_total} 题</div>
+      ` : `<div class="muted" style="font-size:calc(12px * var(--fs));margin-top:6px">已登顶称号榜</div>`}
     </div>
 
     ${DAILY_DONE ? "" : `
@@ -2276,7 +2278,7 @@ async function renderPractice(auto = "") {
         <span class="chip" data-mode="random">随机</span>
         <span class="chip" data-mode="sequential">顺序</span>
       </div>
-      <div class="muted" style="font-size:12px;margin:8px 0 0">智能模式按掌握度加权：错得多、久没练的题优先出现</div>
+      <div class="muted" style="font-size:calc(12px * var(--fs));margin:8px 0 0">智能模式按掌握度加权：错得多、久没练的题优先出现</div>
       <div class="cfg-label" style="margin:12px 0 6px">模块</div>
       <div class="chips" id="pMods">
         <span class="chip on" data-m="">全部</span>
@@ -2298,18 +2300,18 @@ async function renderPractice(auto = "") {
         <span class="chip" data-min="60">60 分</span>
         <span class="chip" id="examChip" data-exam="1">考场模式</span>
       </div>
-      <div class="muted" style="font-size:12px;margin:8px 0 0">考场模式＝标准化答题卡 + 交卷统一判分（可选限时）</div>
+      <div class="muted" style="font-size:calc(12px * var(--fs));margin:8px 0 0">考场模式＝标准化答题卡 + 交卷统一判分（可选限时）</div>
       <div style="margin-top:14px"><button class="btn btn-primary btn-block" id="pGo">开始组卷</button></div>
     </div>
     <div class="card">
       <h3>真题套卷</h3>
-      <p class="muted" style="margin:0 0 10px;font-size:12px">按当年卷面顺序整卷练习，自动计时</p>
+      <p class="muted" style="margin:0 0 10px;font-size:calc(12px * var(--fs))">按当年卷面顺序整卷练习，自动计时</p>
       <select id="examSel" class="exam-sel" style="width:100%;margin-bottom:10px"><option value="">加载中…</option></select>
       <button class="btn btn-primary btn-block" id="examGo" disabled>开始整卷</button>
     </div>
     <div class="card">
       <h3>考点正确率热力墙</h3>
-      <p class="muted" style="margin:0 0 10px;font-size:12px">
+      <p class="muted" style="margin:0 0 10px;font-size:calc(12px * var(--fs))">
         <span class="heat-dot heat-r"></span>&lt;40% 薄弱　
         <span class="heat-dot heat-y"></span>40-70% 一般　
         <span class="heat-dot heat-g"></span>&gt;70% 掌握（至少 3 题才上色）</p>
@@ -2630,7 +2632,7 @@ async function runPaper(ids, opt = {}) {
         <button class="btn btn-sm ${daub ? "btn-primary" : ""}" id="daubBtn">${daub ? "退出涂卡" : "涂卡录入"}</button>
       </div>
       ${daub ? `<div class="exam-daub">
-        <div class="muted" style="font-size:12px;margin:2px 0 6px">直接点选项涂卡（题目区可只读）· 交卷后统一判分</div>
+        <div class="muted" style="font-size:calc(12px * var(--fs));margin:2px 0 6px">直接点选项涂卡（题目区可只读）· 交卷后统一判分</div>
         ${docs.map((_, i) => {
           const a = answers[i];
           return `<div class="daub-row">
@@ -3048,11 +3050,11 @@ function mReasonDonut(items) {
       A${r} ${r} 0 ${large} 0 ${x3.toFixed(2)} ${y3.toFixed(2)} Z" fill="${col}"/>`;
   }).join("");
   const legend = data.map((d, i) => `
-    <div style="display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 0">
+    <div style="display:flex;align-items:center;gap:8px;font-size:calc(13px * var(--fs));padding:3px 0">
       <span style="width:10px;height:10px;border-radius:2px;background:${M_DONUT_COLORS[i % M_DONUT_COLORS.length]}"></span>
       <span style="flex:1">${esc(d.reason)}</span>
       <b>${d.c}</b>
-      <span class="muted" style="font-size:12px">${Math.round(d.c / total * 100)}%</span>
+      <span class="muted" style="font-size:calc(12px * var(--fs))">${Math.round(d.c / total * 100)}%</span>
     </div>`).join("");
   return `<div class="card">
     <h3>错因分布</h3>
@@ -3060,8 +3062,8 @@ function mReasonDonut(items) {
       <svg class="donut-svg" viewBox="0 0 120 120" width="100%"
            role="img" aria-label="错因分布圆环">
         ${arcs}
-        <text x="${C}" y="${C - 1}" text-anchor="middle" font-size="19" font-weight="700" fill="var(--ink-1)">${total}</text>
-        <text x="${C}" y="${C + 14}" text-anchor="middle" font-size="10" fill="var(--ink-3)">道错题</text>
+        <text x="${C}" y="${C - 1}" text-anchor="middle" style="font-size:calc(19px * var(--fs))" font-weight="700" fill="var(--ink-1)">${total}</text>
+        <text x="${C}" y="${C + 14}" text-anchor="middle" style="font-size:calc(10px * var(--fs))" fill="var(--ink-3)">道错题</text>
       </svg>
       <div class="donut-legend">${legend}</div>
     </div>
@@ -3106,7 +3108,7 @@ async function drawWrong(box, tok) {
           placeholder="一句话记下坑因，如：把基期当现期（失焦即存）"
           value="${esc(rmap[w.id] || "")}">
         ${reasonChips(w)}
-        ${ai[w.id] ? `<div class="muted" style="font-size:12px;margin-top:6px">
+        ${ai[w.id] ? `<div class="muted" style="font-size:calc(12px * var(--fs));margin-top:6px">
           <b>AI 归因：${esc(ai[w.id].category)}</b>${ai[w.id].specific ? ` · ${esc(ai[w.id].specific)}` : ""}
           ${ai[w.id].advice ? `<div>建议：${esc(ai[w.id].advice)}</div>` : ""}
         </div>` : ""}
@@ -3463,7 +3465,7 @@ function mRunRecall(box, tok, cards) {
     if (idx >= cards.length) {
       box.innerHTML = `
         <div class="card" style="text-align:center">
-          <div style="font-size:16px;font-weight:700;margin-bottom:12px">本组完成</div>
+          <div style="font-size:calc(16px * var(--fs));font-weight:700;margin-bottom:12px">本组完成</div>
           <div class="cd-stat-grid">
             <div><b style="color:var(--green)">${known}</b><span>认识</span></div>
             <div><b style="color:var(--amber)">${vague}</b><span>模糊</span></div>
@@ -3481,7 +3483,7 @@ function mRunRecall(box, tok, cards) {
       <div class="qz-prog">第 ${idx + 1} / ${cards.length} 张 · ${esc(c.category || "")}</div>
       <div class="cd-card">
         <div class="cd-meta">${esc([c.module, c.category].filter(Boolean).join(" · "))}</div>
-        <div style="font-family:var(--serif);font-size:26px;font-weight:700;letter-spacing:2px;text-align:center;margin:6px 0">${esc(c.stem)}</div>
+        <div style="font-family:var(--serif);font-size:calc(26px * var(--fs));font-weight:700;letter-spacing:2px;text-align:center;margin:6px 0">${esc(c.stem)}</div>
         <div class="cd-hint">默写释义 / 侧重点 / 搭配对象</div>
         <textarea class="rc-area" id="rcArea" placeholder="先自己写，不许翻…"></textarea>
         <div class="cd-rate">
@@ -3491,7 +3493,7 @@ function mRunRecall(box, tok, cards) {
           <div id="rcJudge" class="rc-judge"></div>
           ${esc(c.analysis || c.answer || "")}
           <div class="cd-rate">
-            <span style="color:var(--ink-3);font-size:12px">自评（可覆盖）：</span>
+            <span style="color:var(--ink-3);font-size:calc(12px * var(--fs))">自评（可覆盖）：</span>
             <button class="btn cd-rate-btn" data-l="0">不会</button>
             <button class="btn cd-rate-btn" data-l="1">模糊</button>
             <button class="btn btn-primary cd-rate-btn" data-l="2">认识</button>
@@ -3503,8 +3505,8 @@ function mRunRecall(box, tok, cards) {
       const judge = judgeRecall($("#rcArea").value, c.analysis || c.answer || "");
       const pct = Math.round(judge.ratio * 100);
       $("#rcJudge").innerHTML = judge.correct
-        ? `<span style="color:var(--green);font-weight:700">✔ 回答正确</span> <span style="color:var(--ink-3);font-size:12px">（匹配度 ${pct}%）</span>`
-        : `<span style="color:var(--cinnabar);font-weight:700">✘ 回答错误</span> <span style="color:var(--ink-3);font-size:12px">（匹配度 ${pct}%）</span>`;
+        ? `<span style="color:var(--green);font-weight:700">✔ 回答正确</span> <span style="color:var(--ink-3);font-size:calc(12px * var(--fs))">（匹配度 ${pct}%）</span>`
+        : `<span style="color:var(--cinnabar);font-weight:700">✘ 回答错误</span> <span style="color:var(--ink-3);font-size:calc(12px * var(--fs))">（匹配度 ${pct}%）</span>`;
       $$("[data-l]", box).forEach(b => b.classList.remove("rc-lv-suggest"));
       const sb = box.querySelector(`[data-l="${judge.correct ? 2 : 0}"]`);
       if (sb) sb.classList.add("rc-lv-suggest");
@@ -3537,7 +3539,7 @@ function mRunQuiz(box, tok, cards, pool) {
       const rate = Math.round(okN / (okN + noN) * 100);
       box.innerHTML = `
         <div class="card" style="text-align:center">
-          <div style="font-size:16px;font-weight:700;margin-bottom:12px">本组完成</div>
+          <div style="font-size:calc(16px * var(--fs));font-weight:700;margin-bottom:12px">本组完成</div>
           <div class="cd-stat-grid">
             <div><b style="color:var(--green)">${okN}</b><span>答对</span></div>
             <div><b style="color:var(--cinnabar)">${noN}</b><span>答错</span></div>
@@ -3698,7 +3700,7 @@ async function drawCardLibrary(box, tok) {
         ${selectRow("category", "分类")}
         <div class="cd-search" style="margin-top:8px">
           <input type="text" id="cardSearch" placeholder="搜索词语/成语/释义…" value="${esc(filters.q || "")}"
-            style="width:100%;padding:8px 10px;border:1px solid var(--line,#ddd);border-radius:6px;font-size:13px;background:var(--card,#fff);color:var(--ink,#333)">
+            style="width:100%;padding:8px 10px;border:1px solid var(--line,#ddd);border-radius:6px;font-size:calc(13px * var(--fs));background:var(--card,#fff);color:var(--ink,#333)">
         </div>
       </div>
       <div class="cd-count">共 ${allCards.length} 张 · 抽卡翻面，看释义评分</div>
@@ -3832,10 +3834,10 @@ async function drawWeak(box, tok) {
     ${items.map(c => `
       <details class="card wk-item">
         <summary style="display:flex;align-items:center;gap:8px;list-style:none">
-          <span style="font-family:var(--serif);font-size:18px;font-weight:700;flex:1">${esc(c.stem)}</span>
-          <span style="font-size:12px;padding:2px 8px;border-radius:10px;color:#fff;background:${c.weak_level === 0 ? "var(--cinnabar)" : "var(--amber)"}">${c.weak_level === 0 ? "不会" : "模糊"}</span>
+          <span style="font-family:var(--serif);font-size:calc(18px * var(--fs));font-weight:700;flex:1">${esc(c.stem)}</span>
+          <span style="font-size:calc(12px * var(--fs));padding:2px 8px;border-radius:10px;color:#fff;background:${c.weak_level === 0 ? "var(--cinnabar)" : "var(--amber)"}">${c.weak_level === 0 ? "不会" : "模糊"}</span>
         </summary>
-        <div style="font-size:12px;color:var(--ink-3,#888);margin:6px 0">${esc(c.category || "")} · ${when(c.reviewed_at)}${c.miss_count > 1 ? ` · 不会×${c.miss_count}` : ""}</div>
+        <div style="font-size:calc(12px * var(--fs));color:var(--ink-3,#888);margin:6px 0">${esc(c.category || "")} · ${when(c.reviewed_at)}${c.miss_count > 1 ? ` · 不会×${c.miss_count}` : ""}</div>
         <div class="cd-analysis">${esc(c.analysis || c.answer || "")}</div>
       </details>`).join("")}`;
   const weakItems = shuffleCopy(items);
@@ -4091,7 +4093,12 @@ async function renderMastery() {
     const rest = Math.max(0, (d.total || 0) - list.length);
     // 分档计数取后端按"筛选后全量"统计的值（不是当页），避免图例随翻页跳动
     const cnt = d.levels || { green: 0, amber: 0, red: 0 };
-    $("#mstBody").innerHTML = `
+    // 已离开掌握度页（切到别的路由）时 #mstBody 已不存在 —— 丢弃过期结果。
+    // 否则响应回来会抛 "Cannot set properties of null (setting 'innerHTML')"，
+    // 与搜索页 `if (!$("#rcount")) return;` 是同一类守卫（E2E 全路由扫描抓到）。
+    const body = $("#mstBody");
+    if (!body) return;
+    body.innerHTML = `
       <div class="card">
         <div class="chips" id="mstMods">
           <span class="chip ${st.module === "" ? "on" : ""}" data-m="">全部</span>
@@ -4101,12 +4108,12 @@ async function renderMastery() {
           <span class="chip ${st.onlyPracticed ? "" : "on"}" data-only="0">全部考点</span>
           <span class="chip ${st.onlyPracticed ? "on" : ""}" data-only="1">只看已练</span>
         </div>
-        <div style="display:flex;gap:14px;margin-top:10px;font-size:12.5px;flex-wrap:wrap">
+        <div style="display:flex;gap:14px;margin-top:10px;font-size:calc(12.5px * var(--fs));flex-wrap:wrap">
           <span><b style="color:${M_LEVEL_COLOR.green}">●</b> 已掌握 ${cnt.green || 0}</span>
           <span><b style="color:${M_LEVEL_COLOR.amber}">●</b> 待巩固 ${cnt.amber || 0}</span>
           <span><b style="color:${M_LEVEL_COLOR.red}">●</b> 薄弱/未练 ${cnt.red || 0}</span>
         </div>
-        <div class="muted" style="font-size:12px;margin-top:6px">
+        <div class="muted" style="font-size:calc(12px * var(--fs));margin-top:6px">
           已练 ${d.practiced || 0} 个 · 当前筛选 ${d.total || 0} 个 · 显示 ${list.length} 个${rest ? `（还有 ${rest} 个）` : ""}
         </div>
       </div>
@@ -4116,9 +4123,9 @@ async function renderMastery() {
           <span class="kn" style="flex:1;min-width:0">
             <span style="color:${M_LEVEL_COLOR[it.level]}">●</span>
             ${esc(it.kaodian)}
-            <span class="muted" style="font-size:11.5px;display:block">${esc(it.module)} · 题库 ${it.total} 题</span>
+            <span class="muted" style="font-size:calc(11.5px * var(--fs));display:block">${esc(it.module)} · 题库 ${it.total} 题</span>
           </span>
-          <span style="text-align:right;font-size:12.5px">
+          <span style="text-align:right;font-size:calc(12.5px * var(--fs))">
             ${it.rate === null ? '<span class="muted">未练</span>' : `<b>${it.rate}%</b>`}
             <span class="muted" style="display:block">${M_LEVEL_LABEL[it.level]} · 掌握 ${it.mastery.toFixed(2)}</span>
           </span>
@@ -4513,6 +4520,7 @@ async function renderSettings() {
       <div class="muted" style="margin:6px 0 14px">夜间为「宣纸夜景」：暖灰墨底 + 米白文字；「跟随系统」随系统深浅自动切换。</div>
       <div class="cfg-label">字号</div>
       <div class="type-checks" id="fontPick">${FontSize.pickerHtml()}</div>
+      <div class="muted" style="margin:6px 0 0">作用于全站文字：题目、长文与界面元素一起缩放，四档差距明显。</div>
       <label class="check" style="margin-top:12px"><input type="checkbox" id="prefLoose"
         ${FontSize.loose() ? "checked" : ""}/> 行高宽松（长文更透气）</label>
       <label class="check" style="margin-top:12px"><input type="checkbox" id="prefSound"
@@ -5543,14 +5551,14 @@ async function renderMe() {
     </div>
     <div class="card">
       <h3>本周建议</h3>
-      ${(rep.advice || []).map(a => `<div style="padding:7px 0;border-top:1px solid var(--line-soft);font-size:14px">${esc(a)}</div>`).join("")}
+      ${(rep.advice || []).map(a => `<div style="padding:7px 0;border-top:1px solid var(--line-soft);font-size:calc(14px * var(--fs))">${esc(a)}</div>`).join("")}
       <a class="btn btn-sm btn-block" href="#/time" style="margin-top:10px">查看用时分析 →</a>
       <a class="btn btn-sm btn-block" href="#/notes" style="margin-top:8px">我的笔记 →</a>
     </div>
     ${mode === "browser" ? `
     <div class="card">
       <h3>添加到主屏幕</h3>
-      <p class="muted" style="margin:0;font-size:13.5px">
+      <p class="muted" style="margin:0;font-size:calc(13.5px * var(--fs))">
         手机浏览器打开本页后：<br>
         · 苹果 Safari：底部分享 →「添加到主屏幕」<br>
         · 安卓 Chrome：右上角菜单 →「添加到主屏幕」<br>
@@ -5759,7 +5767,7 @@ async function renderArgumentQuiz() {
             return `<button class="btn arg-type-chip" data-type="${esc(t.type)}">${esc(t.type)}<small>${t.count}题</small></button>`;
           }).join("")}
         </div>
-        <div style="color:var(--ink-3);font-size:12px;margin-top:10px">共 ${stats.reduce((a,b)=>a+b.count,0)} 题</div>
+        <div style="color:var(--ink-3);font-size:calc(12px * var(--fs));margin-top:10px">共 ${stats.reduce((a,b)=>a+b.count,0)} 题</div>
       </div>`;
     $$("[data-n]").forEach(b => b.onclick = () => { perBatch = +b.dataset.n; renderPicker(); });
     $$("[data-mode]").forEach(b => b.onclick = () => { mode = b.dataset.mode; renderPicker(); });
@@ -5799,10 +5807,10 @@ async function renderArgumentQuiz() {
               ${q.options.map(o => `<button class="btn arg-opt" data-o="${esc(o)}">${esc(o)}</button>`).join("")}
             </div>` : `
             <div style="display:flex;gap:8px">
-              <input type="text" id="argRecall" placeholder="输入错误类型，如：以偏概全" style="flex:1;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:15px" autocomplete="off" />
+              <input type="text" id="argRecall" placeholder="输入错误类型，如：以偏概全" style="flex:1;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:calc(15px * var(--fs))" autocomplete="off" />
               <button class="btn btn-primary" id="argRecallSub">提交</button>
             </div>
-            <div style="font-size:12px;color:var(--ink-3);margin-top:6px">10类：${ARG_TAX.join("、")}</div>
+            <div style="font-size:calc(12px * var(--fs));color:var(--ink-3);margin-top:6px">10类：${ARG_TAX.join("、")}</div>
           `}
           <div class="arg-quiz-exp" style="display:none"></div>
         </div>`;
@@ -6111,7 +6119,7 @@ function mGradeRing(score, total) {
     <circle cx="36" cy="36" r="${r}" fill="none" stroke="${color}" stroke-width="6"
       stroke-linecap="round" stroke-dasharray="${(c * pct).toFixed(1)} ${c.toFixed(1)}"
       transform="rotate(-90 36 36)"/>
-    <text x="36" y="41" text-anchor="middle" font-size="15" font-weight="700" fill="${color}">${Math.round(pct * 100)}%</text>
+    <text x="36" y="41" text-anchor="middle" style="font-size:calc(15px * var(--fs))" font-weight="700" fill="${color}">${Math.round(pct * 100)}%</text>
   </svg>`;
 }
 
@@ -6187,7 +6195,7 @@ function mTrendSvg(items) {
   const grid = [0, 0.5, 1].map(r => {
     const y = Y(r).toFixed(1);
     return `<line x1="${PL}" y1="${y}" x2="${PL + iw}" y2="${y}" stroke="var(--line-soft)" stroke-width="1"/>
-      <text x="${PL - 5}" y="${(+y + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--ink-3)">${Math.round(r * 100)}%</text>`;
+      <text x="${PL - 5}" y="${(+y + 3).toFixed(1)}" text-anchor="end" style="font-size:calc(9px * var(--fs))" fill="var(--ink-3)">${Math.round(r * 100)}%</text>`;
   }).join("");
   const dots = pts.map((p, i) => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.5" fill="#fff" stroke="var(--cinnabar)" stroke-width="1.6"><title>${items[i].score}/${items[i].total}（${Math.round(items[i].rate * 100)}%）</title></circle>`).join("");
   const first = items[0], last = items[n - 1];
@@ -6239,7 +6247,7 @@ async function renderGrade() {
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <h3 class="sec" style="margin:0">📈 提分曲线</h3>
-        <select id="gTrendCat" class="g-field" style="width:auto;margin:0;padding:5px 8px;font-size:12.5px">
+        <select id="gTrendCat" class="g-field" style="width:auto;margin:0;padding:5px 8px;font-size:calc(12.5px * var(--fs))">
           <option value="">全部题型</option>
           ${rub.items.map(r => `<option value="${r.key}">${esc(r.name)}</option>`).join("")}
         </select>
@@ -6337,11 +6345,17 @@ async function renderGrade() {
     });
   }
   async function drawTrend() {
-    const cat = $("#gTrendCat").value;
+    const sel = $("#gTrendCat");
+    const cat = sel ? sel.value : "";
     try {
       const t = await api("/api/essay/trend?category=" + encodeURIComponent(cat) + "&limit=40");
-      $("#gTrend").innerHTML = mTrendSvg(t.items);
-    } catch (e) { $("#gTrend").innerHTML = ""; }
+      // 已离开批改页时 #gTrend 已不存在 —— 丢弃过期结果（同 #mstBody 的守卫）
+      const box = $("#gTrend");
+      if (box) box.innerHTML = mTrendSvg(t.items);
+    } catch (e) {
+      const box = $("#gTrend");
+      if (box) box.innerHTML = "";
+    }
   }
   $("#gTrendCat").onchange = drawTrend;
   drawProf(); drawHist(); drawTrend();
@@ -6500,7 +6514,7 @@ async function renderAiAsk() {
     <div class="card" style="display:flex;flex-direction:column;min-height:72vh">
       <div id="aiList" style="flex:1;overflow-y:auto;padding:4px 0"></div>
       <div id="aiChips" style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0">
-        ${chips.map(c => `<button class="btn" data-q="${esc(c)}" style="font-size:12px;padding:4px 10px">${esc(c)}</button>`).join("")}
+        ${chips.map(c => `<button class="btn" data-q="${esc(c)}" style="font-size:calc(12px * var(--fs));padding:4px 10px">${esc(c)}</button>`).join("")}
       </div>
       <div id="aiPreviews" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0"></div>
       <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-end">
@@ -6509,11 +6523,11 @@ async function renderAiAsk() {
           <input type="file" accept="image/*" multiple style="display:none" id="aiFile">
         </label>
         <textarea id="aiInput" rows="2" placeholder="随便问：考点 · 技巧 · 规划…"
-          style="flex:1;resize:none;border:1px solid var(--line,#ddd);border-radius:10px;padding:8px;font-size:15px;font-family:inherit;background:transparent;color:inherit"></textarea>
+          style="flex:1;resize:none;border:1px solid var(--line,#ddd);border-radius:10px;padding:8px;font-size:calc(15px * var(--fs));font-family:inherit;background:transparent;color:inherit"></textarea>
         <button class="btn" id="aiGo" style="padding:8px 14px">发送</button>
       </div>
       <button class="btn btn-block" id="aiNew" style="margin-top:8px">🧹 新对话</button>
-      <p style="text-align:center;color:var(--ink-2,#999);font-size:12px;margin:8px 0 0">内容由 AI 生成，仅供参考</p>
+      <p style="text-align:center;color:var(--ink-2,#999);font-size:calc(12px * var(--fs));margin:8px 0 0">内容由 AI 生成，仅供参考</p>
     </div>`;
 
   // DOM 引用一次性捕获：流式回调只写闭包变量，中途切页不会触发 null 报错
@@ -6547,7 +6561,7 @@ async function renderAiAsk() {
     previewBox.innerHTML = attachedImages.map((src, i) =>
       `<div style="position:relative;width:56px;height:56px">
         <img src="${src}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;border:1px solid var(--line,#ddd)">
-        <span data-rm="${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar,#a33);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12px;line-height:1">×</span>
+        <span data-rm="${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar,#a33);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:calc(12px * var(--fs));line-height:1">×</span>
       </div>`).join("");
     previewBox.querySelectorAll("[data-rm]").forEach(el => {
       el.onclick = () => { attachedImages.splice(+el.dataset.rm, 1); renderPreviews(); };
@@ -6570,7 +6584,7 @@ async function renderAiAsk() {
     row.style.cssText = "display:flex;margin:10px 0;justify-content:" +
       (role === "user" ? "flex-end" : "flex-start");
     const b = document.createElement("div");
-    b.style.cssText = "max-width:84%;padding:9px 13px;border-radius:12px;font-size:14.5px;line-height:1.75" +
+    b.style.cssText = "max-width:84%;padding:9px 13px;border-radius:12px;font-size:calc(14.5px * var(--fs));line-height:1.75" +
       (role === "user"
         ? ";background:var(--cinnabar,#a33);color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap"
         : ";background:rgba(0,0,0,.05);border-bottom-left-radius:4px");
@@ -6590,7 +6604,7 @@ async function renderAiAsk() {
 
   const drawAll = () => {
     list.innerHTML = msgs.length ? "" :
-      `<div style="text-align:center;color:var(--ink-2,#999);padding:32px 16px;font-size:13.5px">
+      `<div style="text-align:center;color:var(--ink-2,#999);padding:32px 16px;font-size:calc(13.5px * var(--fs))">
         有什么想问的？考点讲法、速算技巧、备考节奏……<br>不做题也能随便聊。</div>`;
     msgs.forEach(m => bubble(m.role, m.content));
   };
@@ -6619,7 +6633,7 @@ async function renderAiAsk() {
 
     let full = "";
     const b = bubble("ai", "");
-    b.innerHTML = `<div style="color:var(--ink-2,#999);font-size:12.5px">🤔 思考中…</div>`;
+    b.innerHTML = `<div style="color:var(--ink-2,#999);font-size:calc(12.5px * var(--fs))">🤔 思考中…</div>`;
 
     try {
       const r = await fetch("/api/ai/ask", {
@@ -6690,7 +6704,7 @@ async function renderGuide(arg) {
         <span class="guide-round" id="gRound">第 1 / 6 轮</span>
         <span class="guide-hint">AI 不直接报答案，会一步步反问你</span>
       </div>
-      <div class="muted" style="font-size:12.5px;margin:4px 0 8px">${esc([doc.kaodian, doc.module].filter(Boolean).join(" · "))}</div>
+      <div class="muted" style="font-size:calc(12.5px * var(--fs));margin:4px 0 8px">${esc([doc.kaodian, doc.module].filter(Boolean).join(" · "))}</div>
       <details class="material" style="margin-bottom:10px">
         <summary>题目原文（可折叠）</summary>
         <div class="mat-body">${d.material || ""}<div class="stem" style="margin-top:8px">${normalizeStem(d.stem || "")}</div></div>
@@ -6829,18 +6843,18 @@ async function renderZyNotes() {
     el.innerHTML = shown.length ? shown.map(g => `
       <div class="card">
         <h3 class="sec"><span style="color:var(--cinnabar)">${esc(g.icon)}</span> ${esc(g.name)} · ${g.points.length} 点</h3>
-        <p class="muted" style="margin:0 0 4px;font-size:12.5px">${esc(g.desc)}</p>
+        <p class="muted" style="margin:0 0 4px;font-size:calc(12.5px * var(--fs))">${esc(g.desc)}</p>
         ${g.points.map(p => `
           <div class="zy-item">
             <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--line-soft);cursor:pointer">
-              <b style="font-size:14.5px;line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
+              <b style="font-size:calc(14.5px * var(--fs));line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
             </div>
             <div class="zy-body" hidden style="padding-bottom:12px">
               ${md(p.body)}
               ${p.tips && p.tips.length ? `
                 <div style="margin-top:8px;padding:8px 10px;background:#fbf6ec;border-left:3px solid var(--cinnabar)">
-                  <b style="font-size:13px">⚠ 易错提醒</b>
-                  <ul class="md-list" style="margin:4px 0 0;font-size:12.5px;color:var(--ink-2)">
+                  <b style="font-size:calc(13px * var(--fs))">⚠ 易错提醒</b>
+                  <ul class="md-list" style="margin:4px 0 0;font-size:calc(12.5px * var(--fs));color:var(--ink-2)">
                     ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
                   </ul>
                 </div>` : ""}
@@ -6894,10 +6908,10 @@ async function renderXcNotes() {
   const drawToc = shown => {
     const el = $("#xcToc");
     if (!shown.length) { el.innerHTML = ""; return; }
-    el.innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:6px">目录 · 共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点</div>
+    el.innerHTML = `<div class="muted" style="font-size:calc(12px * var(--fs));margin-bottom:6px">目录 · 共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         ${shown.map(g => `<a href="javascript:void(0)" class="xc-toc" data-g="${esc(g.key)}"
-          style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--line-soft);border-radius:14px;font-size:12.5px;color:var(--ink-2);text-decoration:none">
+          style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--line-soft);border-radius:14px;font-size:calc(12.5px * var(--fs));color:var(--ink-2);text-decoration:none">
           <b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>${esc(g.name)}
           <span class="muted">${g.points.length}</span></a>`).join("")}
       </div>`;
@@ -6921,18 +6935,18 @@ async function renderXcNotes() {
     el.innerHTML = shown.length ? shown.map(g => `
       <div class="card" id="xc-${esc(g.key)}">
         <h3 class="sec"><span style="color:var(--cinnabar)">${esc(g.icon)}</span> ${esc(g.name)} · ${g.points.length} 点</h3>
-        <p class="muted" style="margin:0 0 4px;font-size:12.5px">${esc(g.desc)}</p>
+        <p class="muted" style="margin:0 0 4px;font-size:calc(12.5px * var(--fs))">${esc(g.desc)}</p>
         ${g.points.map(p => `
           <div class="zy-item">
             <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--line-soft);cursor:pointer">
-              <b style="font-size:14.5px;line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
+              <b style="font-size:calc(14.5px * var(--fs));line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
             </div>
             <div class="zy-body" hidden style="padding-bottom:12px">
               ${md(p.body)}
               ${p.tips && p.tips.length ? `
                 <div style="margin-top:8px;padding:8px 10px;background:#fbf6ec;border-left:3px solid var(--cinnabar)">
-                  <b style="font-size:13px">⚠ 易错提醒</b>
-                  <ul class="md-list" style="margin:4px 0 0;font-size:12.5px;color:var(--ink-2)">
+                  <b style="font-size:calc(13px * var(--fs))">⚠ 易错提醒</b>
+                  <ul class="md-list" style="margin:4px 0 0;font-size:calc(12.5px * var(--fs));color:var(--ink-2)">
                     ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
                   </ul>
                 </div>` : ""}
@@ -6990,7 +7004,7 @@ function _shareBase() {
 
 function pkTable(records, myId) {
   if (!records || !records.length) {
-    return `<div class="muted" style="padding:10px 0;font-size:13px">还没有人提交成绩，做第一个上榜的人。</div>`;
+    return `<div class="muted" style="padding:10px 0;font-size:calc(13px * var(--fs))">还没有人提交成绩，做第一个上榜的人。</div>`;
   }
   return `<table class="pk-table">
     <tr><th>#</th><th>昵称</th><th>成绩</th><th>用时</th></tr>
@@ -7029,7 +7043,7 @@ async function renderShareOpen(code) {
     view.innerHTML = `<div class="card">
       <h3 class="sec">分享题单</h3>
       <p style="color:var(--cinnabar);font-weight:600">分享码无效或已损坏</p>
-      <p class="muted" style="font-size:13px">${esc(String(e.message || e))}</p>
+      <p class="muted" style="font-size:calc(13px * var(--fs))">${esc(String(e.message || e))}</p>
       <button class="btn btn-block" onclick="location.hash='#/share'">返回分享页</button></div>`;
     return;
   }
@@ -7039,7 +7053,7 @@ async function renderShareOpen(code) {
   view.innerHTML = `
     <div class="card">
       <h3 class="sec">${esc(r.title || "分享题单")}</h3>
-      <div class="muted" style="font-size:13px;margin-bottom:8px">${r.author ? `来自 ${esc(r.author)} · ` : ""}共 ${r.total} 题${
+      <div class="muted" style="font-size:calc(13px * var(--fs));margin-bottom:8px">${r.author ? `来自 ${esc(r.author)} · ` : ""}共 ${r.total} 题${
         r.missing ? `（本机题库缺少 ${r.missing} 题，已自动跳过）` : ""}</div>
       ${r.result ? `<div class="pk-vs">
         <div class="pk-side">
@@ -7064,7 +7078,7 @@ async function renderShareOpen(code) {
         <button class="btn btn-sm" id="shareSys" style="flex:1">分享给好友</button>
         <button class="btn btn-sm" id="shareBack" style="flex:1">返回</button>
       </div>
-      <div class="muted" style="font-size:12.5px;margin-top:8px">
+      <div class="muted" style="font-size:calc(12.5px * var(--fs));margin-top:8px">
         挑战按考场模式进行：全屏作答 + 答题卡，交卷后统一判分，成绩自动上榜。
       </div>
     </div>
@@ -7125,7 +7139,7 @@ async function renderShare(code = "") {
 
     <div class="card">
       <h3 class="sec">生成分享码</h3>
-      <div class="muted" style="font-size:12.5px;margin-bottom:8px">把一组题打包成分享码发给同学，对方打开即练；做完自动对比成绩（异步 PK）</div>
+      <div class="muted" style="font-size:calc(12.5px * var(--fs));margin-bottom:8px">把一组题打包成分享码发给同学，对方打开即练；做完自动对比成绩（异步 PK）</div>
       <div class="chips" id="shareSrcChips" style="margin-bottom:10px">
         <span class="chip on" data-src="last">最近一卷${LAST_PAPER ? `（${LAST_PAPER.ids.length}）` : "（暂无）"}</span>
         <span class="chip" data-src="wrong">错题（${wrongIds.length}）</span>
@@ -7148,15 +7162,15 @@ async function renderShare(code = "") {
       ${mine.length ? mine.map(s => `
         <div class="share-row">
           <div>
-            <div style="font-weight:600;font-size:14px">${esc(s.title || "未命名题单")}</div>
-            <div class="muted" style="font-size:12px">${(s.ids || []).length} 题 · 被打开 ${s.plays || 0} 次</div>
+            <div style="font-weight:600;font-size:calc(14px * var(--fs))">${esc(s.title || "未命名题单")}</div>
+            <div class="muted" style="font-size:calc(12px * var(--fs))">${(s.ids || []).length} 题 · 被打开 ${s.plays || 0} 次</div>
           </div>
           <div style="display:flex;gap:8px;flex-shrink:0">
             <button class="btn btn-sm" data-open="${esc(s.code)}">打开</button>
             <button class="btn btn-sm" data-copy="${esc(s.code)}">复制</button>
           </div>
         </div>`).join("")
-      : `<div class="muted" style="padding:10px 0;font-size:13px">还没有分享过题单</div>`}
+      : `<div class="muted" style="padding:10px 0;font-size:calc(13px * var(--fs))">还没有分享过题单</div>`}
     </div>`;
 
   let src = "last";
@@ -7193,7 +7207,7 @@ async function renderShare(code = "") {
       const url = `${_shareBase()}/#/share/${out.code}`;
       $("#shareOut").innerHTML = `
         <div class="share-out">
-          <div class="muted" style="font-size:13px">已生成 · ${out.count} 题${out.result ? " · 已附带你的成绩（对方可 PK）" : ""}</div>
+          <div class="muted" style="font-size:calc(13px * var(--fs))">已生成 · ${out.count} 题${out.result ? " · 已附带你的成绩（对方可 PK）" : ""}</div>
           <textarea class="share-code-box" readonly rows="3">${esc(url)}</textarea>
           <div class="cfg-inline" style="margin-top:8px;display:flex;gap:8px">
             <button class="btn btn-primary btn-sm" id="copyUrl" style="flex:1">复制链接</button>
