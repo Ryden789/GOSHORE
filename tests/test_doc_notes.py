@@ -425,6 +425,20 @@ def test_css_has_note_styles():
     assert ".note-box" in M_CSS.read_text(encoding="utf-8")
 
 
+def test_mobile_overlay_padding_not_overridden():
+    """回归：速记条 + 底部操作条同时存在时，#view 的底部留白必须按「两条之和」算。
+
+    曾经 `body.hint-on #view`（150px）与 `body:has(.q-bottom-bar) #view`（64px）
+    同权重，后者排在后面把留白覆盖回 64px；题目页末尾的「我的笔记」入口于是被
+    两条浮层压住，滚到底也点不到（E2E 表现为 Page.click 超时 + pointer intercepted）。
+    """
+    css = M_CSS.read_text(encoding="utf-8")
+    plain = css.index("body:has(.q-bottom-bar) #view")
+    both = css.index("body.hint-on:has(.q-bottom-bar) #view")
+    assert both > plain, "两条浮层共存的留白规则必须排在普通规则之后（同权重靠后者生效）"
+    assert "150px" in css[both:both + 240], "共存时留白应回到 150px"
+
+
 def test_main_activity_volume_keys():
     src = MAIN_ACT.read_text(encoding="utf-8")
     assert "onKeyDown" in src

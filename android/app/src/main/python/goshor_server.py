@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, zy_notes
+from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, print_export, share, speedcalc, variant, wordfill, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -664,6 +664,16 @@ class _Handler(BaseHTTPRequestHandler):
     def _err(self, code, msg=""):
         self._json({"detail": msg or ("error %d" % code)}, code)
 
+    def _html(self, markup: str, code=200):
+        """直接返回 HTML 字符串（可打印导出页用，与桌面端同构）。"""
+        body = (markup or "").encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _read_json(self):
         n = int(self.headers.get("Content-Length") or 0)
         if not n:
@@ -921,6 +931,44 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/notes":
                 self._json({"items": db.list_notes(),
                             "counts": db.note_counts()})
+            # G7 数据清空与重置：范围清单（与桌面端同构）
+            elif path == "/api/data/reset":
+                self._json({
+                    "scopes": [
+                        {"key": k, "tables": list(db.RESET_SCOPES[k])}
+                        for k in db.RESET_ALLOWED_SCOPES
+                    ],
+                    "forbidden": sorted(db.RESET_FORBIDDEN),
+                })
+            # G5 错题/多题导出：可打印页面（与桌面端 /api/export/print 同构，
+            # 拼装逻辑共用 app/print_export.py；APP 内取到 HTML 后走系统分享/打印）
+            elif path == "/api/export/print":
+                _ids = []
+                for _x in (q("doc_ids") or "").split(","):
+                    _x = _x.strip()
+                    if _x.isdigit():
+                        _ids.append(int(_x))
+                _ids = _ids[:50]
+                _brief = db.get_docs_brief(_ids)
+                _items = []
+                for _i in _ids:
+                    _d = _brief.get(_i)
+                    if not _d:
+                        continue
+                    _data = _d.get("data") or {}
+                    _opts = _data.get("options") or []
+                    _ans = next((o.get("label", "") for o in _opts
+                                 if o.get("correct")), "")
+                    _items.append({
+                        "title": _d.get("title", ""), "module": _d.get("module", ""),
+                        "exam": _d.get("exam", ""), "stem": _data.get("stem", ""),
+                        "options": _opts, "answer": _ans,
+                        "analysis": _data.get("official") or _data.get("reasoning") or "",
+                    })
+                self._html(print_export.render_html(
+                    _items, with_answer=q("with_answer", "1") != "0",
+                    heading=q("heading") or "题库导出",
+                    title_suffix=("指定 %d 题" % len(_items)) if _ids else ""))
             elif path == "/api/update/current":
                 self._json({"ok": True, **_shared_db_meta()})
             elif path == "/api/update/check":
@@ -1249,6 +1297,17 @@ class _Handler(BaseHTTPRequestHandler):
                 with _lock:
                     db.clear_note(0)
                 self._json({"ok": True})
+            # G7 数据清空与重置：按白名单范围清空个人数据（与桌面端同构）
+            elif path == "/api/data/reset":
+                if not b.get("confirm"):
+                    self._err(400, "缺少确认标记，已取消清理")
+                    return
+                with _lock:
+                    r = db.reset_data(str(b.get("scope", "")))
+                if not r.get("ok"):
+                    self._err(400, r.get("error") or "清理失败")
+                    return
+                self._json(r)
             elif path == "/api/backup/export":
                 self._json(_mobile_backup_export(
                     bool(b.get("include_key"))))

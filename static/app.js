@@ -67,6 +67,38 @@ function confirmBox(msg) {
   });
 }
 
+/* G7 危险操作二次确认：必须勾选「我确认删除」才能执行。
+   比 confirmBox 多一道勾选，防止连点两下就把作答记录清了。 */
+function dangerConfirm(title, desc) {
+  return new Promise(resolve => {
+    const wrap = document.createElement("div");
+    wrap.className = "danger-mask";
+    wrap.innerHTML = `
+      <div class="danger-dialog">
+        <h3>${esc(title)}</h3>
+        <p>${esc(desc)}</p>
+        <p class="danger-note">题库、导入题与辨析卡内容不会被清理，但个人记录清空后无法恢复。</p>
+        <label class="danger-check"><input type="checkbox" id="dcOk"/> 我确认删除</label>
+        <div class="danger-actions">
+          <button class="btn btn-sm" id="dcNo">取消</button>
+          <button class="btn btn-sm danger-btn-solid" id="dcYes" disabled>确认清理</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const yes = wrap.querySelector("#dcYes");
+    const chk = wrap.querySelector("#dcOk");
+    chk.onchange = () => { yes.disabled = !chk.checked; };
+    const done = v => { wrap.remove(); resolve(v); };
+    yes.onclick = () => done(true);
+    wrap.querySelector("#dcNo").onclick = () => done(false);
+    wrap.tabIndex = -1; wrap.focus();
+    wrap.addEventListener("keydown", e => {
+      if (e.key === "Escape") done(false);
+      if (e.key === "Enter" && !yes.disabled) done(true);
+    });
+  });
+}
+
 async function api(path, body) {
   const opt = body
     ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
@@ -2103,6 +2135,12 @@ async function renderWrong() {
       <h1 class="page-title">错题本</h1>
       <p class="page-desc">最近一次答错的真题，共 ${items.length} 道 · 消灭它们比刷 100 道新题更值</p>
       ${items.length ? `<button class="btn btn-sm" id="aiReason" style="margin-top:8px">🤖 AI 归因未打标题</button>` : ""}
+      ${items.length ? `<div class="wb-tools">
+        <label><input type="checkbox" id="wbAll"/> 全选</label>
+        <button class="btn btn-sm" id="wbExport">⬇ 导出/打印所选（0）</button>
+        <label><input type="checkbox" id="wbAns" checked/> 附答案</label>
+        <span class="hint">导出为可打印页面，浏览器里 Ctrl+P 另存为 PDF</span>
+      </div>` : ""}
     </div>
     ${reasonDonut(dist.items)}
     <div class="doc-list rise rise-1" id="list"></div>`;
@@ -2113,6 +2151,7 @@ async function renderWrong() {
         const reason = reasons[it.id] || "";
         return `
         <div class="doc-item wrong-item" data-id="${it.id}">
+          <label class="wb-pick-wrap" title="勾选后可导出/打印"><input type="checkbox" class="wb-pick" data-id="${it.id}"/></label>
           <div class="doc-main">
             <div class="doc-title">${esc(it.title)}${badge}${anniBadge}</div>
             <div class="doc-sub">${esc([it.kaodian, it.region + " " + it.year].filter(Boolean).join(" · "))}</div>
@@ -2140,11 +2179,43 @@ async function renderWrong() {
     el.onclick = e => {
       if (e.target.classList.contains("reason-chip")) return;
       if (e.target.classList.contains("anni-btn")) return;
+      if (e.target.classList.contains("wb-pick")) return;   // G5：勾选不跳题
       if (e.target.dataset.dismiss) return;
       setQueue(items.map(i => i.id));
       location.hash = `#/doc/${el.dataset.id}/answer`;
     }
   );
+
+  // G5 错题导出：勾选若干题 → 打开可打印页面（复用 /api/export/print，题干含图可加载）
+  const picked = new Set();
+  const syncPick = () => {
+    const btn = $("#wbExport");
+    if (btn) btn.textContent = `⬇ 导出/打印所选（${picked.size}）`;
+  };
+  $$(".wb-pick").forEach(c => c.onchange = () => {
+    if (c.checked) picked.add(+c.dataset.id); else picked.delete(+c.dataset.id);
+    const all = $("#wbAll");
+    if (all) all.checked = picked.size > 0 && picked.size === items.length;
+    syncPick();
+  });
+  const allBox = $("#wbAll");
+  if (allBox) allBox.onchange = () => {
+    $$(".wb-pick").forEach(c => { c.checked = allBox.checked; });
+    picked.clear();
+    if (allBox.checked) items.forEach(i => picked.add(i.id));
+    syncPick();
+  };
+  const expBtn = $("#wbExport");
+  if (expBtn) expBtn.onclick = () => {
+    const ids = [...picked].slice(0, 50);
+    if (!ids.length) return toast("先勾选要导出的错题（可点「全选」）");
+    const p = new URLSearchParams({
+      doc_ids: ids.join(","),
+      heading: "错题本导出",
+      with_answer: $("#wbAns").checked ? "1" : "0",
+    });
+    window.open("/api/export/print?" + p.toString(), "_blank");
+  };
   $$(".anni-btn").forEach(b => b.onclick = e => {
     e.stopPropagation();
     annihilateFlow(+b.dataset.id);
@@ -4593,7 +4664,48 @@ async function renderSettings() {
         <span><label style="font-size:13px"><input type="checkbox" id="expAns" checked/> 附答案解析</label></span>
         <button class="btn btn-primary" id="expGo">生成导出页</button>
       </div>
+    </div>
+    <div class="panel rise rise-4 danger-zone">
+      <h3 style="margin:0 0 10px">危险区 · 数据清空</h3>
+      <p class="hint" style="margin:0 0 12px">只清个人作答与记录，<b>题库、导入题与辨析卡内容不会被清理</b>。清理前建议先在「我的 → 备份」里导出一份。</p>
+      <div class="danger-grid">
+        <button class="btn danger-btn" data-scope="answers">清空作答记录</button>
+        <button class="btn danger-btn" data-scope="marks">清空错题/标记/笔记/计划</button>
+        <button class="btn danger-btn" data-scope="mastery">清空掌握度</button>
+        <button class="btn danger-btn-solid" data-scope="all">恢复全部默认</button>
+      </div>
+      <div class="status-msg" id="dangerMsg"></div>
     </div>`;
+
+  // G7 数据清空：先弹「勾选确认」对话框，再带 confirm=true 调接口
+  const DANGER_DESC = {
+    answers: "作答记录、学习时长、速算/公式练习成绩、时政自测成绩与练习草稿将被清空",
+    marks: "错题标记与错因、题目笔记、复习计划、学习计划、存疑题将被清空",
+    mastery: "掌握度与自适应推题的依据将被清空（作答记录保留）",
+    all: "上述全部个人数据将被清空，等同于回到初次使用的状态",
+  };
+  $$(".danger-btn, .danger-btn-solid").forEach(b => {
+    if (!b.dataset.scope) return;
+    b.onclick = async () => {
+      const scope = b.dataset.scope;
+      const box = $("#dangerMsg");
+      const okGo = await dangerConfirm(b.textContent.trim(), DANGER_DESC[scope] || "");
+      if (!okGo) return;
+      b.disabled = true;
+      try {
+        const r = await api("/api/data/reset", { scope, confirm: true });
+        facetsCache = null;
+        const n = Object.keys(r.deleted || {}).length;
+        box.textContent = `已清理 ${r.total || 0} 条记录（${n} 张表）；题库与导入题未受影响`;
+        box.className = "status-msg ok";
+      } catch (e) {
+        box.textContent = "清理失败：" + e.message;
+        box.className = "status-msg err";
+      } finally {
+        b.disabled = false;
+      }
+    };
+  });
 
   Theme.bindPicker($("#themePick"));
   FontSize.bindPicker($("#fontPick"));

@@ -4330,3 +4330,80 @@ def list_notes(limit: int = 500) -> list[dict]:
 def note_doc_ids() -> set:
     """有笔记的 doc_id 集合（前端标记用，与 note_counts 二选一）。"""
     return {int(k) for k in note_counts().keys()}
+
+
+# ---------------- G7 数据清空与重置 ----------------
+
+# 严禁清理的表：题库（共享 documents/shizheng）、账号私有导入题（my_documents）、
+# 卡库内容（cards）、AI 生成的题库内容（wordfill_questions/interview_questions）、
+# schema 版本号（_meta）。这几张一旦被清，用户的题目与卡片就永久丢了。
+# 清空接口只认下面的白名单，非白名单表名根本不会出现在 SQL 里；
+# 这里再兜一层，防止有人误把上述表加进 RESET_SCOPES。
+RESET_FORBIDDEN = frozenset({
+    "documents", "docs_fts", "shizheng", "my_documents", "cards",
+    "wordfill_questions", "interview_questions", "_meta",
+})
+
+# 分级清理范围 -> 允许删除的个人数据表（顺序即删除顺序，先删子表再删主表）。
+# 表名全部来自本常量（非用户输入），故下方 f-string 拼 SQL 是安全的。
+RESET_SCOPES: dict[str, tuple[str, ...]] = {
+    # 1) 作答记录与由此派生的统计/成绩（不动错题标记与笔记）
+    "answers": (
+        "answers", "focus_log", "speed_best", "speed_rounds", "speed_items",
+        "formula_rounds", "formula_items", "wordfill_answers", "shizheng_quiz",
+        "card_reviews", "interview_logs", "shared_sets", "pk_records",
+        "paper_drafts",
+    ),
+    # 2) 错题/标记/笔记/计划（不动作答记录）
+    "marks": (
+        "marks", "wrong_reasons", "wrong_dismissed", "review_plan", "card_plan",
+        "doc_notes", "doubts", "explain_cache", "study_plan", "shizheng_seen",
+        "doc_overrides",
+    ),
+    # 3) 掌握度（自适应推题的依据）
+    "mastery": ("mastery",),
+}
+
+# 「恢复全部默认」= 上述三类之和（题库与导入题、卡库内容仍保留）
+RESET_SCOPES["all"] = RESET_SCOPES["answers"] + RESET_SCOPES["marks"] + RESET_SCOPES["mastery"]
+
+# 各表是否只存在于个人库：手机端共享库是只读 ATTACH，写不进去。
+# 上面所有表都建在个人库（见 connect()/PERSONAL_SCHEMA/_migrate），
+# 因此统一在个人库执行即可；这里保留常量用于文档与自检。
+RESET_ALLOWED_SCOPES = tuple(RESET_SCOPES.keys())
+
+
+def reset_data(scope: str) -> dict:
+    """按白名单范围清空个人数据，返回各表删除行数。
+
+    - `scope` 只接受 RESET_SCOPES 的键，非法值直接返回 ok=False（不执行任何 SQL）；
+    - 只删当前连接里真实存在的表，缺失的表计 0（老库可能还没建某些表）；
+    - 题库 / 导入题 / 卡库内容列在 RESET_FORBIDDEN，即使被写进范围也会跳过。
+    """
+    key = (scope or "").strip().lower()
+    if key not in RESET_SCOPES:
+        return {"ok": False, "scope": key, "error": f"未知清理范围：{scope!r}", "deleted": {}}
+
+    conn = connect()
+    try:
+        existing = {
+            r["name"] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        deleted: dict[str, int] = {}
+        skipped: list[str] = []
+        for t in RESET_SCOPES[key]:
+            if t in RESET_FORBIDDEN:
+                skipped.append(t)          # 兜底：绝不动题库
+                continue
+            if t not in existing:
+                continue                   # 老库没有这张表，跳过
+            cur = conn.execute(f"DELETE FROM {t}")
+            deleted[t] = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        conn.commit()
+    finally:
+        conn.close()
+    return {
+        "ok": True, "scope": key, "deleted": deleted,
+        "total": sum(deleted.values()), "skipped": skipped,
+    }

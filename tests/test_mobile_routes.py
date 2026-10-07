@@ -21,7 +21,6 @@ SERVER = ROOT / "android" / "app" / "src" / "main" / "python" / "goshor_server.p
 # 桌面专有接口：移动端不实现（前端也不调用）。若将来移动端开始调用，
 # 这份白名单会让测试失败，提醒补实现。
 DESKTOP_ONLY = {
-    "/api/export/print",     # 打印/另存 PDF，移动端走原生分享
     "/api/app-apk",          # 桌面负责分发 APK
     "/api/open_app",         # 桌面拉起模拟器
 }

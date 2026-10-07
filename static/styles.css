@@ -1096,6 +1096,30 @@ body.exam-mode .view {
 .share-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line-soft); }
 .share-row:first-child { border-top: 0; }
 .share-code { font-family: var(--mono); font-size: 12px; color: var(--ink-3); word-break: break-all; margin-top: 2px; }
+
+/* ===== G5 错题导出（可打印页） ===== */
+.wb-tools { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
+.wb-tools .hint { margin: 0; }
+.wb-pick-wrap { display: inline-flex; align-items: center; margin-right: 10px; vertical-align: middle; }
+.wb-pick { width: 16px; height: 16px; accent-color: var(--cinnabar); cursor: pointer; }
+
+/* ===== G7 数据清空与重置（危险区） ===== */
+.danger-zone { border: 1px solid var(--cinnabar); background: linear-gradient(0deg, var(--cinnabar-soft), transparent 60%); }
+.danger-zone h3 { color: var(--cinnabar); }
+.danger-grid { display: flex; gap: 10px; flex-wrap: wrap; }
+.danger-btn { border-color: var(--cinnabar); color: var(--cinnabar); }
+.danger-btn:hover { background: var(--cinnabar-soft); }
+.danger-btn-solid { background: var(--cinnabar); border-color: var(--cinnabar); color: #fff; }
+.danger-btn-solid:hover { background: var(--cinnabar-deep); }
+.danger-mask { position: fixed; inset: 0; background: rgba(43, 38, 32, .38); z-index: 10000; display: flex; align-items: center; justify-content: center; }
+.danger-dialog { background: var(--paper); border: 1px solid var(--cinnabar); border-radius: 12px; padding: 22px 26px; max-width: 440px; box-shadow: 0 8px 32px rgba(43, 38, 32, .2); }
+.danger-dialog h3 { margin: 0 0 10px; color: var(--cinnabar); font-size: 16px; }
+.danger-dialog p { margin: 0 0 8px; font-size: 13.5px; line-height: 1.7; color: var(--ink-2); }
+.danger-dialog .danger-note { color: var(--cinnabar); font-size: 12.5px; }
+.danger-check { display: flex; align-items: center; gap: 8px; font-size: 13.5px; margin: 12px 0 16px; cursor: pointer; }
+.danger-check input { width: 16px; height: 16px; accent-color: var(--cinnabar); }
+.danger-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.danger-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .share-out { padding: 12px 14px; background: var(--paper-2); border: 1px dashed var(--line); border-radius: 10px; }
 .share-code-box { width: 100%; margin-top: 8px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: var(--ink-2); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; resize: vertical; word-break: break-all; }
 .pk-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }

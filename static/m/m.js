@@ -3068,10 +3068,15 @@ async function drawWrong(box, tok) {
 
   box.innerHTML = `
     <button class="btn btn-primary btn-block" id="wAll">错题全部重练（${wrongs.length}）</button>
+    <div class="wb-tools">
+      <label class="check"><input type="checkbox" id="wbAll"/> 全选</label>
+      <button class="btn btn-sm" id="wbExport">导出/打印（0）</button>
+      <span class="muted">生成可打印页，分享后用浏览器打开即可打印</span>
+    </div>
     ${mReasonDonut(dist.items)}
     ${wrongs.map(w => `
       <div class="item">
-        <b>${esc(w.title)}${w.annihilated ? ' <span class="anni-flag" title="变式歼灭已通过">💥</span>' : ""}</b>
+        <b><label class="wb-pick-wrap"><input type="checkbox" class="wb-pick" data-id="${w.id}"/></label> ${esc(w.title)}${w.annihilated ? ' <span class="anni-flag" title="变式歼灭已通过">💥</span>' : ""}</b>
         <div class="meta">${esc(w.kaodian || w.module || "")} · 错 ${w.wrongs}/${w.tries} 次 · 上次选 ${esc(w.last_selected || "-")}</div>
         <input class="wn-note" data-id="${w.id}"
           placeholder="一句话记下坑因，如：把基期当现期（失焦即存）"
@@ -3092,6 +3097,62 @@ async function drawWrong(box, tok) {
 
   $("#wAll").onclick = () =>
     runPaper(wrongs.map(w => w.id), { title: `错题重练（${wrongs.length}）` });
+
+  /* G5 错题导出：勾选 → 生成可打印 HTML → 存文件并走系统分享 */
+  const picked = new Set();
+  const syncPick = () => {
+    const btn = $("#wbExport");
+    if (btn) btn.textContent = `导出/打印（${picked.size}）`;
+  };
+  $$(".wb-pick").forEach(c => c.onchange = () => {
+    if (c.checked) picked.add(+c.dataset.id); else picked.delete(+c.dataset.id);
+    syncPick();
+  });
+  const allBox = $("#wbAll");
+  if (allBox) allBox.onchange = () => {
+    $$(".wb-pick").forEach(c => { c.checked = allBox.checked; });
+    picked.clear();
+    if (allBox.checked) wrongs.forEach(w => picked.add(w.id));
+    syncPick();
+  };
+  const expBtn = $("#wbExport");
+  if (expBtn) expBtn.onclick = async () => {
+    const ids = [...picked].slice(0, 50);
+    if (!ids.length) return toast("先勾选要导出的错题（可点「全选」）");
+    expBtn.disabled = true;
+    expBtn.textContent = "生成中…";
+    try {
+      const p = new URLSearchParams({
+        doc_ids: ids.join(","), heading: "错题本导出", with_answer: "1",
+      });
+      const r = await fetch("/api/export/print?" + p.toString());
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const html = await r.text();
+      const name = `错题本-${todayStr()}.html`;
+      const native = window.GoshorNative;
+      if (native && native.saveTextFile) {
+        const fp = native.saveTextFile(name, html, "text/html");
+        if (typeof fp === "string" && !fp.startsWith("ERROR")) {
+          if (native.shareFile) native.shareFile(fp);
+          else toast("已保存：" + fp);
+        } else {
+          toast("保存失败：" + String(fp).slice(6));
+        }
+      } else {
+        const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = name; a.click();
+        safeTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        toast("已下载导出页，用浏览器打开后打印");
+      }
+    } catch (e) {
+      toast("导出失败：" + e.message);
+    } finally {
+      expBtn.disabled = false;
+      syncPick();
+    }
+  };
   $$(".reason-chips .chip").forEach(c => c.onclick = async () => {
     if (c.classList.contains("reason-clear")) {
       await api("/api/wrong-reason", { doc_id: +c.dataset.id, reason: "" });
@@ -4432,7 +4493,54 @@ async function renderSettings() {
       <button class="btn btn-block" id="updCheck" style="margin-top:10px">检查更新</button>
       <div class="set-status" id="updCheckStatus"></div>
       <div class="muted">有更新时下载更新包，到「导入 → 题库更新」手动安装；答题记录不受影响</div>
+    </div>
+    <div class="card danger-zone">
+      <h3>危险区 · 数据清空</h3>
+      <div class="muted" style="margin-bottom:10px">只清个人作答与记录，<b>题库、导入题与辨析卡内容不会被清理</b>。清理前建议先用上面的「导出备份并分享」留一份。</div>
+      <button class="btn btn-block danger-btn" data-scope="answers">清空作答记录</button>
+      <button class="btn btn-block danger-btn" data-scope="marks">清空错题/标记/笔记/计划</button>
+      <button class="btn btn-block danger-btn" data-scope="mastery">清空掌握度</button>
+      <button class="btn btn-block danger-btn-solid" data-scope="all">恢复全部默认</button>
+      <div class="set-status" id="dangerStatus"></div>
     </div>`;
+
+  /* G7 数据清空：两步确认（点两次才执行，不依赖 WebView 的 confirm） */
+  const DANGER_DESC = {
+    answers: "作答记录、学习时长、速算/公式成绩、时政自测成绩与练习草稿",
+    marks: "错题标记与错因、题目笔记、复习计划、学习计划、存疑题",
+    mastery: "掌握度与自适应推题的依据（作答记录保留）",
+    all: "上述全部个人数据，等同于回到初次使用",
+  };
+  $$(".danger-btn, .danger-btn-solid").forEach(b => {
+    if (!b.dataset.scope) return;
+    const label = b.textContent;
+    b.onclick = async () => {
+      if (!b.dataset.armed) {
+        b.dataset.armed = "1";
+        b.textContent = `确认清空：${DANGER_DESC[b.dataset.scope] || ""}`;
+        safeTimeout(() => {
+          if (b.isConnected) { delete b.dataset.armed; b.textContent = label; }
+        }, 5000);
+        return;
+      }
+      delete b.dataset.armed;
+      b.textContent = label;
+      b.disabled = true;
+      const box = $("#dangerStatus");
+      try {
+        const r = await api("/api/data/reset",
+          { scope: b.dataset.scope, confirm: true });
+        const n = Object.keys(r.deleted || {}).length;
+        box.textContent = `已清理 ${r.total || 0} 条记录（${n} 张表）；题库未受影响`;
+        box.className = "set-status ok";
+      } catch (e) {
+        box.textContent = "清理失败：" + e.message;
+        box.className = "set-status err";
+      } finally {
+        b.disabled = false;
+      }
+    };
+  });
 
   Theme.bindPicker($("#themePick"));
   FontSize.bindPicker($("#fontPick"));

@@ -24,12 +24,9 @@ from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledg
 from .config import (STATIC_DIR, DB_PATH, SETTINGS_PATH, REMINDER_KEYS,
                      GOAL_KEYS, load_settings, reminder_patch, goal_patch,
                      save_settings)
-
-import html as _html
-
-
-def esc(s) -> str:
-    return _html.escape(str(s or ""))
+# 可打印导出页（G5）：与手机端 goshor_server.py 共用同一份拼装逻辑。
+# esc/rich_text 也从这里引入，别再在本模块另写一份（会漂移）。
+from .print_export import esc, rich_text, render_html
 
 
 @asynccontextmanager
@@ -655,6 +652,38 @@ def api_note_clear(b: NoteIn):
 def api_notes(limit: int = 500):
     """全部笔记（集中浏览 + 列表页「有笔记」标记）。"""
     return {"items": db.list_notes(limit), "counts": db.note_counts()}
+
+
+# ---------------- G7 数据清空与重置 ----------------
+
+class ResetIn(BaseModel):
+    scope: str = ""
+    # 两步确认的服务端护栏：前端必须显式带上 confirm=true，
+    # 否则就算前端漏了二次确认也清不掉数据。
+    confirm: bool = False
+
+
+@app.get("/api/data/reset")
+def api_data_reset_scopes():
+    """清理范围清单（前端渲染危险区按钮用，含各范围覆盖的表名）。"""
+    return {
+        "scopes": [
+            {"key": k, "tables": list(db.RESET_SCOPES[k])}
+            for k in db.RESET_ALLOWED_SCOPES
+        ],
+        "forbidden": sorted(db.RESET_FORBIDDEN),
+    }
+
+
+@app.post("/api/data/reset")
+def api_data_reset(b: ResetIn):
+    """按白名单范围清空个人数据；题库 / 导入题 / 卡库内容永不清理。"""
+    if not b.confirm:
+        raise HTTPException(400, "缺少确认标记，已取消清理")
+    r = db.reset_data(b.scope)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "清理失败")
+    return r
 
 
 @app.get("/api/mastery")
@@ -1823,7 +1852,8 @@ def api_cards_progress():
 def api_export_print(
     q: str = "", kind: str = "真题", module: str = "", daclass: str = "",
     region: str = "", year: str = "", limit: int = 100, with_answer: int = 1,
-    doc_ids: str = "",  # 逗号分隔的 doc_id 列表（用于单题/多题导出）
+    doc_ids: str = "",  # 逗号分隔的 doc_id 列表（用于单题/多题/错题本导出）
+    heading: str = "",  # G5：自定义大标题（如「错题本导出」），留空用「题库导出」
 ):
     limit = max(1, min(500, limit))
 
@@ -1856,46 +1886,10 @@ def api_export_print(
     if doc_ids:
         total = len(items)
 
-    def block(it, idx, show_ans):
-        opts = "".join(
-            f"<div class='opt'>{esc(o.get('label',''))}. {esc(o.get('text',''))}</div>"
-            for o in it["options"])
-        ans = ""
-        if show_ans:
-            ans = (f"<div class='ans'>【答案】{esc(it['answer'])}</div>"
-                   + (f"<div class='ana'>{esc(it['analysis'])[:600]}</div>" if it["analysis"] else ""))
-        return (f"<div class='q'><div class='qt'>{idx}. {esc(it['title'])}"
-                f"<span class='meta'>{esc(it['exam'])} · {esc(it['module'])}</span></div>"
-                f"<div class='qs'>{esc(it['stem'])}</div>{opts}{ans}</div>")
-
-    questions = "".join(block(it, i + 1, False) for i, it in enumerate(items))
-    answers = "".join(block(it, i + 1, True) for i, it in enumerate(items)) if with_answer else ""
     title_suffix = f"指定 {len(items)} 题" if doc_ids else f"{total} 题（本次 {len(items)} 题）"
-    html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
-<title>题库导出 · {title_suffix}</title>
-<style>
-  body {{ font-family: "Noto Serif SC", "SimSun", serif; margin: 0; color: #1a1a1a; }}
-  .wrap {{ max-width: 800px; margin: 0 auto; padding: 32px 24px; }}
-  h1 {{ font-size: 20px; }} .sub {{ color: #666; font-size: 13px; margin-bottom: 20px; }}
-  .q {{ margin-bottom: 18px; page-break-inside: avoid; }}
-  .qt {{ font-weight: 700; }} .meta {{ color: #888; font-size: 12px; margin-left: 8px; font-weight: 400; }}
-  .qs {{ margin: 6px 0; line-height: 1.7; }}
-  .opt {{ margin: 2px 0 2px 1.5em; }}
-  .ans {{ margin-top: 4px; color: #b3352b; font-weight: 700; }}
-  .ana {{ color: #555; font-size: 13px; line-height: 1.6; }}
-  .pagebreak {{ page-break-before: always; }}
-  h2 {{ font-size: 16px; border-bottom: 2px solid #333; padding-bottom: 4px; }}
-  @media print {{ .noprint {{ display: none; }} }}
-  .tip {{ background: #fdf6e3; border: 1px solid #e0d5b0; padding: 10px 14px; border-radius: 6px; font-size: 13px; }}
-</style></head><body><div class="wrap">
-<div class="noprint tip">打印为 PDF：按 <b>Ctrl + P</b> → 目标选「另存为 PDF」→ 勾选背景图形。共 {len(items)} 题。</div>
-<h1>题库导出{("（单题）" if doc_ids and len(items) == 1 else "")}</h1>
-<div class="sub">生成于 {__import__("time").strftime("%Y-%m-%d %H:%M")}</div>
-<h2>第一部分 · 试题</h2>
-{questions or "<p>没有匹配的题目</p>"}
-<h2 class="pagebreak">第二部分 · 答案与解析</h2>
-{answers or "<p>未包含答案</p>"}
-</div></body></html>"""
+    # 拼装逻辑与手机端共用（app/print_export.py），题干里的图片标签靠 rich_text 保留
+    html = render_html(items, with_answer=bool(with_answer),
+                       heading=heading or "题库导出", title_suffix=title_suffix)
     from fastapi.responses import HTMLResponse
     return HTMLResponse(html)
 

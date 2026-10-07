@@ -1346,6 +1346,18 @@ body.hint-on #view { padding-bottom: calc(150px + env(safe-area-inset-bottom)); 
 .guide-msg { max-width: 88%; padding: 10px 13px; border-radius: 12px; font-size: 14.5px; line-height: 1.7; }
 .guide-msg.ai { align-self: flex-start; background: var(--paper-2, #f3f1ea); border-bottom-left-radius: 4px; }
 .guide-msg.me { align-self: flex-end; background: var(--cinnabar, #a33); color: #fff; border-bottom-right-radius: 4px; white-space: pre-wrap; }
+
+/* ===== G5 错题导出（可打印页） ===== */
+.wb-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 4px; font-size: 12.5px; }
+.wb-tools .muted { margin: 0; }
+.wb-pick-wrap { display: inline-flex; align-items: center; margin-right: 6px; vertical-align: middle; }
+.wb-pick { width: 17px; height: 17px; accent-color: var(--cinnabar); }
+
+/* ===== G7 数据清空与重置（危险区） ===== */
+.danger-zone { border: 1px solid var(--cinnabar); background: linear-gradient(0deg, var(--cinnabar-soft), transparent 55%); }
+.danger-zone h3 { color: var(--cinnabar); }
+.danger-btn { border-color: var(--cinnabar); color: var(--cinnabar); }
+.danger-btn-solid { background: var(--cinnabar); border-color: var(--cinnabar); color: #f8f1e6; }
 .guide-msg.ai p { margin: 0 0 6px; }
 .guide-msg.ai p:last-child { margin-bottom: 0; }
 .guide-input { display: flex; gap: 8px; align-items: flex-end; margin-top: 10px; }
@@ -1441,3 +1453,7 @@ body.hint-on #view { padding-bottom: calc(150px + env(safe-area-inset-bottom)); 
 .q-bottom-bar .qb-pos { flex: none; font-family: var(--mono); font-size: 13px; color: var(--ink-3); }
 /* 底部操作条不遮挡最后一题内容 */
 body:has(.q-bottom-bar) #view { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+/* 速记条与操作条叠在一起时（两条共存），留白必须按「两条之和」算，
+   否则本规则与上面的 .hint-on 规则同权重、又排在后面，会把 150px 覆盖回 64px，
+   题目页末尾的「我的笔记」入口就被压在两条浮层底下、滚到底也点不到。 */
+body.hint-on:has(.q-bottom-bar) #view { padding-bottom: calc(150px + env(safe-area-inset-bottom)); }
