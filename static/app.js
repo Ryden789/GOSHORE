@@ -4590,6 +4590,7 @@ async function renderSettings() {
       <p class="page-desc">所有配置仅保存在本机</p>
     </div>
     <div class="panel rise rise-1">
+      <h3 style="margin:0 0 10px">题库与 AI 接口</h3>
       <div class="settings-form">
         <div class="field">
           <label>题库 vault 路径</label>
@@ -4609,6 +4610,11 @@ async function renderSettings() {
           <input id="model" value="${esc(s.deepseek_model)}"/>
           <div class="hint">deepseek-chat（速度快、成本低）/ deepseek-reasoner（带推理，更强但更慢）</div>
         </div>
+      </div>
+    </div>
+    <div class="panel rise rise-2">
+      <h3 style="margin:0 0 10px">学习与提醒</h3>
+      <div class="settings-form">
         <div class="field">
           <label>考试日期（首页倒计时）</label>
           <input id="examDate" type="date" value="${esc(s.exam_date || "")}"/>
@@ -4616,7 +4622,7 @@ async function renderSettings() {
         </div>
         <div class="field">
           <label>每日目标（首页进度环）</label>
-          <div style="display:flex;gap:14px;align-items:center;margin:6px 0;flex-wrap:wrap">
+          <div class="cb-group">
             <span>题量 <input id="goalQ" type="number" min="0" max="500" step="5"
               style="width:80px" value="${Number(s.daily_goal_questions) || 0}"/> 题/天</span>
             <span>专注 <input id="goalM" type="number" min="0" max="1440" step="5"
@@ -4626,20 +4632,20 @@ async function renderSettings() {
         </div>
         <div class="field">
           <label>单手翻题（移动端）</label>
-          <div style="display:flex;gap:14px;align-items:center;margin:6px 0;flex-wrap:wrap">
-            <label style="font-size:13px"><input type="checkbox" id="swipeOn"
+          <div class="cb-group">
+            <label class="cb"><input type="checkbox" id="swipeOn"
               ${Pref.get("swipe_paging", true) !== false ? "checked" : ""}/> 左右滑动翻题</label>
-            <label style="font-size:13px"><input type="checkbox" id="volumeOn"
+            <label class="cb"><input type="checkbox" id="volumeOn"
               ${Pref.get("volume_keys", false) === true ? "checked" : ""}/> 音量键翻页</label>
           </div>
           <div class="hint">做题页底部固定「上一题 / 下一题」，单手可达；音量键默认关，开启后在看题/做题页用音量键翻页。</div>
         </div>
         <div class="field">
-          <label style="display:flex;align-items:center;gap:8px">
+          <label class="cb">
             <input type="checkbox" id="remindOn" ${s.reminder_on ? "checked" : ""}/> 每日学习提醒</label>
-          <div style="display:flex;gap:14px;align-items:center;margin:8px 0;flex-wrap:wrap">
+          <div class="cb-group">
             <span>提醒时间 <input id="remindTime" type="time" value="${esc(s.reminder_time || "20:00")}"/></span>
-            <label style="font-size:13px"><input type="checkbox" id="remindPlan"
+            <label class="cb"><input type="checkbox" id="remindPlan"
               ${s.reminder_plan_only ? "checked" : ""}/> 仅当今日计划未完成时提醒</label>
           </div>
           <div class="hint" id="remindState">${esc(reminderStateText())}</div>
@@ -4656,7 +4662,7 @@ async function renderSettings() {
         <div class="status-msg" id="status"></div>
       </div>
     </div>
-    <div class="panel rise rise-2">
+    <div class="panel rise rise-3">
       <h3 style="margin:0 0 10px">外观</h3>
       <div class="field">
         <label>主题</label>
@@ -4669,17 +4675,15 @@ async function renderSettings() {
         <div class="hint">只缩放题目与长文的正文字号，导航/按钮等界面元素不受影响。</div>
       </div>
       <div class="field">
-        <label style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="fontLoose" ${FontSize.loose() ? "checked" : ""}/> 行高宽松</label>
+        <label class="cb"><input type="checkbox" id="fontLoose" ${FontSize.loose() ? "checked" : ""}/> 行高宽松</label>
         <div class="hint">长文阅读更透气（行距加大）。</div>
       </div>
     </div>
-    <div class="panel rise rise-3">
+    <div class="panel rise rise-4">
       <h3 style="margin:0 0 10px">多设备同步（WebDAV · 端到端加密）</h3>
       <p class="hint" style="margin:0 0 10px">用你自己的网盘（坚果云 / Nextcloud 等）中转备份：<b>备份包在本机用同步口令加密后才上传，云端只有密文</b>，口令不会发给任何服务器。</p>
       <div class="field">
-        <label style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="syncOn" ${s.sync_enabled ? "checked" : ""}/> 启用多设备同步</label>
+        <label class="cb"><input type="checkbox" id="syncOn" ${s.sync_enabled ? "checked" : ""}/> 启用多设备同步</label>
       </div>
       <div class="field">
         <label>WebDAV 地址</label>
@@ -4708,8 +4712,7 @@ async function renderSettings() {
         <div class="hint">WebDAV 根目录下的相对路径（如 goshore/backup.gsync），目录不存在会自动创建。</div>
       </div>
       <div class="field">
-        <label style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="syncWifi" ${s.sync_wifi_only ? "checked" : ""}/> 仅 Wi-Fi 下同步</label>
+        <label class="cb"><input type="checkbox" id="syncWifi" ${s.sync_wifi_only ? "checked" : ""}/> 仅 Wi-Fi 下同步</label>
         <div class="hint">手机端在移动数据下不自动同步，避免流量。所有同步都是手动触发的，不会后台偷偷跑。</div>
       </div>
       <div class="settings-actions">
@@ -4721,7 +4724,7 @@ async function renderSettings() {
       <div class="status-msg" id="syncMsg"></div>
       <div class="hint" id="syncLast">${esc(syncLastText(s))}</div>
     </div>
-    <div class="panel rise rise-3">
+    <div class="panel rise rise-5">
       <h3 style="margin:0 0 10px">题库导出 PDF</h3>
       <p class="hint" style="margin:0 0 10px">按筛选条件生成可打印页面，在浏览器里 Ctrl+P 另存为 PDF（题库在前、答案解析在后）</p>
       <div class="cfg-inline">
@@ -4733,7 +4736,7 @@ async function renderSettings() {
         <button class="btn btn-primary" id="expGo">生成导出页</button>
       </div>
     </div>
-    <div class="panel rise rise-4 danger-zone">
+    <div class="panel rise rise-6 danger-zone">
       <h3 style="margin:0 0 10px">危险区 · 数据清空</h3>
       <p class="hint" style="margin:0 0 12px">只清个人作答与记录，<b>题库、导入题与辨析卡内容不会被清理</b>。清理前建议先在「我的 → 备份」里导出一份。</p>
       <div class="danger-grid">

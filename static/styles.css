@@ -652,12 +652,34 @@ input, select, textarea { font-family: var(--sans); }
 /* ============ 设置 ============ */
 .settings-form { display: flex; flex-direction: column; gap: 16px; max-width: 640px; }
 .field label { display: block; font-weight: 700; margin-bottom: 6px; font-family: var(--serif); letter-spacing: 1px; }
-.field input {
+/* 只作用于「撑满一行」的输入框（文本/日期/时间/数字）。
+   必须排除复选框与单选框：否则它们会被 width:100% 撑满整行，
+   视觉上变成一个居中孤零零的小方块、标签被挤到下一行（旧版设置页错乱根因）。 */
+.field input:not([type="checkbox"]):not([type="radio"]) {
   width: 100%; border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 13px;
   font-size: 14px; outline: none; background: var(--surface);
 }
-.field input:focus { border-color: var(--indigo); }
+.field input:not([type="checkbox"]):not([type="radio"]):focus { border-color: var(--indigo); }
+/* 勾选项：标签用正文无衬线字体（不套 .field label 的衬线/加粗/字距），复选框固定尺寸 */
+.field label.cb {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--sans); font-weight: 500; letter-spacing: 0; font-size: 13.5px;
+  color: var(--ink-2); margin-bottom: 6px;
+}
+.field label.cb input[type="checkbox"] {
+  flex: none; width: 16px; height: 16px; margin: 0;
+  accent-color: var(--cinnabar); cursor: pointer;
+}
+/* 行内组合区（每日目标 / 提醒时间）：里面的输入框按内容宽度，不撑满整行 */
+.field .cb-group { display: flex; gap: 20px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+.field .cb-group input:not([type="checkbox"]):not([type="radio"]) { width: auto; min-width: 96px; }
+/* 导出面板的「附答案解析」复选框（在 .cfg-inline 里，不在 .field 内） */
+.cfg-inline input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--cinnabar); cursor: pointer; vertical-align: -2px; margin-right: 4px; }
 .field .hint { color: var(--ink-3); font-size: 12.5px; margin-top: 4px; }
+/* 直接挂在面板下的字段（外观 / 同步 / 导出面板不走 .settings-form）也要有纵向间距，
+   否则相邻字段贴在一起，看起来"乱"。 */
+.panel > .field { margin-bottom: 14px; }
+.panel > .field:last-child { margin-bottom: 0; }
 .settings-actions { display: flex; gap: 10px; margin-top: 6px; }
 .status-msg { font-size: 13.5px; color: var(--ink-2); margin-top: 10px; }
 .status-msg.err { color: var(--cinnabar); }
@@ -667,6 +689,7 @@ input, select, textarea { font-family: var(--sans); }
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 .rise { animation: rise .35s ease both; }
 .rise-1 { animation-delay: .05s; } .rise-2 { animation-delay: .12s; } .rise-3 { animation-delay: .19s; }
+.rise-4 { animation-delay: .26s; } .rise-5 { animation-delay: .33s; } .rise-6 { animation-delay: .40s; }
 
 
 /* ---- F6 错因标签 ---- */
