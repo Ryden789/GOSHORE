@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700;900&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="/styles.css?v=20261023" />
+<link rel="stylesheet" href="/styles.css?v=20261024" />
 <script>
 /* N5 夜间模式：先于 <body> 渲染应用，避免刷新时闪一下浅色。
    与 app.js 里的 Theme 块等价（那边负责后续切换、跟随系统、同步地址栏颜色）。 */
@@ -44,6 +44,7 @@
 </script>
 </head>
 <body>
+<a class="skip-link" href="#view">跳到主要内容</a>
 <div class="paper-grain" aria-hidden="true"></div>
 <div class="app">
   <aside class="sidebar">
@@ -54,9 +55,9 @@
         <div class="brand-sub">GOSHORE STUDY</div>
       </div>
     </a>
-    <nav class="nav" id="nav">
+    <nav class="nav" id="nav" aria-label="主导航">
       <div class="nav-group" data-group="overview">
-        <button class="nav-group-title" type="button">
+        <button class="nav-group-title" type="button" aria-expanded="true">
           <span class="ng-label">总览</span><span class="ng-arrow">▾</span>
         </button>
         <div class="nav-items"><div class="nav-items-inner">
@@ -68,7 +69,7 @@
         </div></div>
       </div>
       <div class="nav-group" data-group="xingce">
-        <button class="nav-group-title" type="button">
+        <button class="nav-group-title" type="button" aria-expanded="true">
           <span class="ng-label">行测精练</span><span class="ng-arrow">▾</span>
         </button>
         <div class="nav-items"><div class="nav-items-inner">
@@ -81,7 +82,7 @@
         </div></div>
       </div>
       <div class="nav-group" data-group="zongying">
-        <button class="nav-group-title" type="button">
+        <button class="nav-group-title" type="button" aria-expanded="true">
           <span class="ng-label">综应专区</span><span class="ng-arrow">▾</span>
         </button>
         <div class="nav-items"><div class="nav-items-inner">
@@ -95,7 +96,7 @@
         </div></div>
       </div>
       <div class="nav-group" data-group="fuxi">
-        <button class="nav-group-title" type="button">
+        <button class="nav-group-title" type="button" aria-expanded="true">
           <span class="ng-label">复习巩固</span><span class="ng-arrow">▾</span>
         </button>
         <div class="nav-items"><div class="nav-items-inner">
@@ -111,7 +112,7 @@
         </div></div>
       </div>
       <div class="nav-group" data-group="manage">
-        <button class="nav-group-title" type="button">
+        <button class="nav-group-title" type="button" aria-expanded="true">
           <span class="ng-label">题库管理</span><span class="ng-arrow">▾</span>
         </button>
         <div class="nav-items"><div class="nav-items-inner">
@@ -127,9 +128,9 @@
       <span>本地运行 · 数据私有</span>
     </div>
   </aside>
-  <main id="view" class="view"></main>
+  <main id="view" class="view" tabindex="-1"></main>
 </div>
-<script src="/app.js?v=20261023"></script>
+<script src="/app.js?v=20261024"></script>
 <script>
 /* PWA（功能 3.1）：注册 Service Worker 提供离线应用壳。
    仅 http/https 可用；file:// 或 WebView 内会静默跳过。 */

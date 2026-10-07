@@ -290,6 +290,10 @@ def check_browser():
                 detail += f"；hash={pg.evaluate('location.hash')}"
             except Exception:
                 pass
+            try:
+                detail += "；view=" + pg.locator("#view").inner_text()[:120].replace("\n", " ")
+            except Exception:
+                pass
             record(False, "启动首页渲染", detail)
             browser.close()
             return
@@ -299,7 +303,7 @@ def check_browser():
                "新账号首页出现每日开门卡",
                f"#dailyGo 可见={daily_visible}，DAILY_DONE={daily_flag}")
 
-        # ---- 开门守卫：未完成每日一题时访问 #/practice 被弹回 #/home
+        # ---- 开门守卫：未完成每日一题时访问 #/practice 被弹回 #/home，并弹出可读提示
         pg.evaluate("window.__animLog.length = 0")
         pg.evaluate("location.hash = '#/practice'")
         try:
@@ -309,10 +313,20 @@ def check_browser():
             pass
         back = pg.evaluate("location.hash")
         door = pg.locator(".daily-door").count() == 1
-        toast_txt = pg.locator("#toast").inner_text()
-        record(back == "#/home" and door,
-               "开门守卫：#/practice 弹回 #/home",
-               f"最终 hash={back}，开门卡={door}，toast={toast_txt[:24]}")
+        # UX-03：拦截时给出可读弹窗（含「开始今日一题」直达入口），而非一句短 toast
+        try:
+            pg.wait_for_selector("#doorPrompt", timeout=5000)
+            prompt_txt = pg.locator("#doorPrompt").inner_text()
+            prompt_ok = ("先完成今日开门一题" in prompt_txt
+                         and "开始今日一题" in prompt_txt)
+        except Exception:
+            prompt_ok = False
+        record(back == "#/home" and door and prompt_ok,
+               "开门守卫：#/practice 弹回 #/home 并给出可读提示",
+               f"最终 hash={back}，开门卡={door}，提示={prompt_ok}")
+        # 关掉提示，继续用首页卡片完成开门题（弹窗与首页卡片两条入口等价）
+        if pg.locator("#doorLater").count():
+            pg.locator("#doorLater").click()
 
         # ---- 完成每日一题（开门题）：抽题 → 判分 → 结算 1 题
         try:
@@ -935,6 +949,32 @@ def check_browser():
                    else f"{len(routes)} 个路由全部无横向溢出")
         except Exception as e:
             record(False, "N4 字号：全路由 × 特大档零横向溢出", f"异常：{e}")
+
+        # ---- UX-06 小屏：320px 窄屏 × 全路由零横向溢出
+        # 细则要求覆盖 320 / 375 / 768 / 1366；无头浏览器只测手机版入口，
+        # 这里至少锁死最窄的 320px（最易溢出），更宽视口与桌面端由静态校验器覆盖。
+        try:
+            problems = []
+            pg.set_viewport_size({"width": 320, "height": 720})
+            pg.wait_for_timeout(200)
+            bad = []
+            for route in routes:
+                pg.evaluate(f"location.hash = '#/{route}'")
+                pg.wait_for_timeout(500)
+                ovf = pg.evaluate(
+                    "document.documentElement.scrollWidth"
+                    " - document.documentElement.clientWidth")
+                if ovf > 1:
+                    bad.append(f"#{route} +{ovf}px")
+            if bad:
+                problems.append("320px 横向溢出：" + "、".join(bad[:6]))
+            record(not problems, "UX-06 小屏：320px × 全路由零横向溢出",
+                   "；".join(problems) if problems
+                   else f"{len(routes)} 个路由在 320px 下均无横向溢出")
+        except Exception as e:
+            record(False, "UX-06 小屏：320px × 全路由零横向溢出", f"异常：{e}")
+        finally:
+            pg.set_viewport_size({"width": 390, "height": 844})
 
         # ---- 做题流闭环：组卷 5 题 → 判分/跳过 → 结算数据正确
         try:

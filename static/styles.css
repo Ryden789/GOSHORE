@@ -184,6 +184,64 @@ body {
 .sidebar-foot { margin-top: auto; padding: 8px; font-size: calc(12px * var(--fs)); color: var(--ink-3); display: flex; align-items: center; gap: 8px; }
 .ink-line { flex: 1; height: 1px; background: var(--line); }
 
+/* ============ UX-06 键盘可达性与无障碍 ============ */
+/* 统一可见焦点环：仅键盘（Tab）聚焦时出现，鼠标点击不显示。
+   纸墨底色下浏览器默认 outline 偏淡，改用朱砂描边保证浅/深色都看得清。 */
+:focus-visible {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+/* 跳到主内容：键盘用户第一下 Tab 即可跳过整列导航直达内容区 */
+.skip-link {
+  position: absolute; left: 12px; top: -64px; z-index: 10001;
+  background: var(--cinnabar); color: #f8f1e6;
+  padding: 9px 16px; border-radius: var(--radius);
+  font-size: calc(13.5px * var(--fs)); text-decoration: none;
+  box-shadow: var(--shadow); transition: top .18s ease;
+}
+.skip-link:focus { top: 12px; }
+/* 键盘聚焦侧栏链接时给同样的高亮，避免活动/焦点状态只靠 hover 感知 */
+.nav a:focus-visible { background: var(--panel); color: var(--cinnabar); }
+.nav-group-title:focus-visible { border-radius: var(--radius); }
+@media (prefers-reduced-motion: reduce) {
+  .skip-link, .nav-items, .ng-arrow { transition: none; }
+}
+
+/* ============ UX-02 首次使用 / 配置状态提示 ============ */
+.setup-panel { border-left: 4px solid var(--cinnabar); }
+.setup-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.setup-head h3 { margin: 0; }
+.setup-x {
+  border: 0; background: none; cursor: pointer; color: var(--ink-3);
+  font-size: calc(14px * var(--fs)); line-height: 1; padding: 4px 6px; border-radius: var(--radius);
+}
+.setup-x:hover { color: var(--ink); background: var(--surface-2); }
+.setup-list { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.setup-item { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.setup-ico { font-size: calc(20px * var(--fs)); line-height: 1.3; }
+.setup-tx { flex: 1; min-width: 180px; }
+.setup-tx b { display: block; font-size: calc(14.5px * var(--fs)); color: var(--ink); }
+.setup-tx p { margin: 3px 0 0; color: var(--ink-2); font-size: calc(13px * var(--fs)); line-height: 1.75; }
+
+/* ============ UX-05 设置分区快速定位 + 保存时机标签 ============ */
+.settings-index { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 16px; }
+.si-btn {
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink-2);
+  border-radius: 999px; padding: 5px 14px; cursor: pointer;
+  font-size: calc(12.5px * var(--fs));
+}
+.si-btn:hover { color: var(--cinnabar); border-color: var(--cinnabar); }
+.save-tag {
+  display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px;
+  font-family: var(--sans); font-weight: 500; font-size: calc(11px * var(--fs));
+  color: var(--amber); background: var(--amber-soft); vertical-align: middle;
+}
+.save-tag.now { color: var(--bamboo); background: var(--bamboo-soft); }
+.save-tag.danger { color: var(--cinnabar); background: var(--cinnabar-soft); }
+/* 分区定位留出顶部余量，标题不被遮挡 */
+#sec-ai, #sec-learn, #sec-look, #sec-sync, #sec-export, #sec-danger { scroll-margin-top: 18px; }
+
 /* ============ 主区域 ============ */
 .view { flex: 1; overflow-y: auto; padding: 34px 42px 60px; }
 .route-skeleton { max-width: 980px; margin: 0 auto; padding-top: 8px; }

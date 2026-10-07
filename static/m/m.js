@@ -1181,6 +1181,43 @@ function clearAllTimers() {
   activeTimers.length = 0;
 }
 
+/* UX-03 每日开门题提示：未完成今日开门题被拦截时，给出可读说明与「开始今日一题」直达入口。
+   保留原有「跳回首页 + 拦截受限路由」的逻辑，不改变受限页面集合与每日判定口径。 */
+function dailyDoorPrompt() {
+  if (document.getElementById("doorPrompt")) return;
+  const mask = document.createElement("div");
+  mask.className = "door-mask";
+  mask.id = "doorPrompt";
+  mask.innerHTML = `
+    <div class="door-card" role="dialog" aria-modal="true" aria-labelledby="doorT">
+      <div class="door-emoji" aria-hidden="true">📅</div>
+      <h3 id="doorT">先完成今日开门一题</h3>
+      <p>每日开门题是当天学习的第一步：做完它，其余学习功能（刷题 / 复习 / 错题…）才会解锁。
+        它只是当天的热身，<b>不等于</b>完成整个学习计划，也不影响复习排期。</p>
+      <div class="door-actions">
+        <button class="btn btn-ghost" id="doorLater">稍后再说</button>
+        <button class="btn btn-primary" id="doorGo">开始今日一题</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => mask.remove();
+  mask.addEventListener("click", e => { if (e.target === mask) close(); });
+  $("#doorLater", mask).onclick = close;
+  $("#doorGo", mask).onclick = async () => {
+    const b = $("#doorGo", mask);
+    b.disabled = true; b.textContent = "抽题中…";
+    try {
+      const r = await api("/api/paper", { n: 1 });
+      if (!r.ids.length) { toast("题库暂不可用"); b.disabled = false; b.textContent = "开始今日一题"; return; }
+      close();
+      runPaper(r.ids, { title: "每日一题", daily: true });
+    } catch (e) {
+      toast("组卷失败：" + e.message);
+      b.disabled = false; b.textContent = "开始今日一题";
+    }
+  };
+}
+
 function route() {
   inRun = false;
   DraftPaper.leave();   // N1：切页前把草稿强制落盘（放在 clearAllTimers 之前）
@@ -1193,11 +1230,18 @@ function route() {
   const isAuth = AUTH_PAGES.includes(name);
   $("#tabbar").style.display = isAuth ? "none" : "";
   const tabName = ALIAS[name] || name;
-  $$("#tabbar a").forEach(a => a.classList.toggle("active", a.dataset.tab === tabName));
+  // UX-01：活动标签同时落 aria-current，读屏可播报「当前页」
+  $$("#tabbar a").forEach(a => {
+    const on = a.dataset.tab === tabName;
+    a.classList.toggle("active", on);
+    if (on) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  });
   $("#mTitle").textContent = TITLES[name] || "上岸自习室";
   // U-2 每日开门守卫：未做开门题时，学习类页面一律先回首页
+  // UX-03：把简短 toast 换成可读说明 + 「开始今日一题」直达入口（拦截与放行规则不变）
   if (DAILY_DONE === false && DAILY_LOCKED.has(name)) {
-    toast("📅 先完成今日开门一题，再进入其他功能");
+    dailyDoorPrompt();
     location.hash = "#/home";
     return;
   }
@@ -2023,9 +2067,39 @@ const DAILY_LOCKED = new Set([
   "cards", "review", "wrong", "marks", "exam", "shizheng",
 ]);
 
+/* UX-02 首次使用与配置状态（移动端）：题库为空 / AI 未配置时给出说明与直达入口。
+   只用已有数据（stats.doc_counts + /api/settings），可关闭（当天不再提示，走本地 Pref）。 */
+function setupCard(s, cfg) {
+  if (Pref.get("setup_hide", "") === todayStr()) return "";
+  const docs = Object.values(s.doc_counts || {}).reduce((a, b) => a + b, 0);
+  const aiReady = !!(cfg && cfg.deepseek_api_key);
+  const items = [];
+  if (docs === 0) items.push({
+    icon: "📚", title: "题库还没有内容",
+    desc: "本应用不自带题库：准备你自己的题源后到「导入」页导入即可练习。",
+    href: "#/import", label: "去导入",
+  });
+  if (!aiReady) items.push({
+    icon: "🔑", title: "AI 未配置（可选）",
+    desc: "AI 答疑 / 批改需要 DeepSeek Key；不配置也能正常刷题、复习。",
+    href: "#/settings", label: "去配置",
+  });
+  if (!items.length) return "";
+  return `<div class="card setup-card" id="setupCard">
+    <div class="setup-head"><b>开始之前</b>
+      <button class="setup-x" id="setupX" type="button" aria-label="关闭提示">✕</button></div>
+    ${items.map(it => `<div class="setup-item">
+      <span class="setup-ico" aria-hidden="true">${it.icon}</span>
+      <div class="setup-tx"><b>${esc(it.title)}</b><p>${esc(it.desc)}</p></div>
+      <a class="btn btn-sm btn-primary" href="${it.href}">${esc(it.label)}</a>
+    </div>`).join("")}
+  </div>`;
+}
+
 async function renderHome() {
-  const [s, pl, drafts] = await Promise.all([
-    api("/api/stats"), api("/api/study-plan"), DraftPaper.list()]);
+  const [s, pl, drafts, cfg] = await Promise.all([
+    api("/api/stats"), api("/api/study-plan"), DraftPaper.list(),
+    api("/api/settings").catch(() => null)]);   // UX-02：读 AI 配置状态；失败不影响首页
   const rate = s.today_answers ? Math.round(s.today_correct / s.today_answers * 100) : 0;
   const totalRate = s.answers_total ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
   const rank = gameRank(s.answers_total);
@@ -2041,6 +2115,7 @@ async function renderHome() {
     pl && pl.summary ? pl.summary.total : 0);
   const focusMin = Math.round((s.today_focus || 0) / 60);
   view.innerHTML = `
+    ${setupCard(s, cfg)}
     ${countdownBanner(s.exam_date, s.days_left)}
     ${draftCardHtml(drafts)}
     <div class="card rank-badge">
@@ -2090,6 +2165,12 @@ async function renderHome() {
     <a class="entry" id="exportToday" style="margin-top:12px;cursor:pointer"><span class="ei">📤</span>
       <span class="et"><b>导出今日学习报告</b><small>保存或分享今日学习成果</small></span><span class="go">›</span></a>`;
 
+  const sx = $("#setupX");   // UX-02：关闭首次使用提示（当天不再显示）
+  if (sx) sx.onclick = () => {
+    Pref.set("setup_hide", todayStr());
+    const c = $("#setupCard");
+    if (c) c.remove();
+  };
   const dg = $("#dailyGo");
   if (dg) dg.onclick = async () => {
     dg.disabled = true; dg.textContent = "抽题中…";
@@ -2101,12 +2182,16 @@ async function renderHome() {
   };
   bindDraftCard(view);   // N1：续做卡片「继续 / 放弃」
   $("#exportToday").onclick = () => showReportPreview(s);
+  let recBusy = false;   // UX-04：连点不重复组卷
   $("#recGo").onclick = async () => {
+    if (recBusy) return;
+    recBusy = true;
     try {
       const r = await api("/api/paper/adaptive", { n: 15 });
       if (!r.ids.length) return toast("题库暂无可用真题");
       runPaper(r.ids, { title: "今日推荐练习" });
     } catch (e) { toast("组卷失败：" + e.message); }
+    finally { recBusy = false; }
   };
   maybeBackupGuide(s);
 }
@@ -4439,7 +4524,16 @@ async function renderSettings() {
   const keyPh = s.deepseek_api_key
     ? `已配置（${s.deepseek_api_key}），不修改请留空` : "sk-...";
   view.innerHTML = `
-    <div class="card">
+    <div class="m-index" aria-label="设置分区快速定位">
+      <button class="si-btn" type="button" data-sec="sec-m-ai">AI 与学习</button>
+      <button class="si-btn" type="button" data-sec="sec-m-look">外观</button>
+      <button class="si-btn" type="button" data-sec="sec-m-backup">备份</button>
+      <button class="si-btn" type="button" data-sec="sec-m-sync">同步</button>
+      <button class="si-btn" type="button" data-sec="sec-m-upd">更新</button>
+      <button class="si-btn" type="button" data-sec="sec-m-danger">数据清空</button>
+    </div>
+    <div class="card" id="sec-m-ai">
+      <h3>AI 与学习设置 <span class="save-tag">需保存</span></h3>
       <div class="field">
         <label>DeepSeek 接口地址</label>
         <input id="setBase" class="m-input" value="${esc(s.deepseek_base_url)}"/>
@@ -4513,8 +4607,8 @@ async function renderSettings() {
       <button class="btn btn-primary btn-block" id="setSave">保存</button>
       <div class="set-status" id="setStatus"></div>
     </div>
-    <div class="card">
-      <h3>学习偏好</h3>
+    <div class="card" id="sec-m-look">
+      <h3>学习偏好 <span class="save-tag now">立即生效</span></h3>
       <div class="cfg-label">主题</div>
       <div class="type-checks" id="themePick">${Theme.pickerHtml()}</div>
       <div class="muted" style="margin:6px 0 14px">夜间为「宣纸夜景」：暖灰墨底 + 米白文字；「跟随系统」随系统深浅自动切换。</div>
@@ -4528,8 +4622,8 @@ async function renderSettings() {
       <label class="check"><input type="checkbox" id="prefPomo"
         ${Pref.get("pomo", true) ? "checked" : ""}/> 做题时显示番茄钟并统计专注时长</label>
     </div>
-    <div class="card">
-      <h3>备份与恢复</h3>
+    <div class="card" id="sec-m-backup">
+      <h3>备份与恢复 <span class="save-tag now">即时执行</span></h3>
       <label class="bk-check"><input type="checkbox" id="bkKey"/>
         备份同时包含 API Key（默认不包含）</label>
       <button class="btn btn-primary btn-block" id="bkExport">导出备份并分享</button>
@@ -4538,8 +4632,8 @@ async function renderSettings() {
       <div class="set-status" id="bkStatus"></div>
       <div class="muted">备份含本机全部账号与做题数据，可发微信/存网盘；恢复后账号密码原样可用</div>
     </div>
-    <div class="card">
-      <h3>多设备同步（WebDAV）</h3>
+    <div class="card" id="sec-m-sync">
+      <h3>多设备同步（WebDAV） <span class="save-tag">需保存</span></h3>
       <div class="muted" style="margin-bottom:10px">用自己的网盘（坚果云 / Nextcloud）中转备份：<b>包在本机用同步口令加密后才上传，云端只有密文</b>，口令不会发给任何服务器。</div>
       <label class="check"><input type="checkbox" id="syOn"
         ${s.sync_enabled ? "checked" : ""}/> 启用多设备同步</label>
@@ -4577,16 +4671,16 @@ async function renderSettings() {
       <div class="set-status" id="syStatus"></div>
       <div class="muted" id="syLast">${esc(syncLastText(s))}</div>
     </div>
-    <div class="card">
-      <h3>题库更新</h3>
+    <div class="card" id="sec-m-upd">
+      <h3>题库更新 <span class="save-tag now">即时检查</span></h3>
       <div class="kd-row"><span class="kn">当前题库版本</span>
         <span>${bank ? `v${bank.version} · ${bank.docs} 题` : "读取失败"}</span></div>
       <button class="btn btn-block" id="updCheck" style="margin-top:10px">检查更新</button>
       <div class="set-status" id="updCheckStatus"></div>
       <div class="muted">有更新时下载更新包，到「导入 → 题库更新」手动安装；答题记录不受影响</div>
     </div>
-    <div class="card danger-zone">
-      <h3>危险区 · 数据清空</h3>
+    <div class="card danger-zone" id="sec-m-danger">
+      <h3>危险区 · 数据清空 <span class="save-tag danger">不可恢复</span></h3>
       <div class="muted" style="margin-bottom:10px">只清个人作答与记录，<b>题库、导入题与辨析卡内容不会被清理</b>。清理前建议先用上面的「导出备份并分享」留一份。</div>
       <button class="btn btn-block danger-btn" data-scope="answers">清空作答记录</button>
       <button class="btn btn-block danger-btn" data-scope="marks">清空错题/标记/笔记/计划</button>
@@ -4594,6 +4688,12 @@ async function renderSettings() {
       <button class="btn btn-block danger-btn-solid" data-scope="all">恢复全部默认</button>
       <div class="set-status" id="dangerStatus"></div>
     </div>`;
+
+  // UX-05：设置分区快速定位（按钮 + scrollIntoView，不改 hash，避免触发路由）
+  $$(".si-btn").forEach(b => b.onclick = () => {
+    const t = document.getElementById(b.dataset.sec);
+    if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 
   /* G7 数据清空：两步确认（点两次才执行，不依赖 WebView 的 confirm） */
   const DANGER_DESC = {

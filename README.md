@@ -76,25 +76,42 @@
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：支持 PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）
 
-## 快速开始
+## 快速开始（首次使用顺序）
+
+> 第 3、4 步按需进行：**没有题库也能打开界面，没有 AI Key 也能正常刷题、复习、看统计。**
+
+**1. 安装依赖**（Python 3.13）
 
 ```bash
-# 1. 安装依赖
 pip install -r requirements.txt
-
-# 2. 启动服务
-python run.py
-#   或 Windows 双击 start.bat（自动释放 8765 端口并打开浏览器）
 ```
 
-启动后访问：
+**2. 启动服务**
 
-- 电脑端：http://127.0.0.1:8765
-- 手机端：手机与电脑连同一 Wi-Fi，访问启动日志中显示的 `http://<局域网IP>:8765/m/`
+```bash
+python run.py
+#   或 Windows 双击 start.bat（检测端口占用并给出提示；服务就绪后自动打开浏览器）
+```
 
-### AI 配置
+启动日志会打印电脑访问地址与手机访问地址。
 
-进入页面「设置」填入 **DeepSeek API Key** 即可启用讲题 / 答疑 / 批改功能。Key 使用 Windows **DPAPI 按当前用户加密**落盘（`data/settings.json`），明文不写盘；该文件已在 `.gitignore` 中忽略。多设备同步的 WebDAV 密码与同步口令同样走 DPAPI。
+**3. 准备题库（必需，才能做题）**
+题库**不随仓库分发**。请自备**合法题源**，进入「导入」页导入 PDF / Word / Excel / CSV / MD / JSON 后即可开始练习。
+
+**4. 配置 AI（可选）**
+进入「设置 → 题库与 AI」填入 **DeepSeek API Key**，启用 AI 讲题 / 答疑 / 批改 / 抽题。不配置时相关功能自动降级（词语填空走预置题、批改走对照自评），本地刷题不受影响。Key 使用 Windows **DPAPI 按当前用户加密**落盘（`data/settings.json`），明文不写盘；该文件已在 `.gitignore` 中忽略。多设备同步的 WebDAV 密码与同步口令同样走 DPAPI。
+
+**5. 手机访问**
+手机与电脑连同一 Wi-Fi / 同一局域网，用启动日志里显示的 `http://<局域网IP>:8765/m/` 打开（电脑端为 http://127.0.0.1:8765）。
+
+### 哪些能离线用，哪些需要联网 / API Key
+
+| 能力 | 是否需要联网 / API Key |
+|---|---|
+| 刷题、组卷、复习、错题、辨析卡、速查手册、统计、导出 | **纯本地，离线可用**；手机在同一局域网内访问也不需要外网 |
+| AI 讲题 / 答疑 / 批改 / 抽题 / 拍照识别 | 需要联网 + 已配置 DeepSeek API Key |
+| 多设备加密同步（WebDAV） | 需要联网 + 自备网盘账号（可选，不开不影响本地使用） |
+| 题库热更新 | 需要联网下载更新包（可选） |
 
 ## 项目结构
 
@@ -124,7 +141,7 @@ GOSHORE/
 │   ├── goshor.db          # 题库与学习记录
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（748 条）
+├── tests/                 # pytest 用例（764 条）
 ├── tools/                 # 前端静态校验器（10 个 .mjs）
 ├── scripts/               # 导入 / 打包 / E2E 回归脚本
 └── docs/                  # 开发文档（按用途归类，见 docs/）
@@ -133,7 +150,7 @@ GOSHORE/
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（748 条，跑在临时库上，不碰 data/goshor.db）
+# 后端单元 / 接口测试（764 条，跑在临时库上，不碰 data/goshor.db）
 python -m pytest tests -q
 
 # 前端静态校验器（无需浏览器；本机无 node 时自动跳过）
@@ -141,11 +158,20 @@ node tools/check_appearance.mjs    # 夜间模式 + 字号四档
 node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致性
 # …共 10 个，全部退出码 0
 
-# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 72 项断言）
+# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 74 项断言）
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 748 passed**、**10 个静态校验器全 EXIT=0**、**E2E 72 项断言全通过**。
+当前基线：**pytest 764 passed**、**10 个静态校验器全 EXIT=0**、**E2E 74 项断言全通过**。
+
+## 常见问题
+
+- **启动失败 / 报错**：确认已 `pip install -r requirements.txt` 且 Python ≥ 3.13；重跑 `python run.py` 查看终端完整报错。
+- **端口 8765 被占用**：`run.py` 会提示端口被占用并退出，**不会自动结束其它进程**；`start.bat` 会列出占用 PID 与进程名，让你选择「结束它 / 打开已有服务 / 取消」。也可手动查 `netstat -ano | findstr :8765`。
+- **手机打不开**：确认手机与电脑在同一 Wi-Fi / 同一网段；地址用的是日志里的**局域网 IP**（不是 `127.0.0.1`，它只在本机有效）；电脑防火墙放行 8765；部分路由器开启「AP 隔离」会阻断手机访问电脑。
+- **题库为空 / 搜不到题**：题库需自行导入。到「导入」页导入题源后，可用「设置 → 重建题库索引」刷新检索。
+- **AI 提示未配置**：到「设置」填 DeepSeek API Key；未配置不影响本地刷题、复习与统计。
+- **备份在哪 / 怎么恢复**：桌面端「设置 → 多设备同步」与移动端「设置 → 备份与恢复」提供「导出备份 / 选择备份文件恢复」。备份默认不含 API Key，恢复后账号密码原样可用。
 
 ## 数据与隐私
 

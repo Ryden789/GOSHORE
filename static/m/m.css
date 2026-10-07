@@ -123,6 +123,68 @@ img { max-width: 100%; height: auto; }
 #tabbar a .ti { font-size: calc(19px * var(--fs)); line-height: 1; }
 #tabbar a.active { color: var(--cinnabar); font-weight: 600; }
 
+/* ============ UX-06 键盘可达性与无障碍 ============ */
+/* 统一可见焦点环：仅键盘（Tab）聚焦时出现，触控点击不显示。 */
+:focus-visible {
+  outline: 2px solid var(--cinnabar);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+#tabbar a:focus-visible { color: var(--cinnabar); }
+
+/* UX-02 首次使用 / 配置状态提示卡 */
+.setup-card { border-left: 4px solid var(--cinnabar); }
+.setup-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.setup-head b { font-family: var(--serif); font-size: calc(15.5px * var(--fs)); }
+.setup-x { border: 0; background: none; color: var(--ink-3); font-size: calc(14px * var(--fs)); padding: 2px 6px; cursor: pointer; }
+.setup-item { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.setup-ico { font-size: calc(19px * var(--fs)); line-height: 1.3; }
+.setup-tx { flex: 1; min-width: 150px; }
+.setup-tx b { display: block; font-size: calc(14px * var(--fs)); }
+.setup-tx p { margin: 3px 0 0; color: var(--ink-2); font-size: calc(12.5px * var(--fs)); line-height: 1.7; }
+
+/* UX-03 每日开门题提示弹窗：可读说明 + 「开始今日一题」直达入口 */
+.door-mask {
+  position: fixed; inset: 0; z-index: 120;
+  background: rgba(35, 32, 26, .5);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.door-card {
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 14px;
+  max-width: 360px; width: 100%; padding: 22px 20px 18px;
+  box-shadow: var(--shadow);
+}
+.door-emoji { font-size: calc(30px * var(--fs)); line-height: 1; text-align: center; }
+.door-card h3 { margin: 8px 0; font-family: var(--serif); font-size: calc(17px * var(--fs)); text-align: center; }
+.door-card p { margin: 0; color: var(--ink-2); font-size: calc(13px * var(--fs)); line-height: 1.8; }
+.door-actions { display: flex; gap: 10px; margin-top: 16px; }
+.door-actions .btn { flex: 1; }
+
+/* UX-05 设置分区快速定位 + 保存时机标签 */
+.m-index {
+  display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 8px;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+}
+.m-index::-webkit-scrollbar { display: none; }
+.si-btn {
+  flex: 0 0 auto; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2);
+  border-radius: 999px; padding: 6px 14px; cursor: pointer;
+  font-size: calc(12.5px * var(--fs)); white-space: nowrap;
+}
+.si-btn:active { color: var(--cinnabar); border-color: var(--cinnabar); }
+.save-tag {
+  display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px;
+  font-weight: 500; font-size: calc(10.5px * var(--fs));
+  color: var(--amber); background: var(--amber-soft); vertical-align: middle;
+}
+.save-tag.now { color: var(--bamboo); background: var(--bamboo-soft); }
+.save-tag.danger { color: var(--cinnabar); background: var(--cinnabar-soft); }
+/* 顶栏 sticky，定位时留出余量避免标题被遮挡 */
+#sec-m-ai, #sec-m-look, #sec-m-backup, #sec-m-sync, #sec-m-upd, #sec-m-danger {
+  scroll-margin-top: calc(env(safe-area-inset-top) + 64px);
+}
+
 /* 卡片与按钮 */
 .card {
   background: var(--panel); border: 1px solid var(--line-soft);
@@ -862,12 +924,18 @@ h2.sec { font-family: var(--serif); font-size: calc(15px * var(--fs)); color: va
 
 /* 导入 */
 .sr-jsonline { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+/* UX-06：原生 file 控件有较大的固有最小宽度，320px 下会把卡片撑宽 20+px。
+   让它可收缩并允许内容裁切，配合 flex:1 的按钮一起排布。 */
+.sr-jsonline input[type="file"] { flex: 1; min-width: 0; max-width: 100%; }
+.sr-jsonline .btn { flex: 0 0 auto; }
 .sr-defaults {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  /* minmax(0, 1fr)：1fr 的最小值是 auto，会被 select 里的长选项（如「（按题目自带）」）撑宽 */
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
   margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft);
   font-size: calc(12.5px * var(--fs)); color: var(--ink-2);
 }
-.sr-defaults .m-input, .sr-defaults .m-select { padding: 7px 9px; font-size: calc(13.5px * var(--fs)); }
+.sr-defaults > span { min-width: 0; }
+.sr-defaults .m-input, .sr-defaults .m-select { min-width: 0; padding: 7px 9px; font-size: calc(13.5px * var(--fs)); }
 .imp-item {
   display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
   padding: 9px 0; border-bottom: 1px solid var(--line-soft); font-size: calc(14px * var(--fs));

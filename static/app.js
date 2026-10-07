@@ -17,6 +17,10 @@ function toast(msg, ms = 3200) {
   if (!t) {
     t = document.createElement("div");
     t.id = "toastBox";
+    // UX-04：提示框作为状态播报区，读屏能感知；不抢焦点（pointer-events:none）
+    t.setAttribute("role", "status");
+    t.setAttribute("aria-live", "polite");
+    t.setAttribute("aria-atomic", "true");
     t.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink,#333);color:#fff;padding:10px 18px;border-radius:8px;font-size:calc(13.5px * var(--fs));z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.25);opacity:0;transition:opacity .25s;pointer-events:none;max-width:80vw";
     document.body.appendChild(t);
   }
@@ -115,8 +119,9 @@ async function api(path, body) {
   if (!r.ok) {
     let msg = `${r.status}`;
     try { msg = (await r.json()).detail || msg; } catch (e) {}
-    if (r.status >= 500) toast(`服务器内部错误（${r.status}）：${msg}，请查看终端日志`);
-    else if (r.status >= 400) toast(`请求异常（${r.status}）：${msg}`);
+    // UX-04：错误提示停留更久（6s），确保用户读完；仍只暴露服务端 detail，不抛堆栈
+    if (r.status >= 500) toast(`服务器内部错误（${r.status}）：${msg}，请查看终端日志`, 6000);
+    else if (r.status >= 400) toast(`请求异常（${r.status}）：${msg}`, 6000);
     throw new Error(`${r.status} ${msg}`);
   }
   return r.json();
@@ -245,6 +250,52 @@ function countdownBanner(examDate, daysLeft) {
       <div class="cd-tx"><b>${unit}</b><div class="muted">${esc(tip)}</div></div>
       <a class="cd-go" href="#/plan">${go}</a>
     </div>`;
+}
+
+/* UX-02 首次使用与配置状态：只用已有数据（stats.doc_counts + /api/settings），
+   说明「题库是否就绪」「AI 是否已配置」，并直达现有导入 / 设置页。
+   只在确有待办时出现；可关闭（当天不再提示，走本地 Pref，不新增数据表）。 */
+function localDay() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function setupPanel(s, cfg) {
+  if (Pref.get("setup_hide", "") === localDay()) return "";
+  const docs = Object.values(s.doc_counts || {}).reduce((a, b) => a + b, 0);
+  const aiReady = !!(cfg && cfg.deepseek_api_key);
+  const items = [];
+  if (docs === 0) items.push({
+    icon: "📚", title: "题库还没有内容",
+    desc: "本应用不自带题库：请准备你自己的题源（真题 / 考点 / 材料），到「导入」页导入后即可开始练习。",
+    href: "#/import", label: "去导入题库",
+  });
+  if (!aiReady) items.push({
+    icon: "🔑", title: "AI 能力未配置（可选）",
+    desc: "AI 答疑 / 批改 / 命题需要 DeepSeek API Key；不配置也能正常刷题、复习、看统计。",
+    href: "#/settings", label: "去配置 Key",
+  });
+  if (!items.length) return "";
+  return `<div class="panel setup-panel rise" id="setupPanel">
+    <div class="setup-head">
+      <h3>开始之前</h3>
+      <button class="setup-x" id="setupX" type="button" aria-label="关闭提示" title="关闭提示">✕</button>
+    </div>
+    <div class="setup-list">${items.map(it => `
+      <div class="setup-item">
+        <span class="setup-ico" aria-hidden="true">${it.icon}</span>
+        <div class="setup-tx"><b>${esc(it.title)}</b><p>${esc(it.desc)}</p></div>
+        <a class="btn btn-sm btn-primary" href="${it.href}">${esc(it.label)}</a>
+      </div>`).join("")}</div>
+  </div>`;
+}
+function bindSetupPanel() {
+  const x = $("#setupX");
+  if (!x) return;
+  x.onclick = () => {
+    Pref.set("setup_hide", localDay());
+    const p = $("#setupPanel");
+    if (p) p.remove();
+  };
 }
 
 /* 与手机端 m.js 同名的本地偏好读写（键前缀 g:），
@@ -1079,8 +1130,13 @@ let navSeq = 0;   // 导航序号：慢请求返回后校验，防止旧页覆�
 let abortCtl = null;  // 当前导航的在途请求控制器，切页即 abort，防止旧回调操作已移除的元素
 
 function setActive(name) {
-  document.querySelectorAll(".nav a").forEach(
-    a => a.classList.toggle("active", a.dataset.route === name));
+  document.querySelectorAll(".nav a").forEach(a => {
+    const on = a.dataset.route === name;
+    a.classList.toggle("active", on);
+    // UX-01：屏幕阅读器据此播报「当前页」，不只靠颜色区分活动项
+    if (on) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  });
   syncNavGroup(name);
 }
 
@@ -1089,6 +1145,9 @@ function syncNavGroup(name) {
   document.querySelectorAll(".nav-group").forEach(g => {
     const here = !!g.querySelector(`a[data-route="${name}"]`);
     g.classList.toggle("collapsed", !here);
+    // UX-01：折叠态同步到 aria-expanded，键盘/读屏用户可感知分组开合
+    const btn = g.querySelector(".nav-group-title");
+    if (btn) btn.setAttribute("aria-expanded", here ? "true" : "false");
   });
 }
 
@@ -1098,9 +1157,15 @@ function routeLoadingMarkup(name) {
   return `<div class="route-skeleton" aria-live="polite" aria-label="正在加载${esc(label)}"><div class="route-skeleton-head"><span class="route-skeleton-title">${esc(label)}</span><span class="route-spinner" aria-hidden="true"></span></div><div class="route-skeleton-line wide"></div><div class="route-skeleton-line"></div><div class="route-skeleton-grid"><i></i><i></i><i></i></div><div class="route-skeleton-block"></div></div>`;
 }
 
-// 点击组名手动展开/收起（静态 DOM，绑定一次）
-document.querySelectorAll(".nav-group-title").forEach(t => t.onclick = () =>
-  t.closest(".nav-group").classList.toggle("collapsed"));
+// 点击组名手动展开/收起（静态 DOM，绑定一次）；同步 aria-expanded 供读屏使用
+document.querySelectorAll(".nav-group-title").forEach(t => {
+  const g = t.closest(".nav-group");
+  t.setAttribute("aria-expanded", g.classList.contains("collapsed") ? "false" : "true");
+  t.onclick = () => {
+    g.classList.toggle("collapsed");
+    t.setAttribute("aria-expanded", g.classList.contains("collapsed") ? "false" : "true");
+  };
+});
 
 function route() {
   const seq = ++navSeq;
@@ -1215,8 +1280,9 @@ function diffBadge(diff) {
 ===================================================== */
 
 async function renderHome() {
-  const [s, st, pl, drafts] = await Promise.all([
-    api("/api/stats"), api("/api/study-time"), api("/api/study-plan"), DraftPaper.list()]);
+  const [s, st, pl, drafts, cfg] = await Promise.all([
+    api("/api/stats"), api("/api/study-time"), api("/api/study-plan"), DraftPaper.list(),
+    api("/api/settings").catch(() => null)]);   // UX-02：读 AI 配置状态；失败不影响首页
   const rate = s.answers_total ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
   const lt = new Date();
   const dateStr = `${lt.getFullYear()} 年 ${lt.getMonth() + 1} 月 ${lt.getDate()} 日`;
@@ -1256,6 +1322,7 @@ async function renderHome() {
   }
 
   view.innerHTML = `
+    ${setupPanel(s, cfg)}
     ${remindBanner}
     ${countdownBanner(s.exam_date, s.days_left)}
     ${draftCardHtml(drafts)}
@@ -1368,6 +1435,7 @@ async function renderHome() {
   $$(".stat-card.link").forEach(el => el.onclick = () => (location.hash = "#/" + el.dataset.go));
   $("#recGo").onclick = () => (location.hash = "#/paper/adaptive");
   bindDraftCard(view);   // N1：续做卡片「继续 / 放弃」
+  bindSetupPanel();      // UX-02：首次使用提示的关闭按钮
 }
 
 /* =====================================================
@@ -4314,7 +4382,7 @@ function renderImport() {
         <p class="hint" style="margin-bottom:8px">粘贴 JSON 数组，或直接把 .json / .txt 文件拖进文本框。每题字段：stem（题干）、options（选项数组）、answer（答案字母）、analysis（解析，可空）、module / kaodian / year / exam（可空）</p>
         <textarea id="jsonText" class="imp-area" rows="10" placeholder='[{"stem":"……","options":["A. …","B. …","C. …","D. …"],"answer":"B","analysis":"……","module":"言语理解"}]&#10;&#10;📂 也可将题库文件拖拽到此'></textarea>
         <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-          <input type="file" id="jsonFile" accept=".json,.txt"/>
+          <input type="file" id="jsonFile" accept=".json,.txt" style="flex:1;min-width:0"/>
           <button class="btn btn-primary" id="jsonPreview">解析预览</button>
         </div>
       </div>
@@ -4591,10 +4659,18 @@ async function renderSettings() {
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">设置</h1>
-      <p class="page-desc">所有配置仅保存在本机</p>
+      <p class="page-desc">所有配置仅保存在本机 · 改动后点「保存」生效，外观设置即时生效</p>
     </div>
-    <div class="panel rise rise-1">
-      <h3 style="margin:0 0 10px">题库与 AI 接口</h3>
+    <div class="settings-index rise rise-1" aria-label="设置分区快速定位">
+      <button class="si-btn" type="button" data-sec="sec-ai">题库与 AI</button>
+      <button class="si-btn" type="button" data-sec="sec-learn">学习与提醒</button>
+      <button class="si-btn" type="button" data-sec="sec-look">外观</button>
+      <button class="si-btn" type="button" data-sec="sec-sync">同步</button>
+      <button class="si-btn" type="button" data-sec="sec-export">导出</button>
+      <button class="si-btn" type="button" data-sec="sec-danger">数据清空</button>
+    </div>
+    <div class="panel rise rise-1" id="sec-ai">
+      <h3 style="margin:0 0 10px">题库与 AI 接口 <span class="save-tag">需保存</span></h3>
       <div class="settings-form">
         <div class="field">
           <label>题库 vault 路径</label>
@@ -4616,8 +4692,8 @@ async function renderSettings() {
         </div>
       </div>
     </div>
-    <div class="panel rise rise-2">
-      <h3 style="margin:0 0 10px">学习与提醒</h3>
+    <div class="panel rise rise-2" id="sec-learn">
+      <h3 style="margin:0 0 10px">学习与提醒 <span class="save-tag">需保存</span></h3>
       <div class="settings-form">
         <div class="field">
           <label>考试日期（首页倒计时）</label>
@@ -4663,11 +4739,11 @@ async function renderSettings() {
           <button class="btn btn-primary" id="save">保存</button>
           <button class="btn" id="reindex">重建题库索引</button>
         </div>
-        <div class="status-msg" id="status"></div>
+        <div class="status-msg" role="status" aria-live="polite" id="status"></div>
       </div>
     </div>
-    <div class="panel rise rise-3">
-      <h3 style="margin:0 0 10px">外观</h3>
+    <div class="panel rise rise-3" id="sec-look">
+      <h3 style="margin:0 0 10px">外观 <span class="save-tag now">立即生效</span></h3>
       <div class="field">
         <label>主题</label>
         <div class="type-checks" id="themePick">${Theme.pickerHtml()}</div>
@@ -4683,8 +4759,8 @@ async function renderSettings() {
         <div class="hint">长文阅读更透气（行距加大）。</div>
       </div>
     </div>
-    <div class="panel rise rise-4">
-      <h3 style="margin:0 0 10px">多设备同步（WebDAV · 端到端加密）</h3>
+    <div class="panel rise rise-4" id="sec-sync">
+      <h3 style="margin:0 0 10px">多设备同步（WebDAV · 端到端加密） <span class="save-tag">需保存</span></h3>
       <p class="hint" style="margin:0 0 10px">用你自己的网盘（坚果云 / Nextcloud 等）中转备份：<b>备份包在本机用同步口令加密后才上传，云端只有密文</b>，口令不会发给任何服务器。</p>
       <div class="field">
         <label class="cb"><input type="checkbox" id="syncOn" ${s.sync_enabled ? "checked" : ""}/> 启用多设备同步</label>
@@ -4725,11 +4801,11 @@ async function renderSettings() {
         <button class="btn" id="syncUp">上传到云端</button>
         <button class="btn" id="syncDown">从云端恢复</button>
       </div>
-      <div class="status-msg" id="syncMsg"></div>
+      <div class="status-msg" role="status" aria-live="polite" id="syncMsg"></div>
       <div class="hint" id="syncLast">${esc(syncLastText(s))}</div>
     </div>
-    <div class="panel rise rise-5">
-      <h3 style="margin:0 0 10px">题库导出 PDF</h3>
+    <div class="panel rise rise-5" id="sec-export">
+      <h3 style="margin:0 0 10px">题库导出 PDF <span class="save-tag now">即时生成</span></h3>
       <p class="hint" style="margin:0 0 10px">按筛选条件生成可打印页面，在浏览器里 Ctrl+P 另存为 PDF（题库在前、答案解析在后）</p>
       <div class="cfg-inline">
         <span>模块 <select id="expModule"><option value="">全部</option>${["常识判断","言语理解与表达","数量关系","判断推理","资料分析"].map(m => `<option>${m}</option>`).join("")}</select></span>
@@ -4740,8 +4816,8 @@ async function renderSettings() {
         <button class="btn btn-primary" id="expGo">生成导出页</button>
       </div>
     </div>
-    <div class="panel rise rise-6 danger-zone">
-      <h3 style="margin:0 0 10px">危险区 · 数据清空</h3>
+    <div class="panel rise rise-6 danger-zone" id="sec-danger">
+      <h3 style="margin:0 0 10px">危险区 · 数据清空 <span class="save-tag danger">不可恢复</span></h3>
       <p class="hint" style="margin:0 0 12px">只清个人作答与记录，<b>题库、导入题与辨析卡内容不会被清理</b>。清理前建议先在「我的 → 备份」里导出一份。</p>
       <div class="danger-grid">
         <button class="btn danger-btn" data-scope="answers">清空作答记录</button>
@@ -4749,7 +4825,7 @@ async function renderSettings() {
         <button class="btn danger-btn" data-scope="mastery">清空掌握度</button>
         <button class="btn danger-btn-solid" data-scope="all">恢复全部默认</button>
       </div>
-      <div class="status-msg" id="dangerMsg"></div>
+      <div class="status-msg" role="status" aria-live="polite" id="dangerMsg"></div>
     </div>`;
 
   // G7 数据清空：先弹「勾选确认」对话框，再带 confirm=true 调接口
@@ -4780,6 +4856,12 @@ async function renderSettings() {
         b.disabled = false;
       }
     };
+  });
+
+  // UX-05：设置分区快速定位。用按钮 + scrollIntoView，避免改 hash 触发路由跳转
+  $$(".si-btn").forEach(b => b.onclick = () => {
+    const t = document.getElementById(b.dataset.sec);
+    if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
   Theme.bindPicker($("#themePick"));
