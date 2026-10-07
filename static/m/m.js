@@ -868,6 +868,21 @@ const Pref = {
   set(k, v) { try { localStorage.setItem("g:" + k, JSON.stringify(v)); } catch (e) {} },
 };
 
+/* G8 桌面小组件：把「考试日期 + 今日计划完成度」推给原生快照。
+   小组件跑在 launcher 进程里，读不到 Python/SQLite，只能靠 APP 主动推；
+   网页版没有原生桥，直接静默跳过。
+   （刻意放在 N2 提醒块之外：N2 有「双端逐字节一致」校验，桌面端不需要这段。） */
+function syncWidget(examDate, done, total) {
+  const n = window.GoshorNative;
+  if (!n || !n.syncWidget) return;
+  try {
+    n.syncWidget(examDate || "", done | 0, total | 0);
+    // 记下上次推送的完成度：设置页只改考试日期时要沿用，不能把进度推成 0
+    Pref.set("widget_done", done | 0);
+    Pref.set("widget_total", total | 0);
+  } catch (e) { /* 忽略 */ }
+}
+
 /* ---- F-6 音效（WebAudio 实时合成，不打包音频文件） ---- */
 const Snd = {
   ctx: null,
@@ -1865,6 +1880,7 @@ async function renderPlan() {
   const examDate = plan.exam_date || "";   // N3：预填已保存的考试日期
   // N2：把今日计划完成度同步给提醒（planOnly 时据此决定要不要打扰）
   syncPlanState(todayStr, summary.done, summary.total);
+  syncWidget(examDate, summary.done, summary.total);   // G8：同步给桌面小组件
 
   view.innerHTML = `
     <div class="page-head">
@@ -1936,6 +1952,7 @@ async function renderPlan() {
       if (r && r.summary) { summary = r.summary; drawStat(); }
       draw();
       syncPlanState(todayStr, summary.done, summary.total);   // N2：完成度变化即时同步
+      syncWidget($("#plExam").value || examDate, summary.done, summary.total);   // G8
     });
   }
   draw();
@@ -1952,6 +1969,7 @@ async function renderPlan() {
       if (r.summary) summary = r.summary;
       drawStat(); draw();
       syncPlanState(todayStr, summary.done, summary.total);   // N2：新计划即刻同步
+      syncWidget($("#plExam").value || "", summary.done, summary.total);   // G8
       toast("✅ 计划已生成");
     } catch (e) { toast("生成失败：" + e.message); }
     btn.disabled = false; btn.textContent = "生成计划";
@@ -2013,6 +2031,9 @@ async function renderHome() {
   DAILY_DONE = s.today_answers > 0 || Pref.get("dskip", "") === todayStr();
   // N2：首页也同步一次今日计划完成度（保证提醒判断不过期）
   if (pl && pl.summary) syncPlanState(pl.today, pl.summary.done, pl.summary.total);
+  // G8：首页是最常打开的页，顺便把「考试日期 + 今日完成度」推给桌面小组件
+  syncWidget(s.exam_date, pl && pl.summary ? pl.summary.done : 0,
+    pl && pl.summary ? pl.summary.total : 0);
   const focusMin = Math.round((s.today_focus || 0) / 60);
   view.innerHTML = `
     ${countdownBanner(s.exam_date, s.days_left)}
@@ -4595,6 +4616,9 @@ async function renderSettings() {
     if (swEl) Pref.set("swipe_paging", swEl.checked);
     if (voEl) Pref.set("volume_keys", voEl.checked);
     await api("/api/settings", patch);
+    // G8：刚改的考试日期要立刻反映到桌面小组件（完成度沿用上一次推送的快照）
+    syncWidget(patch.exam_date, Pref.get("widget_done", 0) | 0,
+      Pref.get("widget_total", 0) | 0);
     const rs = $("#remindState");
     if (rs) rs.textContent = applyReminder(rOn, rTime, rPlan, patch.exam_date);
     const el = $("#setStatus");

@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">上岸自习室</string>
+    <!-- G8 小组件的占位文案（onUpdate 之前 / 数据拿不到时显示） -->
+    <string name="widget_default_days">未设置考试日期</string>
+    <string name="widget_default_plan">今日暂无计划</string>
 </resources>

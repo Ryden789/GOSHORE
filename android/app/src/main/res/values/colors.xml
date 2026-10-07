@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- G8 小组件配色：与「书房纸墨风」一致（RemoteViews 读不到 CSS 变量，只能写死） -->
+    <color name="widget_paper">#F4EFE6</color>
+    <color name="widget_ink">#21201C</color>
+    <color name="widget_ink2">#6B6456</color>
+    <color name="widget_cinnabar">#8C2B21</color>
+    <color name="widget_line">#E0D7C4</color>
+</resources>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- G8 小组件元信息：2×2 起步、可横向/纵向拉伸（窄条就是 4×1 的效果）。
+     updatePeriodMillis 最短 30 分钟；APP 内改数据时会另行 push 立即刷新。 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="40dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/goshor_widget"
+    android:widgetCategory="home_screen" />

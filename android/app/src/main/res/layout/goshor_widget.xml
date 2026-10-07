@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- G8 桌面小组件：距考试天数 + 今日任务完成度。
+     RemoteViews 支持的控件有限，这里只用 LinearLayout / TextView / ProgressBar。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/wgRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center_vertical"
+    android:background="@drawable/widget_bg"
+    android:padding="14dp">
+
+    <TextView
+        android:id="@+id/wgDays"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:textColor="@color/widget_cinnabar"
+        android:text="@string/widget_default_days" />
+
+    <TextView
+        android:id="@+id/wgPlan"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textSize="13sp"
+        android:textColor="@color/widget_ink2"
+        android:text="@string/widget_default_plan" />
+
+    <ProgressBar
+        android:id="@+id/wgBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:max="100"
+        android:progress="0"
+        android:progressTint="@color/widget_cinnabar"
+        android:progressBackgroundTint="@color/widget_line" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:maxLines="1"
+        android:textSize="10sp"
+        android:textColor="@color/widget_ink2"
+        android:text="@string/app_name" />
+</LinearLayout>

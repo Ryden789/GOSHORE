@@ -615,6 +615,51 @@ public class MainActivity extends Activity {
         public String openNotificationSettings() {
             return ReminderScheduler.openNotificationSettings(activity);
         }
+
+        /* ==================== G8 桌面小组件 ==================== */
+
+        /**
+         * 前端把「考试日期 + 今日计划完成度」推给原生，小组件据此重画。
+         *
+         * 小组件在 launcher 进程里跑，读不到 Python/SQLite，所以只能由 APP 推快照
+         * （见 m.js 的 syncWidget，首页/计划页渲染时都会调一次）。
+         *
+         * @param examDate 'YYYY-MM-DD'，可为空（则显示「未设置考试日期」）
+         */
+        @JavascriptInterface
+        public void syncWidget(final String examDate, final int done, final int total) {
+            try {
+                GoshorWidgetProvider.push(activity, examDate, done, total);
+            } catch (Exception ignored) {
+                // 小组件刷新失败不能影响 App 主流程
+            }
+        }
+
+        /** 桌面上是否放了小组件（'1'/'0'，供前端决定要不要提示用户去添加） */
+        @JavascriptInterface
+        public String widgetPlaced() {
+            try {
+                android.appwidget.AppWidgetManager mgr =
+                        android.appwidget.AppWidgetManager.getInstance(activity);
+                if (mgr == null) return "0";
+                int[] ids = mgr.getAppWidgetIds(new android.content.ComponentName(
+                        activity, GoshorWidgetProvider.class));
+                return (ids != null && ids.length > 0) ? "1" : "0";
+            } catch (Exception e) {
+                return "0";
+            }
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // G8：回到前台时重画小组件——跨天/改过考试日期后，天数是按 exam_date 现算的，
+        // 这里重画一次保证不会一直停在昨天的数字（无小组件实例时是空操作）。
+        try {
+            GoshorWidgetProvider.refresh(this);
+        } catch (Exception ignored) {
+        }
     }
 
     @Override

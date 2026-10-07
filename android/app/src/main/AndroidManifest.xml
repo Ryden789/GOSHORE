@@ -52,6 +52,20 @@
             </intent-filter>
         </receiver>
 
+        <!-- G8 桌面小组件：距考试天数 + 今日任务完成度。
+             APPWIDGET_UPDATE 由系统发出（updatePeriodMillis / 开机 / 重启桌面），
+             因此必须 exported 才能收到系统广播（仅该 action，无自定义能力）。 -->
+        <receiver
+            android:name=".GoshorWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/goshor_widget_info" />
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
