@@ -341,6 +341,125 @@ def snapshot_to(dest: Path | str) -> None:
         src.close()
 
 
+# ---------------------------------------------------------------- 个人库初始化
+#
+# ⚠ 为什么首次建库必须**串行**（2026-10-09 定位，此前表现为手机端首屏随机
+#   「加载失败：attempt to write a readonly database」）：
+#
+#   手机端个人库是「多身份 + 每请求一条新连接」的用法：首页首屏会并发打
+#   /api/stats + /api/study-plan + /api/paper-drafts（`static/m/m.js` 里
+#   Promise.all 那处），三条连接同时去**创建**同一个还不存在的库文件 ——
+#   其中一条的建表语句就会拿到 `SQLITE_READONLY`
+#   （`attempt to write a readonly database`）。
+#
+#   实测口径（6 线程并发，全部对新建个人库调 connect()）：
+#     - 库**不存在 / 0 字节** + 并发建表              → 挂 1~4 条 readonly
+#     - 库**已建好**（文件非空）之后并发建表           → 0 报错
+#     - 把 `_ensure_wal` 置空（完全不切 WAL）再并发    → **仍然报错**
+#     - 空库 + 并发建表，但逐条 `execute`（非脚本）    → 0 报错
+#   ⇒ 不安全的是「并发首次创建同一个库文件」这一步本身，**与 WAL 无关**。
+#   另实测：对着 0 字节文件开出来的连接，在库被别人建好之后**能读不能写**。
+#
+#   所以修法有两层：
+#   ① 首次建库整段串行（按库文件粒度的锁），且必须发生在**开长期连接之前**；
+#      空文件是否已建好只能用**文件系统**判断 —— 不能「先开连接再读版本」，
+#      因为空库上开出来的连接不可信（见 `_personal_db_blank` 的说明）。
+#   ② 判定「是否已初始化完成」用**读 `_meta.schema_version`**，刻意不做
+#      进程内布尔缓存：手机端备份还原会替换 users/ 下的库文件，缓存会让
+#      还原出来的旧库跳过迁移。
+#   库一旦建好，后续连接读到版本已是最新，直接走无锁快路径。
+
+# 个人库最新 schema 版本，必须与 `_migrate()` 最后一步写入的值一致
+# （tests/test_personal_db_init.py::test_schema_version_constant_matches_migrate 守住）。
+SCHEMA_VERSION = 12
+
+_personal_init_locks: dict[str, threading.Lock] = {}
+_personal_init_guard = threading.Lock()
+
+
+def _personal_init_lock(key: str) -> threading.Lock:
+    """取某个个人库文件的初始化锁（同一路径全程共用一个）。"""
+    with _personal_init_guard:
+        lock = _personal_init_locks.get(key)
+        if lock is None:
+            lock = _personal_init_locks[key] = threading.Lock()
+        return lock
+
+
+def _personal_needs_init(conn: sqlite3.Connection) -> bool:
+    """个人库是否需要（首次）建表 / 迁移。
+
+    库还没建（`_meta` 不存在 → `no such table`）或版本落后都算需要。
+    刻意不做进程内缓存，见上方说明。
+    """
+    try:
+        row = conn.execute(
+            "SELECT value FROM _meta WHERE key='schema_version'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return True                      # 空库：`_meta` 还没建
+    return not row or int(row["value"]) < SCHEMA_VERSION
+
+
+def _open_personal(own_path: Path) -> sqlite3.Connection:
+    """打开个人库并只读附加共享题库（不建表、不迁移，便于失败后重开）。"""
+    # uri=True：连接级开启 URI 识别，ATTACH 的只读 file: URI 才生效
+    conn = sqlite3.connect(own_path.resolve().as_uri(),
+                           check_same_thread=False, uri=True, timeout=15)
+    _tune(conn)
+    shared_uri = DB_PATH.resolve().as_uri() + "?mode=ro"
+    conn.execute("ATTACH DATABASE ? AS shared", (shared_uri,))
+    return conn
+
+
+def _personal_db_blank(own_path: Path) -> bool:
+    """个人库文件是否「还不存在 / 是 0 字节」（= 从未初始化过）。
+
+    为什么用文件系统判断，而不是「先开连接再读版本」：**对着 0 字节文件开出来的
+    连接不能再用**。它的「这是个空库」状态是开连接时缓存的，等库被别的连接建好
+    之后，这条连接上任何写语句都会报 `attempt to write a readonly database`
+    （实测：6 线程并发首次建库时必现）。所以必须先在文件系统层面确认库已经建好，
+    再去开长期连接。
+    """
+    try:
+        return own_path.stat().st_size == 0
+    except OSError:
+        return True                      # 文件还不存在
+
+
+def _init_personal_db(own_path: Path, key: str) -> None:
+    """在初始化锁内完成个人库的「切 WAL + 建表 + 迁移」（幂等，可重复调用）。
+
+    用自己的临时连接，跑完即关 —— 不要复用调用方那条连接：它可能是对着
+    空库/半初始化库开出来的「陈旧连接」。
+    """
+    conn = _open_personal(own_path)
+    try:
+        _ensure_wal(conn, key)
+        conn.executescript(PERSONAL_SCHEMA)
+        _migrate(conn)  # 版本化迁移（个人库）
+    finally:
+        conn.close()
+
+
+def _personal_writable(conn: sqlite3.Connection) -> bool:
+    """探测这条连接是否**真的可写**。
+
+    首次建库的竞态下，SQLite 偶尔会给出一个「只读」连接 —— 它上面任何写语句都会
+    报 `attempt to write a readonly database`（调用方拿到的第一条 INSERT 就炸）。
+    这里用 `BEGIN IMMEDIATE` 抢一次写锁来验，拿到就立刻 `ROLLBACK`，
+    **不产生任何写入**；实测约 0.18ms/次，相对一次请求的开销可忽略。
+    """
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError as e:
+        if "readonly" in str(e).lower():
+            return False
+        raise
+    conn.execute("ROLLBACK")
+    return True
+
+
 def connect() -> sqlite3.Connection:
     uid = _current_uid.get()
     if not IS_MOBILE or uid is None:
@@ -354,21 +473,54 @@ def connect() -> sqlite3.Connection:
     # 手机多身份：个人库为主库，共享题库只读附加
     users_dir = DB_PATH.parent / "users"
     users_dir.mkdir(exist_ok=True)
-    # uri=True：连接级开启 URI 识别，ATTACH 的只读 file: URI 才生效
     own_path = users_dir / f"data_{uid}.db"
-    # uri=True：连接级开启 URI 识别，ATTACH 的只读 file: URI 才生效
-    own_uri = own_path.resolve().as_uri()
-    conn = sqlite3.connect(own_uri, check_same_thread=False, uri=True, timeout=15)
-    _tune(conn)
-    _ensure_wal(conn, str(own_path))    # 共享库以只读 URI 附加（file URI 自动识别）
-    shared_uri = DB_PATH.resolve().as_uri() + "?mode=ro"
-    conn.execute("ATTACH DATABASE ? AS shared", (shared_uri,))
-    conn.executescript(PERSONAL_SCHEMA)
-    _migrate(conn)  # 版本化迁移（个人库）
-    # 旧版个人库补列（CREATE IF NOT EXISTS 不会加列）
-    _acols = [r["name"] for r in conn.execute("PRAGMA table_info(answers)")]
-    if "guessed" not in _acols:
-        conn.execute("ALTER TABLE answers ADD COLUMN guessed INTEGER DEFAULT 0")
+    key = str(own_path)
+
+    # ① 首次建库：必须在**打开任何长期连接之前**、且在锁内完成。
+    #    并发首次创建同一个库文件时，别的连接会拿到 readonly（见上方说明）。
+    if _personal_db_blank(own_path):
+        with _personal_init_lock(key):
+            if _personal_db_blank(own_path):
+                _init_personal_db(own_path, key)
+
+    # ② 到这里文件必然已非空，开出来的连接可以安全使用。仍加一层兜底：
+    #    WAL 下「最后一条连接关闭」会 checkpoint 并**删除** `-wal`/`-shm`，
+    #    此时另一条仍映射着旧 `-shm` 的连接，下一次写会拿到
+    #    `attempt to write a readonly database`。这是瞬时状态，换一条新连接即可
+    #    （与 `_decay_worker` 的兜底同理）。实测在 C: 盘上并发 8~16 线程时
+    #    单次连接撞上它的概率约 17%，所以重试到 6 次并递增退避。
+    last_err: Exception | None = None
+    for attempt in range(6):
+        conn = _open_personal(own_path)
+        try:
+            if _personal_needs_init(conn):
+                # 版本落后（老库升级），或别人刚建到一半（`_meta` 已建、版本
+                # 还没写）：整段串行，并换一条**新建**的连接继续用。
+                conn.close()
+                with _personal_init_lock(key):
+                    _init_personal_db(own_path, key)
+                conn = _open_personal(own_path)
+            # 稳态补表：全是 `CREATE ... IF NOT EXISTS`，幂等；可兜住「新表只加了
+            # SCHEMA 忘了写迁移」的历史库。此时库已建好、版本最新，不再跑迁移。
+            conn.executescript(PERSONAL_SCHEMA)
+            # 旧版个人库补列（CREATE IF NOT EXISTS 不会加列）
+            _acols = [r["name"] for r in conn.execute("PRAGMA table_info(answers)")]
+            if "guessed" not in _acols:
+                conn.execute(
+                    "ALTER TABLE answers ADD COLUMN guessed INTEGER DEFAULT 0")
+            if _personal_writable(conn):
+                break
+            last_err = sqlite3.OperationalError("个人库连接不可写")
+        except sqlite3.OperationalError as e:
+            if "readonly" not in str(e).lower():
+                conn.close()
+                raise
+            last_err = e
+        conn.close()
+        time.sleep(0.05 * (attempt + 1))
+    else:
+        raise sqlite3.OperationalError(
+            f"个人库连接连续 6 次不可写（{last_err!r}）db={own_path}")
     # 共享表经 TEMP 视图暴露：documents = 共享题库 + 账号私有导入题
     conn.execute("""
         CREATE TEMP VIEW documents AS
