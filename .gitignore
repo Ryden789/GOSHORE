@@ -16,6 +16,9 @@ data/test*.pdf
 scripts/_*.py
 scripts/_*_tmp/
 .tmp/
+# 宣传材料导出产物（PDF / 逐页 PNG，可由 docs/05-宣传/*.md 重新生成，不分发）
+/output/
+/tmp/
 
 # 安卓构建工具链与产物
 .tools/
