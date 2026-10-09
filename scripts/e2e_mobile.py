@@ -1496,6 +1496,66 @@ def check_browser():
         except Exception as e:
             record(False, PAGE02_NAME, f"异常（{step}）：{e}")
 
+        # ---- CHIP-HEAT：移动组卷页「模块」chip 的选中态不得被正确率热力色覆盖。
+        #      旧实现把 heatCls 刷在 chip 自身 class 上，与 .chip.on 同为 (0,2,0)
+        #      优先级且热力规则在后 —— 已练过的模块（判断推理 / 常识判断）永远显示成
+        #      红色，看着像"取消不掉的选中"。现在背景只表示选中态，正确率走热力圆点。
+        CHIP_NAME = "CHIP-HEAT 移动组卷：模块 chip 选中态唯一，热力色不冒充选中"
+        try:
+            problems = []
+            pc = browser.new_page(viewport={"width": 390, "height": 844})
+            pc.add_init_script(INIT_JS)
+            # 组卷页在开门守卫的锁定名单里：先把 dskip 置成今天，直接进页面
+            pc.add_init_script("""
+              (function () {
+                var d = new Date();
+                var s = d.getFullYear() + '-' +
+                        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+                        String(d.getDate()).padStart(2, '0');
+                try { localStorage.setItem('g:dskip', JSON.stringify(s)); } catch (e) {}
+              })();
+            """)
+            pc.goto(BASE + "/m/#/paper", wait_until="domcontentloaded", timeout=20000)
+            pc.wait_for_selector("#pMods .chip", timeout=20000)
+
+            CHIP_PROBE = """() => {
+              const chips = [...document.querySelectorAll('#pMods .chip')];
+              const bg = c => getComputedStyle(c).backgroundColor;
+              const on = chips.filter(c => c.classList.contains('on'));
+              const off = chips.filter(c => !c.classList.contains('on'));
+              const onBg = [...new Set(on.map(bg))];
+              return {
+                n: chips.length, onN: on.length, onBg: onBg,
+                leaked: off.filter(c => onBg.includes(bg(c)))
+                           .map(c => c.textContent.trim()),
+                dots: chips.filter(c => c.querySelector('.heat-dot')).length,
+              };
+            }"""
+
+            m = pc.evaluate(CHIP_PROBE)
+            if m["n"] < 6:
+                problems.append(f"模块 chip 数量异常：{m}")
+            if m["onN"] != 1:
+                problems.append(f"默认应恰好 1 个 chip 选中，实际 {m['onN']}")
+            if m["leaked"]:
+                problems.append(f"未选中的 chip 与选中色同色（热力色冒充选中）：{m['leaked']}")
+            if m["dots"] < 1:
+                problems.append("没有任何模块 chip 带热力圆点（正确率提示丢失）")
+
+            # 切到另一个模块后，选中态必须唯一转移
+            pc.click('#pMods .chip[data-m="资料分析"]')
+            pc.wait_for_timeout(400)
+            m2 = pc.evaluate(CHIP_PROBE)
+            if m2["onN"] != 1 or m2["leaked"]:
+                problems.append(f"切换模块后选中态不唯一：{m2}")
+
+            record(not problems, CHIP_NAME,
+                   "；".join(problems) if problems
+                   else f"{m['n']} 个 chip，选中唯一（{m['onBg']}），热力圆点 {m['dots']} 个")
+            pc.close()
+        except Exception as e:
+            record(False, CHIP_NAME, f"异常：{e}")
+
         browser.close()
 
 

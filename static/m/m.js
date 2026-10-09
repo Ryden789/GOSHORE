@@ -2485,7 +2485,12 @@ async function renderPractice(auto = "") {
         <span class="chip on" data-m="">全部</span>
         ${mods.map(m => {
           const st = rateMap[m];
-          return `<span class="chip ${st ? heatCls(st.rate) : ""}" data-m="${esc(m)}">${esc(m)}</span>`;
+          /* 选中态与热力色必须分开表达：
+             此前把 heatCls 刷在 chip 自己的 class 上，而 .chip.heat-r 与 .chip.on
+             同为 (0,2,0) 优先级、热力规则又写在后面 —— 结果已练过的模块（如
+             判断推理 / 常识判断）无论选没选中都是红色，看着像"永远被选中、取消不掉"。
+             现在 chip 背景只表示选中态，正确率改用标签前的热力圆点（与下方热力墙图例同款）。 */
+          return `<span class="chip" data-m="${esc(m)}">${st ? `<i class="heat-dot ${heatCls(st.rate)}"></i>` : ""}${esc(m)}</span>`;
         }).join("")}
       </div>
       <div style="display:flex;gap:8px;margin-top:12px">

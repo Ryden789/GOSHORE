@@ -1078,9 +1078,13 @@ body { font-size: var(--base-font); }
   display: block; height: 100%; border-radius: 5px;
   transition: width .45s ease-out;
 }
-.heat-fill.heat-r, .chip.heat-r { background: #b04a38; border-color: #b04a38; color: #fff; min-width: 7px; }
-.heat-fill.heat-y, .chip.heat-y { background: #c9922f; border-color: #c9922f; color: #fff; }
-.heat-fill.heat-g, .chip.heat-g { background: var(--green); border-color: var(--green); color: #fff; }
+/* 修复：热力色曾同时作用于 .chip，而 .chip.heat-* 与 .chip.on 同为 (0,2,0)
+   优先级、本规则又写在 .chip.on 之后 —— 已练过的模块 chip 永远显示成红色，
+   看着像"已选中且取消不掉"。现在热力色只用于 .heat-fill（热力墙进度条），
+   chip 的背景色只表达选中态；模块 chip 的正确率改用 .heat-dot 圆点表达。 */
+.heat-fill.heat-r { background: #b04a38; border-color: #b04a38; color: #fff; min-width: 7px; }
+.heat-fill.heat-y { background: #c9922f; border-color: #c9922f; color: #fff; }
+.heat-fill.heat-g { background: var(--green); border-color: var(--green); color: #fff; }
 .heat-val { font-size: calc(12px * var(--fs)); color: var(--ink-3); white-space: nowrap; }
 .heat-dot {
   display: inline-block; width: 9px; height: 9px; border-radius: 50%;
@@ -1089,6 +1093,8 @@ body { font-size: var(--base-font); }
 .heat-dot.heat-r { background: #b04a38; }
 .heat-dot.heat-y { background: #c9922f; }
 .heat-dot.heat-g { background: var(--green); }
+/* 模块 chip 里的热力圆点：与文字垂直居中对齐，右侧留一点间距 */
+.chip .heat-dot { margin-right: 6px; vertical-align: middle; }
 
 /* 做题页小操作行 */
 .run-mini-actions { display: flex; gap: 9px; margin-bottom: 12px; }
