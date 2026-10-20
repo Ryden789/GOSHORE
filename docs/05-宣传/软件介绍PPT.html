@@ -250,10 +250,92 @@
   /* ===== 页面徽记插图 ===== */
   .emblem{position:absolute;top:60px;right:76px;width:100px;height:100px;pointer-events:none}
   .emblem-center{display:block;margin:0 auto 12px;width:86px;height:86px}
+
+  /* ===== 顶部进度条 ===== */
+  #prog{position:absolute;top:0;left:0;height:2px;width:0;z-index:11;
+    background:linear-gradient(90deg,var(--cinnabar),#c9564a);
+    transition:width .45s cubic-bezier(.2,.7,.2,1)}
+
+  /* ===== 放映控制条（常驻页脚右侧，淡显、悬停加重） ===== */
+  .foot-right{display:flex;align-items:center;gap:20px}
+  #ctrl{display:flex;gap:14px;z-index:12}
+  #ctrl button{font-family:inherit;font-size:11.5px;letter-spacing:.14em;
+    color:var(--ink-soft);opacity:.5;background:none;border:0;padding:2px 0;
+    cursor:pointer;transition:color .2s,opacity .2s;white-space:nowrap}
+  #ctrl button:hover{color:var(--cinnabar);opacity:1}
+  #ctrl button[aria-pressed="true"]{color:var(--cinnabar);opacity:1;
+    text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px}
+  #ctrl .kbd{opacity:.6;margin-left:4px;font-size:10px}
+  #ctrl button:focus-visible{outline:2px solid var(--cinnabar);outline-offset:3px}
+  /* 触摸屏没有悬停，直接给足对比度 */
+  @media (hover:none){
+    #ctrl button{opacity:.85}
+  }
+
+  /* ===== 演讲备注浮层 ===== */
+  #notes{position:fixed;right:24px;top:24px;bottom:92px;width:380px;z-index:98;
+    display:none;overflow-y:auto;border-radius:12px;padding:22px 24px;
+    background:rgba(47,42,38,.97);color:var(--paper);
+    font-family:'Songti SC','STSong','Noto Serif SC','SimSun',serif;
+    font-size:13.5px;line-height:1.95;box-shadow:0 18px 50px rgba(47,42,38,.42)}
+  #notes.show{display:block}
+  #notes h3{font-size:12.5px;font-weight:700;letter-spacing:.22em;color:#d99a90;
+    margin-bottom:8px}
+  #notes .sec{font-size:11px;letter-spacing:.12em;color:#9a8f82;margin-bottom:16px}
+  #notes p{white-space:pre-line}
+  #notes::-webkit-scrollbar{width:6px}
+  #notes::-webkit-scrollbar-thumb{background:rgba(247,242,231,.25);border-radius:3px}
+  /* 画布位置随备注浮层变化平滑过渡 */
+  #canvas{transition:left .35s cubic-bezier(.2,.7,.2,1)}
+  @media (prefers-reduced-motion:reduce){#canvas{transition:none}}
+  /* 窄屏：备注改为底部抽屉，不再挤压画布 */
+  @media (max-width:900px){
+    #notes{right:12px;left:12px;top:auto;bottom:12px;width:auto;max-height:46vh}
+  }
+
+  /* ===== 全屏：留白区域也用纸色，去掉阴影 ===== */
+  html:fullscreen,html:fullscreen body{background:var(--paper)}
+  html:fullscreen #canvas{box-shadow:none}
+  html:-webkit-full-screen,html:-webkit-full-screen body{background:var(--paper)}
+
+  /* ===== 尊重系统「减少动态效果」 ===== */
+  @media (prefers-reduced-motion:reduce){
+    .slide{transition:none}
+    .slide.active .rise{animation:none;opacity:1;transform:none}
+    #prog{transition:none}
+  }
+
+  /* ===== 打印 / 导出 PDF：每页一张 1280×720，无自动分页 ===== */
+  /* 屏幕上看不见；打印时每页内嵌一份页眉页脚，避免整册只在第 1 页出现一次 */
+  .p-chrome{display:none}
+  @media print{
+    @page{size:1280px 720px;margin:0}
+    html,body{height:auto;overflow:visible;background:#fff}
+    #canvas{position:static;transform:none!important;box-shadow:none;
+      width:1280px;height:auto;background:var(--paper)}
+    .slide{position:relative;inset:auto;opacity:1!important;visibility:visible!important;
+      width:1280px;height:720px;overflow:hidden;
+      page-break-after:always;break-after:page}
+    .slide:last-child{page-break-after:auto;break-after:auto}
+    .rise{opacity:1!important;transform:none!important;animation:none!important}
+    #ctrl,#notes,#toast,#dots,#prog{display:none!important}
+    /* 整册共用的那套页眉页脚在打印时不再使用 */
+    #canvas>.chrome-top,#canvas>.chrome-bottom{display:none!important}
+    .p-chrome{display:flex;position:absolute;left:0;right:0;
+      justify-content:space-between;align-items:center;
+      padding:0 80px;font-size:12px;letter-spacing:.22em;color:var(--ink-soft)}
+    .p-chrome-top{top:0;height:56px}
+    .p-chrome-bottom{bottom:0;height:52px}
+    .p-chrome .brand{display:flex;align-items:center;gap:10px}
+    .p-chrome .pageno{font-variant-numeric:tabular-nums}
+    .p-chrome .pageno b{color:var(--cinnabar);font-size:15px}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
 </style>
 </head>
 <body>
 <div id="canvas">
+  <div id="prog"></div>
 
   <div class="chrome-top">
     <span class="brand"><span class="seal-dot">上</span>GOSHORE · 上岸题库</span>
@@ -261,7 +343,14 @@
   </div>
   <div class="chrome-bottom">
     <span>事业单位联考 C 类备考工具</span>
-    <span class="pageno"><b id="cur">01</b> / 11</span>
+    <span class="foot-right">
+      <span class="pageno"><b id="cur">01</b> / <span id="total">12</span></span>
+      <span id="ctrl">
+        <button type="button" id="btnFs" aria-pressed="false">全屏<span class="kbd">F</span></button>
+        <button type="button" id="btnNotes" aria-pressed="false">备注<span class="kbd">N</span></button>
+        <button type="button" id="btnPrint">打印 / PDF<span class="kbd">P</span></button>
+      </span>
+    </span>
   </div>
   <div id="dots"></div>
 
@@ -798,57 +887,219 @@
 
 </div>
 
+<aside id="notes" aria-live="polite" aria-label="演讲备注"></aside>
+
 <script>
 (function(){
   var canvas=document.getElementById('canvas');
   var slides=[].slice.call(document.querySelectorAll('.slide'));
   var dots=document.getElementById('dots');
   var cur=document.getElementById('cur');
+  var totalEl=document.getElementById('total');
+  var prog=document.getElementById('prog');
   var idx=0;
+
+  /* 页码总数由实际幻灯片数决定，避免手写数字与实际页数脱节 */
+  totalEl.textContent=slides.length;
 
   slides.forEach(function(s,i){
     var d=document.createElement('i');
     if(i===0)d.className='on';
     d.onclick=function(){go(i)};
     dots.appendChild(d);
+
+    /* 每页内嵌一份打印专用页眉页脚（屏幕下 display:none） */
+    var hd=document.createElement('div');
+    hd.className='p-chrome p-chrome-top';
+    hd.innerHTML='<span class="brand"><span class="seal-dot">上</span>GOSHORE · 上岸题库</span>'
+      +'<span>2026 · 软件介绍</span>';
+    var ft=document.createElement('div');
+    ft.className='p-chrome p-chrome-bottom';
+    ft.innerHTML='<span>事业单位联考 C 类备考工具</span>'
+      +'<span class="pageno"><b>'+(((i+1)<10)?'0':'')+(i+1)+'</b> / '+slides.length+'</span>';
+    s.appendChild(hd);
+    s.appendChild(ft);
   });
 
-  function go(n){
+  function pad2(n){return (n<10?'0':'')+n}
+
+  function go(n,fromHash){
     if(n<0||n>=slides.length)return;
     slides[idx].classList.remove('active');
     dots.children[idx].classList.remove('on');
     idx=n;
     slides[idx].classList.add('active');
     dots.children[idx].classList.add('on');
-    cur.textContent=(idx+1<10?'0':'')+(idx+1);
+    cur.textContent=pad2(idx+1);
+    prog.style.width=((idx+1)/slides.length*100)+'%';
+    renderNotes();
+    /* 用 replaceState 而非直接改 hash：不触发浏览器滚动定位，也不会堆历史记录 */
+    if(!fromHash&&history.replaceState){
+      history.replaceState(null,'','#'+(idx+1));
+    }
   }
 
+  /* 备注浮层打开时把画布让到左侧，保证幻灯片完整可见 */
   function fit(){
-    var s=Math.min(window.innerWidth/1280,window.innerHeight/720);
+    var w=window.innerWidth,h=window.innerHeight;
+    var n=document.getElementById('notes');
+    var panel=(n&&n.classList.contains('show')&&w>900)?428:0;
+    var avail=w-panel;
+    var s=Math.min(avail/1280,h/720);
+    canvas.style.left=(avail/2)+'px';
     canvas.style.transform='translate(-50%,-50%) scale('+s+')';
   }
-  window.addEventListener('resize',fit);fit();
+  window.addEventListener('resize',fit);
 
-  document.addEventListener('keydown',function(e){
-    if(['ArrowRight','ArrowDown','PageDown',' '].indexOf(e.key)>=0){e.preventDefault();go(idx+1)}
-    if(['ArrowLeft','ArrowUp','PageUp'].indexOf(e.key)>=0){e.preventDefault();go(idx-1)}
-    if(e.key==='Home')go(0);
-    if(e.key==='End')go(slides.length-1);
+  /* ===================== 演讲备注 ===================== */
+  var NOTES=[
+    {n:1,t:"封面 · 约 30 秒",x:"大家好，我是这款软件的开发者。今天给大家介绍的，是我为事业单位联考 C 类考生做的一款题库应用——上岸题库。\n\n先说三个数字：23,491 道题目、完全离线、零会员费。这三个数字，就是它和市面上所有刷题 App 的根本区别。\n\n接下来用几分钟，讲清楚它是做什么的、凭什么信得过、怎么用。"},
+    {n:2,t:"痛点 · 约 45 秒",x:"讲产品之前，先问大家三个问题。\n\n第一，你有没有为\"AI 错题讲解\"这类功能开过会员？一个月几十块，备考半年就是几百块——最值钱的功能，全锁在付费墙后面。\n\n第二，你有没有在刷题刷到心流时，被开屏广告或课程推销打断？备考最宝贵的是专注，但很多 App 的商业模式恰恰靠打断你来赚钱。\n\n第三，你的错题本、作答记录存在哪里？存在别人的服务器上。没网就刷不了题，想导出自己的数据更是难上加难。\n\n所以我的想法很简单：能不能有一款工具，不收会员、不打广告、只为你上岸？这就是上岸题库的起点。"},
+    {n:3,t:"定位 · 约 40 秒",x:"一句话概括：把大平台的会员功能，装进你自己的口袋。\n\n三个关键词。\n\n本地——整个题库和你的所有作答数据都在你自己的设备上，SQLite 数据库，不上传任何服务器。\n\n智能——接入 DeepSeek 大模型，错题可以问为什么，还能生成变式题再练。它不是让你刷题，是让你把错题真正搞懂。\n\n免费——代码全部开源在 GitHub，功能全量开放。因为它首先是为我自己备考做的，好东西应该分享。"},
+    {n:4,t:"题库家底 · 约 40 秒",x:"先看家底。23,491 道题目（其中真题 12,393 道），言语、判断、数量、资料加综应专区，足够支撑从基础到冲刺的全周期刷题。\n\n每道题有 easy、mid、hard 三档难度标签，老题难度缺失的，软件会用启发式算法自动补全，保证全库覆盖，按自己的水平精准选题。\n\n言语专项还有 990 个高频词和 1,150 张词语辨析卡，全部人工清理过，没有注水卡。\n\n题库更新走热更新包，原则是只增不删：旧题即使废弃也只做标记，你过去的作答记录永远不会变成死链。"},
+    {n:5,t:"功能全景 · 约 50 秒",x:"（指出红色卡片）\n\n功能全景，八项，一页看完。\n\n红色这张是核心——AI 错题讲解，下一页专门展开。\n\n围绕它还有一整套：AI 模拟卷，按真题结构生成新卷，列表里带【AI模拟】标识，和真题分得清清楚楚；真题套卷，整卷计时、末分钟红色预警、自动交卷；速算练习，资料分析提速专训——这在别家是会员功能，这里免费。\n\n还有三个坚持用的就会喜欢上：错题歼灭，错题自动归档重练，答对即歼灭；成就称号，7 级进阶加连对撒花；学习报告，每日战报一键导出分享。加上辨析卡库检索，成语实词随时查。"},
+    {n:6,t:"补充能力 · 约 45 秒",x:"前面是主干，这一页是最近补齐的八项细节——都是实际用起来才会疼的地方。\n\n刷题刷到一半被打断，断点续做自动存草稿，回来接着做；怕自己坚持不下来，每日提醒加首页倒计时横幅，考前 7 天、3 天、1 天都会提醒；想量化进度，每日目标环把做题数和时长合起来算，连续达标天数一目了然。\n\n做对了但太慢，和不会做是两回事——用时分析专门把「会做但超时」挑出来，那才是提速空间最大的地方。知识点忘了，内置速查手册：行测 58 个考点、综应 159 个考点，随手一搜就能跳过去。\n\n手机上，单手翻题加左右滑动，夜间模式三态和四档字号，晚上刷题不刺眼；设置页的分区按钮在窄屏上也会自动换行，不用横向拖着找。另外这一版还专门做了无障碍优化——所有可点击的列表行都改成了键盘可聚焦、可回车激活的原生控件，焦点框看得见，弹窗打开后 Tab 只在自己内部循环、Esc 一按就关、关掉焦点还会还给原来的位置，屏幕阅读器和纯键盘用户都能顺畅走完全流程。换设备，多设备加密同步走 WebDAV，口令自己掌握，服务端拿到的只有密文。数据要带走，错题导出可打印页、分级清空二次确认、备份走一致性快照——你的数据随时拿得回来。"},
+    {n:7,t:"AI 讲解 · 约 50 秒",x:"真正的王牌，单独讲一页。\n\n普通题库做错题，是告诉你\"正确答案选 C\"。上岸题库是三个动作：\n\n第一步，错题自动进入 AI 讲解队列；\n\n第二步，AI 不只给答案——给完整解题路径，并把每个选项逐项辨析：B 为什么错、D 错在哪、和 C 差在哪个词。言语题的差距往往就在两个词之间，这一步最值钱；\n\n第三步，生成同型变式题再练。细节是：变式题先确定答案、再倒推构造数据，并要求 AI 自算验证，从机制上避免\"答案卡在区间边缘\"这类 AI 出题的通病。\n\n一句话：错题的第二落点，才是分数增长的地方。\n\n【演示】（可选，约 1 分钟）现场做错一道题，点击 AI 讲解，展示思路辨析和变式题。"},
+    {n:8,t:"备考闭环 · 约 40 秒",x:"把刚才讲的功能串起来，就是这套软件的学习方法论——五步闭环。\n\n刷题训练，按模块按难度精准刷；做错的题自动归档进错题本；然后 AI 讲解，讲透为什么错；接着变式验证，换个数字再考你一遍；最后报告复盘，数据告诉你强弱项在哪、明天练什么。\n\n市面上大多数工具只做了第一步。上岸题库把五步连成一个环——每天走一遍闭环，把每一道错题变成分数，进步看得见。"},
+    {n:9,t:"竞品对比 · 约 40 秒",x:"直接和主流题库比，六个维度。\n\nAI 错题讲解：那边会员专属，这边全量免费。离线刷题：那边要联网，这边完全离线。个人数据：那边存云端，这边本机自主可控。速算练习：那边部分要会员，这边内置免费。广告：那边开屏加推送，这边零广告。价格：那边订阅制，这边永久免费、代码开源。\n\n不是说主流平台不好，它们的题量和课程体系很强。但如果你预算有限、重视数据主权、想要安静刷题——上岸题库就是为你做的。"},
+    {n:10,t:"双端使用 · 约 35 秒",x:"怎么用？两种方式。\n\n网页版：电脑启动本地服务，手机、平板浏览器直接访问，全平台覆盖，零安装门槛。\n\n安卓 APP：安装包把 Python 后端、数据库、两万三千道题全部内置，装上就能独立运行——不依赖电脑，不依赖网络。地铁上、排队时随时刷一套。"},
+    {n:11,t:"质量与安全 · 约 45 秒",x:"有人会问：免费的软件，靠不靠谱？\n\n三个数字回答：回归测试全部通过——pytest 831 条、端到端 78 项断言全绿、14 个静态校验器零失败；手写代码 6.3 万多行，加上数据约 6.8 万行；架构上 Python 后端占 52%，安卓原生层只占 2%——轻壳重内，能力都在后端逻辑里。\n\n可靠性五道保险：启动自检，每次打开自动体检；版本化迁移，数据库升级不丢历史；热更新，题库只增不删；本地可备份，账号和学习记录一键恢复；全量开源，每一行代码都在 GitHub 上，隐私零上传。另外，电脑端和手机端是两套独立实现，凡是两端必须一致的逻辑，都有校验器把真实函数抽出来跑断言——不会出现\"电脑上是对的、手机上散了\"。"},
+    {n:12,t:"结尾 · 约 40 秒",x:"最后总结一句：备考路上，少一个会员，多一份专注。\n\n上岸题库不收你一分钱，不弹一条广告，只默默帮你把每一道错题变成上岸的台阶。\n\n【演示】（现场点击两个按钮）\n\n页面上这两个按钮都是真的：点左边这个，模拟器里的上岸题库 APP 现场拉起；点右边这个，自动检测本地服务并打开网页版。\n\n安卓用户装 APK 即可独立使用，其他设备浏览器打开网页版就行。代码在 GitHub 完全开源，搜索 GOSHORE 就能找到。\n\n欢迎大家试用，也欢迎提需求、提问题——这款软件会一直更新下去。谢谢大家！"}
+  ];
+
+  var notesEl=document.getElementById('notes');
+  var btnNotes=document.getElementById('btnNotes');
+
+  function renderNotes(){
+    var n=NOTES[idx];
+    if(!n){notesEl.innerHTML='';return}
+    notesEl.innerHTML='<h3>第 '+n.n+' 页 · '+n.t.split(' · ')[0]+'</h3>'
+      +'<div class="sec">'+n.t+'</div>'
+      +'<p></p>';
+    notesEl.querySelector('p').textContent=n.x;
+  }
+
+  function toggleNotes(on){
+    var show=(on===undefined)?!notesEl.classList.contains('show'):on;
+    notesEl.classList.toggle('show',show);
+    btnNotes.setAttribute('aria-pressed',show?'true':'false');
+    if(show)renderNotes();
+    fit();
+  }
+  btnNotes.addEventListener('click',function(){toggleNotes()});
+
+  /* ===================== 全屏 ===================== */
+  var btnFs=document.getElementById('btnFs');
+
+  function isFs(){
+    return !!(document.fullscreenElement||document.webkitFullscreenElement);
+  }
+  function toggleFs(){
+    if(isFs()){
+      (document.exitFullscreen||document.webkitExitFullscreen).call(document);
+    }else{
+      var el=document.documentElement;
+      var fn=el.requestFullscreen||el.webkitRequestFullscreen;
+      if(!fn){toast('当前浏览器不支持全屏，可按 F11');return}
+      var p=fn.call(el);
+      if(p&&p.catch)p.catch(function(){toast('全屏被浏览器拦截，可按 F11')});
+    }
+  }
+  btnFs.addEventListener('click',toggleFs);
+  document.addEventListener('fullscreenchange',syncFs);
+  document.addEventListener('webkitfullscreenchange',syncFs);
+  function syncFs(){
+    var on=isFs();
+    btnFs.setAttribute('aria-pressed',on?'true':'false');
+    btnFs.innerHTML='退出全屏<span class="kbd">Esc</span>';
+    if(!on)btnFs.innerHTML='全屏<span class="kbd">F</span>';
+    fit();
+  }
+
+  /* 双击画布也可全屏，但双击文字链接时不触发 */
+  canvas.addEventListener('dblclick',function(e){
+    if(e.target.closest('a,button'))return;
+    toggleFs();
   });
 
+  /* ===================== 打印 ===================== */
+  var btnPrint=document.getElementById('btnPrint');
+  btnPrint.addEventListener('click',function(){
+    toast('在打印对话框里选择「另存为 PDF」');
+    setTimeout(function(){window.print()},480);
+  });
+
+  /* ===================== 键盘 ===================== */
+  document.addEventListener('keydown',function(e){
+    /* 备注浮层里按方向键是滚动，不是翻页 */
+    if(e.target&&e.target.closest&&e.target.closest('#notes')){
+      if(e.key==='Escape')toggleNotes(false);
+      return;
+    }
+    if(['ArrowRight','ArrowDown','PageDown',' '].indexOf(e.key)>=0){
+      e.preventDefault();go(idx+1);return;
+    }
+    if(['ArrowLeft','ArrowUp','PageUp'].indexOf(e.key)>=0){
+      e.preventDefault();go(idx-1);return;
+    }
+    if(e.key==='Home'){e.preventDefault();go(0);return}
+    if(e.key==='End'){e.preventDefault();go(slides.length-1);return}
+
+    var k=e.key.toLowerCase();
+    if(k==='f'){e.preventDefault();toggleFs();return}
+    if(k==='n'){e.preventDefault();toggleNotes();return}
+    if(k==='p'){e.preventDefault();btnPrint.click();return}
+
+    /* 数字键 1-9 直接跳页 */
+    if(/^[1-9]$/.test(e.key)){
+      var target=parseInt(e.key,10)-1;
+      if(target<slides.length){e.preventDefault();go(target)}
+    }
+  });
+
+  /* ===================== 滚轮翻页 ===================== */
   var wheelLock=false;
   document.addEventListener('wheel',function(e){
-    if(wheelLock)return;wheelLock=true;
+    /* 在备注浮层里滚动时不翻页 */
+    if(e.target&&e.target.closest&&e.target.closest('#notes'))return;
+    if(wheelLock)return;
+    wheelLock=true;
     setTimeout(function(){wheelLock=false},450);
     if(e.deltaY>0)go(idx+1);else go(idx-1);
   },{passive:true});
 
-  var tx=0;
-  document.addEventListener('touchstart',function(e){tx=e.touches[0].clientX},{passive:true});
-  document.addEventListener('touchend',function(e){
-    var dx=e.changedTouches[0].clientX-tx;
-    if(Math.abs(dx)>50){dx<0?go(idx+1):go(idx-1)}
+  /* ===================== 触摸翻页 ===================== */
+  /* 修：原始实现 tx 初值 0，若只收到 touchend（如系统手势）会把 dx 算成巨大值导致误翻页 */
+  var touchX=null,touchY=null;
+  document.addEventListener('touchstart',function(e){
+    if(e.touches.length!==1){touchX=null;return}
+    touchX=e.touches[0].clientX;
+    touchY=e.touches[0].clientY;
   },{passive:true});
+  document.addEventListener('touchend',function(e){
+    if(touchX===null)return;
+    var t=e.changedTouches[0];
+    var dx=t.clientX-touchX, dy=t.clientY-touchY;
+    touchX=null;touchY=null;
+    /* 只认横向滑动，避免纵向滚动被误判成翻页 */
+    if(Math.abs(dx)>50&&Math.abs(dx)>Math.abs(dy)*1.2){
+      dx<0?go(idx+1):go(idx-1);
+    }
+  },{passive:true});
+
+  /* ===================== hash 定位（可分享、刷新保位） ===================== */
+  function fromHash(){
+    var m=/^#(\d+)$/.exec(location.hash||'');
+    if(m){
+      var n=parseInt(m[1],10)-1;
+      if(n>=0&&n<slides.length)return n;
+    }
+    return -1;
+  }
+  window.addEventListener('hashchange',function(){
+    var n=fromHash();
+    if(n>=0&&n!==idx)go(n,true);
+  });
 
   /* 网页版按钮：探测本地服务后再打开，未启动则提示 */
   var toastEl=document.createElement('div');
@@ -902,6 +1153,12 @@
         });
     });
   }
+
+  /* ===================== 初始化 ===================== */
+  var start=fromHash();
+  fit();
+  go(start>=0?start:0,start>=0);
+  if(!location.hash&&history.replaceState)history.replaceState(null,'','#1');
 })();
 </script>
 </body>
