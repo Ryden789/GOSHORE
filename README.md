@@ -58,24 +58,27 @@
 
 | 类别 | 数量 |
 |---|---|
-| 题目总量 | 23,491（其中真题 12,393） |
-| 判断推理 | 14,744 |
-| 资料分析 | 7,642 |
+| 入库文档总量 | 23,491 篇（真题 12,393 / 考点 10,375 / 材料 717 / 其他 6） |
+| 判断题（判断推理） | 7,721 |
+| 资料分析 | 3,571 |
 | 言语理解 | 441 |
 | 常识判断 | 349 |
 | 数量关系 | 247 |
 | 综合分析 | 64 |
 | 词语辨析卡 | 1,150 张（花生高频词 + 扩充词表） |
 
+> 上表「各模块」均为**真题**口径（`documents.kind='真题'`），不含考点篇目。
 > 题库为**本地私有题库**（`data/goshor.db`），不随仓库分发，需自备题源后通过导入功能录入。
+> 数字口径：`SELECT module, COUNT(*) FROM documents WHERE kind='真题' GROUP BY module`。
 
 ## 技术栈
 
 - **后端**：Python 3.13 / FastAPI / SQLite（FTS5 全文检索）/ httpx
 - **前端**：原生 HTML + CSS + JavaScript（无构建依赖，hash 路由单页应用），「书房纸墨风」设计（米白宣纸底 + 墨色文字 + 朱砂印章色）；桌面端与移动端各一套独立实现（`static/app.js` / `static/m/m.js`）
-- **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题；多模态用 vision 模型）
+- **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-v4.1-flash-20261017`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
-- **桌面端**：支持 PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）
+- **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
+- **测试**：pytest 852 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
 
 ## 快速开始（首次使用顺序）
 
@@ -117,16 +120,38 @@ python run.py
 - **日志位置**：`data\logs\desktop-YYYYMMDD.log`（exe 无控制台，出问题看这里）。
 - **环境要求**：Windows 10/11 64 位 + WebView2 运行时（Win11 自带；Win10 若缺，需装微软的 Evergreen Runtime）。
 
+**目录约定（打包后为什么数据不会丢）**：`app/config.py` 把两类路径分开算，这是 exe 能安全使用的关键 ——
+
+| 常量 | 源码运行 | 冻结成 exe 后 |
+|---|---|---|
+| `BUNDLE_DIR` | 仓库根 | `_MEIPASS`（临时解压目录，只读） |
+| `BASE_DIR` | 仓库根 | **exe 所在目录** |
+| `DATA_DIR` | `<根>/data` | **`<exe目录>/data`** |
+
+> 若把用户数据算到 `BUNDLE_DIR` 下，单文件模式每次启动都会新建临时目录，**关闭窗口后题库和作答记录全部消失**。因此 `static/` 走 `BUNDLE_DIR`，`data/` 一律走 `BASE_DIR`。
+
+**首次导入大量题库时**：桌面壳发现端口已监听后会放宽等待上限到 10 分钟（每 10 秒打印进度），不会在 30 秒时误判「启动失败」。几万篇 md 的全量索引只发生一次。
+
+桌面快捷方式（重新打包后跑一次即可更新指向）：
+
+```bash
+python tools/create_shortcut.py            # 建到当前用户桌面
+python tools/create_shortcut.py --public   # 建到公共桌面
+python tools/create_shortcut.py --remove   # 删除
+```
+
 重新打包（改了代码后）：
 
 ```bash
 pip install pyinstaller pillow
 python tools/build_desktop_exe.py          # 产物：dist/GOSHORE上岸工作台.exe
+python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 ```
 
 > 打包配置里**刻意不包含 `data/`**：那是用户的学习库（动辄几百 MB），打进 exe 会让安装包膨胀、用户数据随版本被覆盖，也无法把软件单独发给别人。
+> exe 体积约 89.5 MB；`--onefile` 每次启动要解包，机械盘 + 杀软实时扫描下首次双击可能等几秒。若要更快的启动，可把 `--onefile` 换成 `--onedir`。
 
-
+### 哪些能离线用，哪些需要联网 / API Key
 
 | 能力 | 是否需要联网 / API Key |
 |---|---|
@@ -139,10 +164,15 @@ python tools/build_desktop_exe.py          # 产物：dist/GOSHORE上岸工作�
 
 ```
 GOSHORE/
-├── run.py                 # 启动入口
-├── start.bat              # Windows 一键启动
+├── run.py                 # 源码启动入口（python run.py）
+├── start.bat              # Windows 一键启动（按 settings.json 的实际端口探活）
+├── desktop.py             # 桌面壳：pywebview 原生窗口 + 后台 uvicorn 线程
+├── desktop_entry.py       # 单文件 exe 入口（--windowed 下的 stdout 重定向与兜底）
+├── start-desktop.bat      # 桌面模式启动（需已装 pywebview）
+├── requirements-desktop.txt  # 桌面模式可选依赖
 ├── app/                   # 后端
 │   ├── main.py            # FastAPI 路由（题库 / AI / 组卷 / 导入 / 备份 / 同步…）
+│   ├── config.py          # 目录常量（BUNDLE_DIR / BASE_DIR）+ 设置读写（DPAPI 加密）
 │   ├── db.py              # SQLite 存储层 + FTS 索引 + 版本化迁移 _migrate()
 │   ├── ai.py              # DeepSeek 流式对话（含多模态）
 │   ├── accounts.py        # 多账号（移动端 accounts.db + data_<uid>.db）
@@ -164,7 +194,11 @@ GOSHORE/
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
 ├── tests/                 # pytest 用例（852 条）
-├── tools/                 # 前端静态校验器（15 个 .mjs）
+├── tools/                 # 校验器（15 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
+│   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
+│   ├── create_shortcut.py     # 建/删桌面快捷方式
+│   ├── make_desktop_icon.py   # 由 PWA 图标生成多尺寸 .ico
+│   └── shot_desktop_window.py # 截取运行中的窗口（验证打包产物）
 ├── scripts/               # 导入 / 打包 / E2E 回归脚本
 └── docs/                  # 开发文档（按用途归类，见 docs/）
 ```
@@ -195,6 +229,21 @@ python scripts/e2e_mobile.py
 - **题库为空 / 搜不到题**：题库需自行导入。到「导入」页导入题源后，可用「设置 → 重建题库索引」刷新检索。
 - **AI 提示未配置**：到「设置」填 DeepSeek API Key；未配置不影响本地刷题、复习与统计。
 - **备份在哪 / 怎么恢复**：桌面端「设置 → 多设备同步」与移动端「设置 → 备份与恢复」提供「导出备份 / 选择备份文件恢复」。备份默认不含 API Key，恢复后账号密码原样可用。
+
+### 桌面软件版（exe）专属问题
+
+- **双击没反应**：先看 `data\logs\desktop-YYYYMMDD.log`。exe 是 `--windowed`，没有控制台，所有输出都写这个文件。
+- **不要放在会被同步/删除的目录**：`--onefile` 每次启动会把自身解包到临时目录；把 exe 放在 `Program Files` 等**无写权限**的目录会让 `data\` 建不出来。建议放 `D:\GOSHORE-Desktop\` 这类可写目录。
+- **首次启动慢**：89.5 MB 单文件要解包，机械盘 + 杀毒实时扫描下可能等几秒；建大规模题库索引时会额外耗时，壳会打印进度，不会误判失败。
+- **杀软误报**：无数字签名的 PyInstaller 产物偶发误报，添加信任即可。
+- **换新 exe 后快捷方式失效**：把新 exe 覆盖到部署目录，再跑一次 `python tools/create_shortcut.py`。
+
+### AI 模型相关
+
+- **默认模型**：`deepseek-v4.1-flash-20261017`。可在「设置 → 题库与 AI」里改。
+- **报错 `Model Not Exist` / 400**：说明该模型名不被当前端点接受，改成 `deepseek-flash`（跟随最新 Flash）即可。
+- **看图（拍照识题 / PDF 图形题）**：默认跟随主模型；若主模型不支持多模态，把「视觉模型」单独设为 `deepseek-flash`。
+- **Key 有效性无法先行探测**：DeepSeek 的认证校验**先于**模型校验，用无效 Key 探测任何模型名都会返回 401，因此只有真实 Key 才能确认模型是否可用。
 
 ## 数据与隐私
 
