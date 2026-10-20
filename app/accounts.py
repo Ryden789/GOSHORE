@@ -13,10 +13,12 @@ import contextlib
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import shutil
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -175,18 +177,47 @@ def _session_path() -> Path:
     return _users_dir / "session.json"
 
 
+# 会话文件的进程内互斥：set_session 是「写 tmp → 覆盖」两步，
+# 多个线程同时切号会互相踩 tmp 文件，且 Windows 上 replace 撞到读句柄会抛
+# PermissionError。加锁解决写-写竞争，读侧靠重试兜住瞬间的替换窗口。
+_SESSION_LOCK = threading.Lock()
+
+
 def get_session() -> int:
-    try:
-        return int(json.loads(_session_path().read_text("utf-8")).get("uid", 0))
-    except Exception:
-        return 0
+    p = _session_path()
+    # 替换窗口内 read_text 可能抛 PermissionError（文件正被 replace），短暂重试即可；
+    # 仍失败则视为游客（与原实现一致），但不再吞掉 KeyboardInterrupt 之类的系统异常。
+    for _ in range(5):
+        try:
+            return int(json.loads(p.read_text("utf-8")).get("uid", 0))
+        except PermissionError:
+            time.sleep(0.01)
+        except Exception:      # noqa: BLE001 — 内容损坏/不存在都按游客处理
+            return 0
+    return 0
 
 
 def set_session(uid: int) -> None:
     p = _session_path()
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"uid": int(uid)}), encoding="utf-8")
-    tmp.replace(p)
+    with _SESSION_LOCK:
+        # tmp 名带上线程标识：即使锁意外失效，也不会两个线程写同一个 tmp。
+        tmp = p.with_name(f"session.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps({"uid": int(uid)}), encoding="utf-8")
+        # Windows 上 os.replace 同样可能被读句柄挡住，退避重试几次；
+        # 全部失败才考虑直接写主文件（丢掉原子性，但保证会话切换成功）。
+        for attempt in range(6):
+            try:
+                os.replace(tmp, p)
+                return
+            except PermissionError:
+                time.sleep(0.02 * (attempt + 1))
+        try:
+            p.write_text(json.dumps({"uid": int(uid)}), encoding="utf-8")
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 # ---------------- 游客数据迁入 ----------------

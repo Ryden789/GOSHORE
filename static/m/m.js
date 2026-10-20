@@ -4672,7 +4672,7 @@ async function renderSettings() {
       <div class="field">
         <label>模型</label>
         <input id="setModel" class="m-input" value="${esc(s.deepseek_model)}"/>
-        <div class="muted">deepseek-chat（快、省）/ deepseek-reasoner（更强更慢）</div>
+        <div class="muted">deepseek-v4.1-flash-20261017（默认）/ deepseek-flash（跟随最新）/ deepseek-chat（旧版）</div>
       </div>
       <div class="key-guide">
         <b>🔑 免费申请 DeepSeek Key（约 2 分钟）</b>
@@ -5757,7 +5757,7 @@ async function renderMe() {
     ${mode === "lan" ? `
     <div class="card">
       <h3>App 服务器设置</h3>
-      <div class="kd-row"><span class="kn">当前服务器</span><span>${esc(GoshorNative.getHost())}</span></div>
+      <div class="kd-row"><span class="kn">当前服务器</span><span>${esc((window.GoshorNative && window.GoshorNative.getHost && window.GoshorNative.getHost()) || "")}</span></div>
       <div style="margin-top:10px"><button class="btn btn-block" id="hostBtn">修改服务器地址</button></div>
     </div>` : ""}
     <div class="card">
@@ -5798,8 +5798,14 @@ async function renderMe() {
 
     const hb = $("#hostBtn");
     if (hb) hb.onclick = () => {
-      const v = prompt("输入电脑局域网地址（host:port）：", GoshorNative.getHost());
-      if (v && v.trim()) GoshorNative.setHost(v.trim());
+      // 桥未注入（浏览器打开 / 宿主未实现）时没有可改的地址，直接提示而不是抛 ReferenceError
+      const N = window.GoshorNative;
+      if (!N || !N.getHost || !N.setHost) {
+        alert("当前环境不支持修改服务器地址（仅 App 内可用）");
+        return;
+      }
+      const v = prompt("输入电脑局域网地址（host:port）：", N.getHost());
+      if (v && v.trim()) N.setHost(v.trim());
     };
 
     const logoutBtn = $("#logoutBtn"), switchBtn = $("#switchBtn");

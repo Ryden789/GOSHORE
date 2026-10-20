@@ -1,0 +1,9 @@
+# 桌面模式（可选依赖）
+#
+# 只在需要「不开浏览器、用原生窗口显示」时安装：
+#     pip install -r requirements-desktop.txt
+#
+# 主程序（run.py / start.bat）不需要它。
+# Windows 上 pywebview 走 EdgeChromium 后端，依赖系统自带的 WebView2 运行时
+# （Windows 11 已内置，无需单独安装）。
+pywebview>=5.0

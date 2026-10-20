@@ -10,6 +10,8 @@ import re
 
 import httpx
 
+from .config import vision_model
+
 PROMPT = """你在帮考生还原"折纸盒"（正方体平面展开图）题目。图片中应有一个由6个正方形格子组成的平面展开图（题目可能同时给出立体透视图选项，那些不是展开图，忽略它们）。
 
 只输出一个紧凑 JSON（不要 markdown 代码块、不要解释）：
@@ -99,7 +101,7 @@ async def recognize_net(data_url: str, settings: dict) -> dict:
             base_url.rstrip("/") + "/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
             json={
-                "model": "deepseek-flash",
+                "model": vision_model(settings),
                 "thinking": {"type": "disabled"},
                 "max_tokens": 2200,
                 "messages": [{"role": "user", "content": content}],

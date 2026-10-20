@@ -211,12 +211,28 @@ tags: [自导入]
 """
 
 
+def _vault_or_error(s: dict) -> tuple[Path | None, dict | None]:
+    """取已配置的 vault 目录；未配置或不存在时返回 (None, 错误响应)。
+
+    必须显式拦空串：``Path("")`` 等于当前目录且 ``.exists()`` 恒为 True，
+    会让导入把题目写进进程工作目录（打包后是 exe 所在目录），返回 ok:true
+    却因不在 vault 内而永远不会被 reindex 收录 —— 用户眼里就是「导入成功但找不到题」。
+    """
+    raw = (s.get("vault_path") or "").strip()
+    if not raw:
+        return None, {"ok": False, "error": "尚未设置题库源目录（vault_path），请先在设置里指定"}
+    vault = Path(raw)
+    if not vault.is_dir():
+        return None, {"ok": False, "error": f"vault 路径不存在：{vault}"}
+    return vault, None
+
+
 def commit_items(items: list[dict], defaults: dict) -> dict:
     """写 md 文件到 vault 并直接 upsert 进库（保留原有题库，纯增量）。"""
     s = load_settings()
-    vault = Path(s["vault_path"])
-    if not vault.exists():
-        return {"ok": False, "error": f"vault 路径不存在：{vault}"}
+    vault, err = _vault_or_error(s)
+    if err:
+        return err
 
     conn = db.connect()
     db.init_db(conn)

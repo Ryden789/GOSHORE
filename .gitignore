@@ -5,6 +5,8 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+# 桌面模式（desktop.py）的 WebView2 用户数据：localStorage / 缓存，随程序生成，不分发
+data/webview/
 
 # Python
 __pycache__/

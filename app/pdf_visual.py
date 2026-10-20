@@ -12,6 +12,8 @@ import io
 import re
 from pathlib import Path
 
+from .config import vision_model
+
 import fitz  # pymupdf
 import httpx
 
@@ -155,9 +157,11 @@ def extract_visual_spans(data: bytes) -> dict[int, dict]:
     return qs
 
 
-async def _vision_analysis(key: str, base_url: str, images: list[str], stem: str, answer: str) -> dict:
-    """deepseek-flash（V4.1 原生多模态）看图输出 {module, kaodian, analysis}；失败返回空 dict。
+async def _vision_analysis(key: str, base_url: str, images: list[str], stem: str, answer: str,
+                           model: str = "deepseek-flash") -> dict:
+    """看图输出 {module, kaodian, analysis}；失败返回空 dict。
 
+    模型由调用方经 config.vision_model() 解析后传入（默认跟随主模型）。
     V4.1-Flash 默认开思考模式，图形题会让它长时间推理直至耗尽 max_tokens（content 为空），
     此处仅需依据给定答案写简析，故显式关闭 thinking。
     """
@@ -177,7 +181,7 @@ async def _vision_analysis(key: str, base_url: str, images: list[str], stem: str
             r = await cli.post(
                 base_url.rstrip("/") + "/chat/completions",
                 headers={"Authorization": f"Bearer {key}"},
-                json={"model": "deepseek-flash", "thinking": {"type": "disabled"},
+                json={"model": model, "thinking": {"type": "disabled"},
                       "max_tokens": 500,
                       "messages": [{"role": "user", "content": content}]},
             )
@@ -205,6 +209,7 @@ async def build_figure_items(data: bytes, settings: dict) -> tuple[list[dict], d
         return [], {}
     vault = Path(vault_raw)
     spans = extract_visual_spans(data)
+    _vmodel = vision_model(settings)     # 循环外解析一次，避免每题重复读设置
     items: list[dict] = []
     attach: dict[int, list[str]] = {}
     for qno in sorted(spans):
@@ -226,7 +231,7 @@ async def build_figure_items(data: bytes, settings: dict) -> tuple[list[dict], d
         imgs_b64 = [base64.b64encode(p).decode() for p, _, _, _ in q["images"]]
         info = await _vision_analysis(
             settings.get("deepseek_api_key", ""), settings.get("deepseek_base_url", ""),
-            imgs_b64, q["stem"], q["answer"],
+            imgs_b64, q["stem"], q["answer"], model=_vmodel,
         ) if settings.get("deepseek_api_key") else {}
         items.append({
             "no": qno,

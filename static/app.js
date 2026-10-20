@@ -3258,10 +3258,17 @@ async function renderPaper(auto = "") {
       kdDrop.style.width = rect.width + "px";
     });
   }
-  // 监听所有可能的滚动源（window、主内容区、侧边栏）
-  window.addEventListener("scroll", kdUpdatePos, true);
-  document.addEventListener("scroll", kdUpdatePos, true);
-  window.addEventListener("resize", kdUpdatePos);
+  // 监听所有可能的滚动源（window、主内容区、侧边栏）。
+  // 必须绑到 abortCtl.signal：否则每进一次组卷页就永久多 3 个捕获阶段监听，
+  // 长时间使用后每次滚动都要执行 N 次 getBoundingClientRect，滚动明显变卡。
+  const kdSig = abortCtl ? { signal: abortCtl.signal } : {};
+  window.addEventListener("scroll", kdUpdatePos, { capture: true, ...kdSig });
+  document.addEventListener("scroll", kdUpdatePos, { capture: true, ...kdSig });
+  window.addEventListener("resize", kdUpdatePos, kdSig);
+  // 下拉层挂在 body 上（不在 view 里），切页不会自动移除，必须自己登记清理
+  if (abortCtl) {
+    abortCtl.signal.addEventListener("abort", () => kdDrop.remove(), { once: true });
+  }
 
   kdInput.addEventListener("focus", kdShow);
   kdInput.addEventListener("input", () => {
@@ -4753,7 +4760,7 @@ async function renderSettings() {
         <div class="field">
           <label>模型</label>
           <input id="model" value="${esc(s.deepseek_model)}"/>
-          <div class="hint">deepseek-chat（速度快、成本低）/ deepseek-reasoner（带推理，更强但更慢）</div>
+          <div class="hint">deepseek-v4.1-flash-20261017（当前默认，最新 Flash）/ deepseek-flash（跟随最新 Flash）/ deepseek-chat（旧版通用）</div>
         </div>
       </div>
     </div>

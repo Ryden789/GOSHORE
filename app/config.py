@@ -2,26 +2,55 @@
 import base64
 import ctypes
 import json
+import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
+
+# 设置文件的进程内互斥。必须是 RLock：save_settings 持锁期间会调用
+# load_settings，而后者在「明文迁移密文」分支里也要拿同一把锁。
+_SETTINGS_LOCK = threading.RLock()
 
 try:  # wintypes 仅 Windows CPython 自带，安卓/其他平台降级为 None
     import ctypes.wintypes as wt
 except Exception:
     wt = None
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# 打包成单文件 exe（PyInstaller）后，源码和 static/ 被解到临时目录 _MEIPASS，
+# 而 data/ 必须留在 exe 旁边 —— 数据库、设置、WebView 存储都是用户数据，
+# 写进临时目录等于每次关窗全部丢失。所以两种目录分开算：
+#   BUNDLE_DIR  资源只读，跟着打包产物走（源码运行时与 BASE_DIR 相同）；
+#   BASE_DIR    用户数据根目录，源码运行时是仓库根，冻结后是 exe 所在目录。
+_FROZEN = bool(getattr(sys, "frozen", False))
+if _FROZEN:
+    BASE_DIR = Path(sys.executable).resolve().parent
+    BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    BUNDLE_DIR = BASE_DIR
+
 DATA_DIR = BASE_DIR / "data"
-STATIC_DIR = BASE_DIR / "static"
+STATIC_DIR = BUNDLE_DIR / "static"
 DB_PATH = DATA_DIR / "goshor.db"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
 DEFAULTS = {
-    "vault_path": r"D:\人文\kaogongzhentizhengliu",
+    # 题库源目录（vault）。**默认必须为空**：留成开发者本机的某个私人路径，
+    # 会让每个首次启动的用户（尤其拿到的 exe）去扫描/导入我们自己的题库，
+    # 既是隐私问题，也会让首次启动卡死在建库上。由用户在「设置」里自己指定。
+    "vault_path": "",
     "deepseek_base_url": "https://api.deepseek.com",
     "deepseek_api_key": "",
-    "deepseek_model": "deepseek-chat",
+    # V4.1 Flash（20261017）带日期固定版：显式锁定版本，避免服务端滚动升级
+    # 带来的行为漂移。若官方端点不接受该字符串，改回 "deepseek-flash" 即可
+    # （项目里看图功能一直用后者，已验证可用）。
+    "deepseek_model": "deepseek-v4.1-flash-20261017",
+    # 看图（拍照识题 / PDF 图形题）专用模型：必须是原生多模态，且要能关思考模式。
+    # 空串表示「跟随 deepseek_model」——这样升级主模型时看图功能自动同步，
+    # 不必在 ai.py / cube_vision.py / pdf_visual.py 三处逐一改。
+    "deepseek_vision_model": "",
     "port": 8765,
     # N3 考试倒计时：'YYYY-MM-DD'，空则首页不显示倒计时横幅
     "exam_date": "",
@@ -48,6 +77,18 @@ DEFAULTS = {
     # mtime_ns/size 拼串，用来判断「本机自上次同步后又写入了新数据」。
     "sync_local_stamp": "",
 }
+
+# ---------------- 视觉模型解析 ----------------
+
+def vision_model(settings: dict | None = None) -> str:
+    """看图所用模型：优先 deepseek_vision_model，为空则跟随 deepseek_model。
+
+    三个调用点（ai.stream_chat / cube_vision / pdf_visual）都从这里取，
+    避免各自硬编码模型名导致升级时漏改。
+    """
+    s = settings if settings is not None else load_settings()
+    return (s.get("deepseek_vision_model") or "").strip() or s.get("deepseek_model") or "deepseek-flash"
+
 
 # ---------------- 设置项归一化（桌面 / 移动共用同一口径） ----------------
 
@@ -292,6 +333,31 @@ def _plain_of(disk: dict, field: str) -> str:
     return disk.get(field, "") or ""
 
 
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """先写同目录临时文件再替换，避免中途被杀留下半截 JSON。
+
+    半截 JSON 的后果很重：load_settings 会 parse 失败并静默回落到 DEFAULTS，
+    用户会以为「所有设置凭空消失」。临时名带进程+线程号，避免并发互踩。
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:      # Windows：目标被读者占用
+                time.sleep(0.02 * (attempt + 1))
+        # 极端情况退化为直接覆盖：保住数据比保住原子性更重要
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 def load_settings() -> dict:
     DATA_DIR.mkdir(exist_ok=True)
     s = dict(DEFAULTS)
@@ -314,17 +380,26 @@ def load_settings() -> dict:
             except OSError:
                 pass  # 加密失败则保持现状，不影响功能
     if dirty:
-        try:
-            SETTINGS_PATH.write_text(
-                json.dumps(disk, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        # 迁移回写必须持锁：否则并发 save_settings 期间会用「迁移前的旧快照」
+        # 覆盖掉别人刚写入的键。
+        with _SETTINGS_LOCK:
+            try:
+                _atomic_write_json(SETTINGS_PATH, disk)
+            except Exception:
+                pass
     for enc_field in _SECRET_FIELDS.values():
         s.pop(enc_field, None)
     return s
 
 
 def save_settings(patch: dict) -> dict:
+    # 整个「读-改-写」必须在同一把锁内：设置页、导入、同步配置是三个独立入口，
+    # 局域网多标签页同时保存时，无锁会让后写者用旧快照覆盖先写者的键且静默成功。
+    with _SETTINGS_LOCK:
+        return _save_settings_locked(patch)
+
+
+def _save_settings_locked(patch: dict) -> dict:
     patch = dict(patch)
     # 所有敏感字段：明文一律转成密文再落盘（无 DPAPI 的平台保持明文）
     secrets = {k: patch.pop(k) for k in list(patch) if k in _SECRET_FIELDS}
@@ -352,9 +427,7 @@ def save_settings(patch: dict) -> dict:
     if _dpapi_available():
         for field in _SECRET_FIELDS:      # 明文绝不落盘
             s[field] = ""
-    SETTINGS_PATH.write_text(
-        json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _atomic_write_json(SETTINGS_PATH, s)
     for enc_field in _SECRET_FIELDS.values():
         s.pop(enc_field, None)
     return s

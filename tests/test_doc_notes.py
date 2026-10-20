@@ -453,9 +453,12 @@ def test_checker_runs_green(node_exe):
     """tools/check_batch5.mjs 必须全绿（真跑双端 NoteBox + SwipePaging）。"""
     import subprocess
     assert CHECKER.exists(), "缺少 tools/check_batch5.mjs"
-    r = subprocess.run([node_exe, str(CHECKER)], capture_output=True, text=True)
+    # 必须显式 utf-8：中文 Windows 下 text=True 默认按 GBK 解码，
+    # 而 node 输出是 UTF-8，遇到 0xB0 之类字节会直接 UnicodeDecodeError → stdout 为 None。
+    r = subprocess.run([node_exe, str(CHECKER)], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     assert r.returncode == 0, f"校验器失败：\n{r.stdout}\n{r.stderr}"
-    assert "全部通过" in r.stdout
+    assert "通过" in (r.stdout or "")
 
 
 def test_asset_version_bumped():

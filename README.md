@@ -107,7 +107,26 @@ python run.py
 
 > ⚠️ **安全边界（务必了解）**：服务监听 `0.0.0.0`，**同一局域网内的任何设备都能访问 API，且没有登录鉴权**——包括数据重置、备份恢复、题库导入与设置修改（`/api/data/reset` 只校验请求里带的 `confirm=true`，那不是访问控制）。请**只在可信网络**（例如家里的 Wi-Fi）使用，**不要在公共 Wi-Fi、宿舍 / 公司等共享网络下开启**。确需在不可信网络使用，请改为只在电脑本机用，或用系统防火墙把 8765 限制到本机 / 指定设备。
 
-### 哪些能离线用，哪些需要联网 / API Key
+### 桌面软件版（单文件 exe，免装 Python）
+
+不想装 Python、也不想开浏览器，可以直接用打包好的 `dist\GOSHORE上岸工作台.exe`：
+
+- **双击即用**：原生窗口打开（无地址栏），服务仍在后台跑，手机端 `/m/` 照旧可用。
+- **首次运行自动建库**：exe 旁边会生成 `data\`（题库库文件、设置、WebView 存储、日志），**不携带任何题库和 API Key**，数据完全留在本机。
+- **换电脑 / 备份**：只拷 exe 就是全新空库；连同 `data\` 一起拷走，则题库、记录、设置原样带走。
+- **日志位置**：`data\logs\desktop-YYYYMMDD.log`（exe 无控制台，出问题看这里）。
+- **环境要求**：Windows 10/11 64 位 + WebView2 运行时（Win11 自带；Win10 若缺，需装微软的 Evergreen Runtime）。
+
+重新打包（改了代码后）：
+
+```bash
+pip install pyinstaller pillow
+python tools/build_desktop_exe.py          # 产物：dist/GOSHORE上岸工作台.exe
+```
+
+> 打包配置里**刻意不包含 `data/`**：那是用户的学习库（动辄几百 MB），打进 exe 会让安装包膨胀、用户数据随版本被覆盖，也无法把软件单独发给别人。
+
+
 
 | 能力 | 是否需要联网 / API Key |
 |---|---|
@@ -144,8 +163,8 @@ GOSHORE/
 │   ├── goshor.db          # 题库与学习记录
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（831 条）
-├── tools/                 # 前端静态校验器（14 个 .mjs）
+├── tests/                 # pytest 用例（852 条）
+├── tools/                 # 前端静态校验器（15 个 .mjs）
 ├── scripts/               # 导入 / 打包 / E2E 回归脚本
 └── docs/                  # 开发文档（按用途归类，见 docs/）
 ```
@@ -153,19 +172,19 @@ GOSHORE/
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（831 条，跑在临时库上，不碰 data/goshor.db）
+# 后端单元 / 接口测试（852 条，跑在临时库上，不碰 data/goshor.db）
 python -m pytest tests -q
 
 # 前端静态校验器（无需浏览器；本机无 node 时自动跳过）
 node tools/check_appearance.mjs    # 夜间模式 + 字号四档
 node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致性
-# …共 14 个，全部退出码 0
+# …共 15 个，全部退出码 0
 
 # 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 78 项断言）
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 831 passed**、**14 个静态校验器全 EXIT=0**、**E2E 78 项断言全通过**。
+当前基线：**pytest 852 passed**、**15 个静态校验器全 EXIT=0**、**E2E 78 项断言全通过**。
 
 ## 常见问题
 

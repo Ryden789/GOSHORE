@@ -899,7 +899,11 @@ def _upsert(conn: sqlite3.Connection, p: parser.Parsed, mtime: float) -> int:
 
 def reindex(progress=None) -> dict:
     """全量/增量扫描 vault。progress(done,total,phase) 可选回调。"""
-    vault = Path(load_settings()["vault_path"])
+    raw = (load_settings().get("vault_path") or "").strip()
+    # 未配置 vault：直接返回，**不要把空串当成当前目录**去 os.walk 整个项目。
+    if not raw:
+        return {"ok": False, "error": "尚未设置题库源目录（vault_path），请在设置里指定"}
+    vault = Path(raw)
     if not vault.exists():
         return {"ok": False, "error": f"vault 路径不存在: {vault}"}
 

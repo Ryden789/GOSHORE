@@ -30,6 +30,10 @@ const SHELL_ASSETS = [
   "/m/m.js",
   "/m/manifest.json",
   "/manifest-desktop.webmanifest",
+  // 空间折叠页：缺失时离线进入该页会报「模块加载失败」
+  "/cube/cube.js",
+  "/cube/cube.css",
+  "/vendor/three.min.js",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/icon-maskable-512.png",
@@ -54,7 +58,11 @@ self.addEventListener("activate", (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(
-      keys.filter((k) => !k.startsWith(VERSION)).map((k) => caches.delete(k))
+      // 只保留当前版本自己的两个缓存名。用 startsWith(VERSION) 会误伤前缀相同的
+      // 其它缓存；而漏删旧版本又会让 cache-first 一直发旧 app.js。
+      keys
+        .filter((k) => k !== SHELL_CACHE && k !== RUNTIME_CACHE)
+        .map((k) => caches.delete(k))
     );
     await self.clients.claim();
   })());

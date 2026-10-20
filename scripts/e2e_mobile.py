@@ -127,7 +127,7 @@ def start_server():
     )
     proc = subprocess.Popen(
         [sys.executable, "-u", "-c", code],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
 
     port = None
     deadline = time.time() + 60

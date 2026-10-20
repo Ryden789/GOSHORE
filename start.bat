@@ -6,11 +6,20 @@ echo ================================================
 echo   GOSHORE 上岸工作台 启动中...
 echo ================================================
 
+:: 端口以 data/settings.json 为准（run.py 读的就是它）。写死 8765 会导致：
+:: 用户改了端口后，本脚本仍去查 8765、并打开 8765 的空白页。
 set PORT=8765
+for /f "usebackq delims=" %%p in (`python -c "from app.config import load_settings; print(int(load_settings()['port']))" 2^>nul`) do set PORT=%%p
 
 :: 检查端口是否已被占用。默认不结束任何进程——只提示，由用户决定。
+:: 用 `:PORT` 结尾精确匹配，避免 :18765 / :28765 被误判成占用。
 set OCCUPIED=
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%PORT%" ^| findstr "LISTENING"') do (
+for /f "tokens=5" %%a in ('netstat -ano -p tcp ^| findstr "LISTENING" ^| findstr /R /C:":%PORT% $"') do (
+    set OCCUPIED=%%a
+    goto :found
+)
+:: 精确匹配失败时（部分系统 netstat 行尾无空格）退回宽松匹配
+for /f "tokens=5" %%a in ('netstat -ano -p tcp ^| findstr ":%PORT% " ^| findstr "LISTENING"') do (
     set OCCUPIED=%%a
     goto :found
 )

@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision, sync_webdav
-from .config import (STATIC_DIR, DB_PATH, SETTINGS_PATH, REMINDER_KEYS,
+from .config import (STATIC_DIR, DATA_DIR, DB_PATH, SETTINGS_PATH, REMINDER_KEYS,
                      GOAL_KEYS, load_settings, reminder_patch, goal_patch,
                      save_settings, SYNC_KEYS, sync_patch, SYNC_REMOTE_DEFAULT)
 # 可打印导出页（G5）：与手机端 goshor_server.py 共用同一份拼装逻辑。
@@ -37,7 +37,12 @@ async def lifespan(app: FastAPI):
     n = conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
     conn.close()
     if n == 0:
-        db.reindex()
+        # 首次启动的自动建索引是「锦上添花」：用户没配 vault、vault 很大、
+        # 或某个文件解析炸了，都不能让整个服务起不来（窗口会白屏）。
+        try:
+            db.reindex()
+        except Exception as e:  # noqa: BLE001
+            print(f"[reindex] 首次建索引跳过：{e}")
     _startup_selfcheck()
     yield
     # 退出前给后台掌握度衰减（建议9）一点时间收尾，避免留下半截批次
@@ -96,7 +101,8 @@ except Exception:
 def api_open_app():
     """执行 tools/open_app.bat silent：自动连接模拟器并拉起上岸题库 APP"""
     import subprocess
-    bat = Path(__file__).resolve().parents[1] / "tools" / "open_app.bat"
+    # DATA_DIR 的父目录 = 源码仓库根 / 冻结后的 exe 所在目录
+    bat = DATA_DIR.parent / "tools" / "open_app.bat"
     if not bat.exists():
         raise HTTPException(404, "tools/open_app.bat 不存在")
     try:
@@ -226,17 +232,34 @@ def api_difficulty_tag():
 
 # ---------------- 图片代理（限定 vault 内） ----------------
 
+# 只放行真正的图片类型：vault 里可能混着 md / json / zip，不能让 /img 变成文件读取器。
+_IMG_SUFFIXES = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif", ".ico",
+})
+
+
 @app.get("/img")
 def api_img(path: str):
     import urllib.parse
     path = urllib.parse.unquote(path)
-    vault = Path(load_settings()["vault_path"]).resolve()
+    # 未配置 vault 时必须直接拒绝：Path("") == Path(".")，而 Path("").exists()
+    # 恒为 True，越界校验会退化成「不许出当前工作目录」，等于把整个程序目录
+    # （含 data/settings.json、data/goshor.db）暴露给局域网任意设备。
+    raw = (load_settings().get("vault_path") or "").strip()
+    if not raw:
+        raise HTTPException(404, "尚未设置题库源目录")
+    vault = Path(raw).resolve()
+    if not vault.is_dir():
+        raise HTTPException(404, "题库源目录不存在")
     fp = (vault / path).resolve()
     try:
         fp.relative_to(vault)
     except ValueError:
         raise HTTPException(403)
-    if not fp.exists():
+    # 只代理图片：vault 里还可能躺着 md 原文与备份，不该经此接口外泄。
+    if fp.suffix.lower() not in _IMG_SUFFIXES:
+        raise HTTPException(403)
+    if not fp.is_file():
         raise HTTPException(404)
     return FileResponse(fp)
 
@@ -245,7 +268,7 @@ def api_img(path: str):
 
 @app.get("/api/app-apk")
 def api_app_apk():
-    fp = Path(__file__).resolve().parent.parent / "dist" / "goshor.apk"
+    fp = DATA_DIR.parent / "dist" / "goshor.apk"
     if not fp.exists():
         raise HTTPException(404, "APK 尚未构建")
     return FileResponse(fp, filename="goshor.apk",
@@ -1471,7 +1494,7 @@ def api_backup_export():
                 z.write(snap, "goshor.db")
             if SETTINGS_PATH.exists():
                 z.write(SETTINGS_PATH, "settings.json")
-            eq = STATIC_DIR.parent / "data" / "essay_questions.json"
+            eq = DATA_DIR / "essay_questions.json"
             if eq.exists():
                 z.write(eq, "essay_questions.json")
     except Exception:
@@ -1516,7 +1539,7 @@ async def api_backup_import(file: UploadFile):
                     ok_files.append("settings.json")
                 if "essay_questions.json" in names:
                     shutil.copy2(Path(td) / "essay_questions.json",
-                                 STATIC_DIR.parent / "data" / "essay_questions.json")
+                                 DATA_DIR / "essay_questions.json")
                     ok_files.append("essay_questions.json")
         return {"ok": True, "restored": ok_files, "note": "请重启服务使恢复生效"}
     except zipfile.BadZipFile:
@@ -1601,7 +1624,7 @@ def _sync_pack(tmpdir) -> tuple:
     pairs = [(snap, "goshor.db")]
     if SETTINGS_PATH.exists():
         pairs.append((SETTINGS_PATH, "settings.json"))
-    eq = STATIC_DIR.parent / "data" / "essay_questions.json"
+    eq = DATA_DIR / "essay_questions.json"
     if eq.exists():
         pairs.append((eq, "essay_questions.json"))
     zp = sync_webdav.build_zip(pairs, td / "backup.zip")
@@ -1783,7 +1806,7 @@ def api_sync_down(b: SyncDownIn):
             save_settings(keep)
         if "essay_questions.json" in restored:
             shutil.copy2(Path(tmpdir) / "essay_questions.json",
-                         STATIC_DIR.parent / "data" / "essay_questions.json")
+                         DATA_DIR / "essay_questions.json")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -1989,7 +2012,7 @@ def api_essay_history_detail(gid: int):
 
 # ---------------- 申论 / 综应 真题库 ----------------
 
-_ESSAY_Q_PATH = STATIC_DIR.parent / "data" / "essay_questions.json"
+_ESSAY_Q_PATH = DATA_DIR / "essay_questions.json"
 
 
 def _load_essay_questions() -> list[dict]:

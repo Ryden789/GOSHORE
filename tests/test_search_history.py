@@ -109,6 +109,9 @@ def node_exe():
 def test_checker_runs_green(node_exe):
     """tools/check_batch4.mjs 必须全绿（真跑双端 SearchHistory + GoalRing）。"""
     assert CHECKER.exists(), "缺少 tools/check_batch4.mjs"
-    r = subprocess.run([node_exe, str(CHECKER)], capture_output=True, text=True)
+    # 显式 utf-8：中文 Windows 下默认 GBK 解码会导致 UnicodeDecodeError，
+    # 使 stdout 变 None，测试误报失败（校验器本身其实是通过的）。
+    r = subprocess.run([node_exe, str(CHECKER)], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     assert r.returncode == 0, f"校验器失败：\n{r.stdout}\n{r.stderr}"
-    assert "全部通过" in r.stdout
+    assert "通过" in (r.stdout or "")

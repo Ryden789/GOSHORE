@@ -7,7 +7,7 @@ import re
 import httpx
 
 from . import db
-from .config import load_settings
+from .config import load_settings, vision_model
 from .parser import WIKILINK_RE
 
 # 事业单位C类考试权威题型结构：回答考情/题型类问题必须以此为准，不得凭印象否认任一题型
@@ -471,7 +471,7 @@ async def stream_chat(messages: list[dict], use_vision: bool = False):
         return
 
     payload = {
-        "model": "deepseek-flash" if use_vision else s["deepseek_model"],
+        "model": vision_model(s) if use_vision else s["deepseek_model"],
         "messages": messages,
         "stream": True,
         "temperature": 0.3,
