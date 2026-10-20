@@ -78,7 +78,7 @@
 - **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-v4.1-flash-20261017`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 852 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
+- **测试**：pytest 856 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
 
 ## 快速开始（首次使用顺序）
 
@@ -193,7 +193,7 @@ GOSHORE/
 │   ├── goshor.db          # 题库与学习记录
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（852 条）
+├── tests/                 # pytest 用例（856 条）
 ├── tools/                 # 校验器（15 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── create_shortcut.py     # 建/删桌面快捷方式
@@ -206,7 +206,7 @@ GOSHORE/
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（852 条，跑在临时库上，不碰 data/goshor.db）
+# 后端单元 / 接口测试（856 条，跑在临时库上，不碰 data/goshor.db）
 python -m pytest tests -q
 
 # 前端静态校验器（无需浏览器；本机无 node 时自动跳过）
@@ -214,11 +214,11 @@ node tools/check_appearance.mjs    # 夜间模式 + 字号四档
 node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致性
 # …共 15 个，全部退出码 0
 
-# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 78 项断言）
+# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 79 项断言）
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 852 passed**、**15 个静态校验器全 EXIT=0**、**E2E 78 项断言全通过**。
+当前基线：**pytest 856 passed**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
 
 ## 常见问题
 
