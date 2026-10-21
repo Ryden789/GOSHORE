@@ -135,7 +135,9 @@ def build(keep: bool = False) -> int:
     if not exe.exists():
         print(f"[×] 未生成 {exe}")
         return 1
-    print(f"[✓] 打包完成：{exe}（{exe.stat().st_size / 1024 / 1024:.1f} MB）")
+    # 不要用 ✓：Windows 控制台默认 GBK，管道/重定向时 print 会 UnicodeEncodeError，
+    # 明明打包成功却以退出码 1 结束（CI 会误判失败）。
+    print(f"[OK] 打包完成：{exe}（{exe.stat().st_size / 1024 / 1024:.1f} MB）")
     print("[i] 分发方式：把这个 exe 单独拷走即可；已有题库的用户把 data/ 一起放在旁边。")
     return 0
 
