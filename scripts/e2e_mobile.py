@@ -118,8 +118,15 @@ def start_server():
 
     code = (
         "import sys, threading;"
+        "from pathlib import Path;"
         f"sys.path.insert(0, {str(REPO)!r});"
         f"sys.path.insert(0, {str(SRV_DIR)!r});"
+        "import app.db as _db;"
+        # P0 拆库后 connect() 会优先判断桌面 content.db/user.db；E2E 跑在开发机上，
+        # 若不屏蔽这两个真实路径，游客统计会读到开发者的 data/user.db（今日已答），
+        # 每日开门卡就被误判为已完成。手机端本质是单库，必须只走临时库。
+        f"_db.CONTENT_DB_PATH = Path({str(TMP / 'content.db')!r});"
+        f"_db.USER_DB_PATH = Path({str(TMP / 'user.db')!r});"
         "import goshor_server as g;"
         f"p = g.start({str(dst_db)!r}, {str(img_dir)!r}, {str(WEB_DIR)!r});"
         "print('PORT=%d' % p, flush=True);"
