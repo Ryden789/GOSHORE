@@ -34,8 +34,15 @@ jobs:
           PYTHONUTF8: "1"
         run: python tools/build_desktop_exe.py
 
+      - name: 准备附件（ASCII 文件名）
+        run: |
+          Get-ChildItem dist\*.exe | Select-Object Name,Length | Format-Table -AutoSize
+          # GitHub 会丢弃附件名里的非 ASCII 字符（GOSHORE上岸工作台.exe → GOSHORE.exe），
+          # 先复制成 ASCII 名再上传，下载链接才不会变成含义不明的 GOSHORE.exe。
+          Copy-Item -LiteralPath "dist/GOSHORE上岸工作台.exe" -Destination "dist/GOSHORE-desktop.exe" -Force
+
       - name: 上传 Release 附件
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ inputs.tag }}" "dist/GOSHORE上岸工作台.exe" "assets/content-sample.db" --clobber
+          gh release upload "${{ inputs.tag }}" "dist/GOSHORE-desktop.exe" "assets/content-sample.db" --clobber
