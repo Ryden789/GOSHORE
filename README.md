@@ -68,7 +68,8 @@
 | 词语辨析卡 | 1,150 张（花生高频词 + 扩充词表） |
 
 > 上表「各模块」均为**真题**口径（`documents.kind='真题'`），不含考点篇目。
-> 题库为**本地私有题库**（`data/goshor.db`），不随仓库分发，需自备题源后通过导入功能录入。
+> **完整题库是本地私有数据**（`data/content.db`，约 428 MB），不随仓库分发；仓库与 Release 里带的是
+> 240 道真题 + 120 篇考点 + 78 份材料的**示例库**（`assets/content-sample.db`，约 7 MB），首次启动自动种入。
 > 数字口径：`SELECT module, COUNT(*) FROM documents WHERE kind='真题' GROUP BY module`。
 
 ## 技术栈
@@ -99,11 +100,12 @@ python run.py
 
 启动日志会打印电脑访问地址与手机访问地址。
 
-**3. 准备题库（必需，才能做题）**
-题库**不随仓库分发**。请自备**合法题源**，进入「导入」页导入 PDF / Word / Excel / CSV / MD / JSON 后即可开始练习。
+**3. 题库（开箱有示例，可追加自己的题源）**
+首次启动会把仓库内置的**示例题库**（240 道真题 + 120 篇考点 + 78 份材料）复制到 `data/content.db`，打开即可刷。
+要练完整题库，请自备**合法题源**，进入「导入」页导入 PDF / Word / Excel / CSV / MD / JSON；导入是**追加**，不会覆盖示例。
 
-> 想先试试功能：打包好的 exe **自带 240 道示例题**（`assets/content-sample.db`，约 7 MB），打开就有题可刷；
-> 从源码跑可用 `python tools/make_sample_db.py` 生成同一份示例库。导入自己的题源是**追加**，不会覆盖示例。
+> 示例库源文件：`assets/content-sample.db`（约 7 MB，随仓库与 Release 分发），可用
+> `python tools/make_sample_db.py` 从全量库重新生成。桌面 exe 也内置同一份示例库。
 
 
 **4. 配置 AI（可选）**
@@ -116,7 +118,11 @@ python run.py
 
 ### 桌面软件版（单文件 exe，免装 Python）
 
-不想装 Python、也不想开浏览器，可以直接用打包好的 `dist\GOSHORE上岸工作台.exe`：
+不想装 Python、也不想开浏览器，可以直接下载 Release 里的 `GOSHORE-desktop.exe`（68.6 MB），
+或使用本机打包的 `dist\GOSHORE上岸工作台.exe`：
+
+> 下载页：<https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.21>
+> 同时附带 `content-sample.db`，可手动放进 `data\` 作为题库。
 
 - **双击即用**：原生窗口打开（无地址栏），服务仍在后台跑，手机端 `/m/` 照旧可用。
 - **自带示例题库**：首次运行会把内置的 240 道示例题放进 `data\content.db`，开箱就能刷（导入自己的题源是追加，不覆盖）。
@@ -154,7 +160,8 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 ```
 
 > 打包配置里**刻意不包含 `data/`**：那是用户的学习库（动辄几百 MB），打进 exe 会让安装包膨胀、用户数据随版本被覆盖，也无法把软件单独发给别人。
-> exe 体积约 89.5 MB；`--onefile` 每次启动要解包，机械盘 + 杀软实时扫描下首次双击可能等几秒。若要更快的启动，可把 `--onefile` 换成 `--onedir`。
+> exe 体积：GitHub Actions 构建约 **68.6 MB**；本机开发环境因依赖版本不同约 96 MB，属正常差异。
+> `--onefile` 每次启动要解包，机械盘 + 杀软实时扫描下首次双击可能等几秒。若要更快的启动，可把 `--onefile` 换成 `--onedir`。
 
 ### 安卓 APP 与「一键打开」按钮
 
@@ -186,6 +193,7 @@ GOSHORE/
 │   ├── config.py          # 目录常量（BUNDLE_DIR / BASE_DIR）+ 设置读写（DPAPI 加密）
 │   ├── db.py              # SQLite 存储层 + FTS 索引 + 版本化迁移 _migrate()
 │   ├── ai.py              # DeepSeek 流式对话（含多模态）
+│   ├── ai_eval.py         # AI 输出离线评测（golden set 跑批）
 │   ├── accounts.py        # 多账号（移动端 accounts.db + data_<uid>.db）
 │   ├── sync_webdav.py     # 多设备加密同步（信封加密 + WebDAV 客户端）
 │   ├── xingce_notes.py    # 行测速查内容源（5 模块 58 考点）
@@ -196,9 +204,13 @@ GOSHORE/
 │   └── ...                # 速算 / 列式 / 论证 / 时政 / 面试 / 批改等模块
 ├── static/                # 前端（无需构建）
 │   ├── app.js / styles.css / index.html   # 桌面端
+│   ├── shared/            # 双端纯逻辑共享层（core / sanitize / settle）
 │   ├── m/                 # 手机端
 │   ├── cube/              # 空间折叠页（three.js）
 │   └── vendor/            # 第三方前端库
+├── assets/
+│   └── content-sample.db  # 示例题库（随仓库/Release 分发）
+├── .github/workflows/     # CI 与 Release 构建上传
 ├── android/               # WebView 壳 / Chaquopy 独立版工程
 ├── data/                  # 本地数据（不入仓库）
 │   ├── content.db         # 题库（只读，可整体替换 / 分发）
@@ -210,7 +222,7 @@ GOSHORE/
 ├── tools/                 # 校验器（15 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── migrate_split.py       # 老单库 → content.db + user.db
-│   ├── check_content.py       # 题库内容体检（坏题 / 缺答案 / 规则校验）
+│   ├── check_content.py       # 题库内容体检（规则分级 + 指纹校验）
 │   ├── sample_content.py      # 分层抽检：种子可复现的 Markdown / HTML 抽检单
 │   ├── create_shortcut.py     # 建/删桌面快捷方式
 │   ├── make_desktop_icon.py   # 由 PWA 图标生成多尺寸 .ico
@@ -242,7 +254,7 @@ python tools/migrate_split.py             # 真迁移（约 15~45 秒）
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（928 条，跑在临时库上，不碰 data/goshor.db）
+# 后端单元 / 接口测试（928 条，跑在临时库上，不碰 data/*.db）
 python -m pytest tests -q
 
 # AI 离线质量评测（不联网、不花 token；低于 95 分退出码 1）
@@ -278,7 +290,7 @@ python scripts/e2e_mobile.py
 
 - **双击没反应**：先看 `data\logs\desktop-YYYYMMDD.log`。exe 是 `--windowed`，没有控制台，所有输出都写这个文件。
 - **不要放在会被同步/删除的目录**：`--onefile` 每次启动会把自身解包到临时目录；把 exe 放在 `Program Files` 等**无写权限**的目录会让 `data\` 建不出来。建议放 `D:\GOSHORE-Desktop\` 这类可写目录。
-- **首次启动慢**：89.5 MB 单文件要解包，机械盘 + 杀毒实时扫描下可能等几秒；建大规模题库索引时会额外耗时，壳会打印进度，不会误判失败。
+- **首次启动慢**：Release 版 68.6 MB 单文件要解包，机械盘 + 杀毒实时扫描下可能等几秒；建大规模题库索引时会额外耗时，壳会打印进度，不会误判失败。
 - **杀软误报**：无数字签名的 PyInstaller 产物偶发误报，添加信任即可。
 - **换新 exe 后快捷方式失效**：把新 exe 覆盖到部署目录，再跑一次 `python tools/create_shortcut.py`。
 
@@ -294,7 +306,7 @@ python scripts/e2e_mobile.py
 - 学习记录、账号、错题等全部存于本地 SQLite，**不包含在 Git 仓库中**（见 `.gitignore`）
 - API Key 仅在调用 DeepSeek 服务时使用，本地加密存储
 - 备份请用页面内的**导出备份**（`/api/backup/export`，走 SQLite 在线备份 API 生成一致性快照 zip），而不是直接复制正在写入的 `.db` 文件
-- 手动备份需覆盖：`data/goshor.db`（桌面端题库与记录）、`data/users/`（移动端 `accounts.db` + `data_<uid>.db`）、`data/settings.json`、`data/essay_questions.json`
+- 手动备份需覆盖：`data/user.db`（个人记录）、`data/content.db`（题库，可单独替换）、`data/users/`（移动端 `accounts.db` + `data_<uid>.db`）、`data/settings.json`、`data/essay_questions.json`；日常只需用页面内的导出备份（只含个人库）
 - 多设备同步走 WebDAV 时**只上传加密后的密文**，同步口令不落明文
 - **局域网访问没有鉴权**：服务监听 `0.0.0.0` 是为了让手机能连；同一网络内的设备可读取数据并调用写接口（重置 / 恢复 / 导入 / 改设置）。这是当前的**已知取舍**，请只在可信网络使用。
 
