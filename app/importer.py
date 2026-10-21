@@ -13,7 +13,7 @@ import socket
 import time
 import unicodedata
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -352,12 +352,15 @@ def _resolve_ips(host: str) -> list[str]:
     return ips
 
 
-def assert_safe_url(url: str) -> str:
-    """校验 URL 可安全抓取，返回原 URL；不安全则抛 UnsafeUrlError。
+def _pin_safe_url(url: str) -> tuple[str, str, str]:
+    """校验 URL，并把主机名换成刚解析出的 IP 返回。
 
-    规则：仅 http/https；主机解析出的**每一个** IP 都不得命中黑名单段。
-    这样既挡住直接写内网 IP，也挡住「域名解析到内网」「DNS rebinding 到内网」
-    「十进制/八进制 IP」这类绕过写法。
+    返回 ``(连接用 URL, Host 头, TLS SNI 主机名)``。关键点：**只解析一次**，
+    连接时直接连这个 IP，httpx 不会再自己解析一遍 —— 否则「校验时是公网 IP、
+    连接时 DNS rebinding 到 127.0.0.1」的 TOCTOU 窗口依然存在。
+
+    TLS 仍按原主机名校验证书（httpcore 的 ``sni_hostname`` 扩展），所以不会
+    因为换成 IP 连接而接受一张给内网主机签发的证书。
     """
     u = (url or "").strip()
     if not u:
@@ -365,6 +368,8 @@ def assert_safe_url(url: str) -> str:
     p = urlparse(u)
     if p.scheme.lower() not in _ALLOWED_SCHEMES:
         raise UnsafeUrlError("仅支持 http/https 链接")
+    if p.username is not None or p.password is not None:
+        raise UnsafeUrlError("链接不能包含用户名/密码")
     host = p.hostname
     if not host:
         raise UnsafeUrlError("链接缺少主机名")
@@ -374,32 +379,69 @@ def assert_safe_url(url: str) -> str:
     for ip in ips:
         if _is_blocked_ip(ip):
             raise UnsafeUrlError(f"目标地址指向内网或保留地址（{ip}），已拒绝抓取")
-    return u
+
+    ip = ips[0]
+    try:
+        port = p.port
+    except ValueError as e:
+        raise UnsafeUrlError("链接端口不合法") from e
+    host_part = f"[{ip}]" if ":" in ip else ip
+    netloc = host_part + (f":{port}" if port else "")
+    pinned = urlunparse((p.scheme.lower(), netloc, p.path or "/", p.params, p.query, ""))
+
+    # Host 头保留原主机名（含端口），TLS SNI 也用原主机名。
+    # 非 ASCII 域名先转 punycode，避免 httpx 编码请求头时抛 UnicodeEncodeError。
+    try:
+        host_ascii = host.encode("idna").decode("ascii")
+    except UnicodeError as e:
+        raise UnsafeUrlError("主机名不是合法域名") from e
+    host_header = f"[{host_ascii}]" if ":" in host_ascii else host_ascii
+    if port:
+        host_header += f":{port}"
+    return pinned, host_header, host_ascii
 
 
-async def _assert_safe_url_async(url: str) -> str:
-    """在 worker 线程里做校验——getaddrinfo 是阻塞调用，别卡住事件循环。"""
-    return await asyncio.get_running_loop().run_in_executor(None, assert_safe_url, url)
+def assert_safe_url(url: str) -> str:
+    """校验 URL 可安全抓取，返回原 URL；不安全则抛 UnsafeUrlError。
+
+    规则：仅 http/https；主机解析出的**每一个** IP 都不得命中黑名单段。
+    这样既挡住直接写内网 IP，也挡住「域名解析到内网」「DNS rebinding 到内网」
+    「十进制/八进制 IP」这类绕过写法。
+    """
+    _pin_safe_url(url)
+    return (url or "").strip()
+
+
+async def _pin_safe_url_async(url: str) -> tuple[str, str, str]:
+    """在 worker 线程里做解析/校验——getaddrinfo 是阻塞调用，别卡住事件循环。"""
+    return await asyncio.get_running_loop().run_in_executor(None, _pin_safe_url, url)
 
 
 async def fetch_url_text(url: str) -> str:
     """抓取网页并剥离 HTML 标签得到纯文本。
 
     安全约束：只允许 http/https 公网地址；关闭自动重定向，改为手动逐跳跟随，
-    **每一跳都重新做 assert_safe_url 校验**；限制跳转次数与响应体大小。
+    **每一跳都重新解析并固定 IP**；限制跳转次数与响应体大小。
     """
-    current = await _assert_safe_url_async(url)
+    current = (url or "").strip()
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(30.0),
         headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
         follow_redirects=False,
+        # 不走环境代理：代理会按域名重新解析，等于把刚固定好的 IP 又交回去。
+        trust_env=False,
     ) as client:
         for _ in range(_MAX_REDIRECTS + 1):
-            async with client.stream("GET", current) as r:
+            pinned, host_header, tls_host = await _pin_safe_url_async(current)
+            headers = {"Host": host_header}
+            async with client.stream(
+                "GET", pinned, headers=headers,
+                extensions={"sni_hostname": tls_host},
+            ) as r:
                 loc = r.headers.get("location")
                 if r.is_redirect and loc:
                     # 重定向目标同样可能是内网 —— 必须重新校验再跟
-                    current = await _assert_safe_url_async(urljoin(current, loc))
+                    current = urljoin(current, loc)
                     continue
                 r.raise_for_status()
                 chunks, total = [], 0

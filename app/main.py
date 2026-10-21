@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import html
 import json
 import mimetypes
 import os
@@ -11,6 +12,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode
 
 # PWA（功能 3.1）：.webmanifest 需专用 MIME，否则浏览器拒绝安装
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -18,14 +20,16 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
+    HTMLResponse,
     JSONResponse,
+    RedirectResponse,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision, sync_webdav
+from . import access, ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision, sync_webdav
 from .config import (STATIC_DIR, DATA_DIR, DB_PATH, SETTINGS_PATH, BASE_DIR, REMINDER_KEYS,
                      GOAL_KEYS, load_settings, reminder_patch, goal_patch,
                      save_settings, SYNC_KEYS, sync_patch, SYNC_REMOTE_DEFAULT)
@@ -122,17 +126,189 @@ async def _storage_broken_handler(_request: Request, exc: db.StorageBroken):
         content={"ok": False, "storage_broken": True, "detail": str(exc)},
     )
 
-# 允许本地 file:// 演示页（Origin: null）调用 open_app 接口
+# ---------------- 局域网访问令牌（默认只开本机，--lan 才开放并要令牌） ----------------
+
+_LOGIN_TEMPLATE = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GOSHORE · 需要访问令牌</title>
+<style>
+:root{color-scheme:light}*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f3efe5;
+  font-family:"Noto Serif SC","Songti SC",Georgia,serif;color:#2b2b2b}
+.card{width:min(92vw,420px);background:#fffdf7;border:1px solid #d8cfbc;border-radius:14px;
+  padding:30px 28px;box-shadow:0 18px 45px rgba(70,55,30,.12)}
+h1{font-size:20px;margin:0 0 10px}p{line-height:1.7;font-size:14px;color:#5a5245}
+label{display:block;font-size:13px;margin:18px 0 6px;color:#6b5f4b}
+input{width:100%;padding:11px 12px;border:1px solid #cfc4ae;border-radius:8px;
+  background:#fff;font:inherit;font-size:15px}
+button{width:100%;margin-top:16px;padding:11px;border:0;border-radius:8px;
+  background:#3d5a45;color:#fff;font:inherit;font-size:15px;cursor:pointer}
+.err{background:#fbe9e7;color:#9c2f24;border:1px solid #efc4bd;border-radius:8px;
+  padding:10px 12px;font-size:13px;margin:14px 0 0}
+.hint{font-size:12px;color:#8a7c66;margin-top:14px;line-height:1.6}
+code{background:#f0eadc;padding:1px 5px;border-radius:4px}
+</style></head><body><main class="card">
+<h1>GOSHORE 需要访问令牌</h1>
+<p>这个地址在局域网内开放，必须带上启动时生成的访问令牌才能继续。</p>
+__ERROR__
+<form method="post" action="/login">
+  <input type="hidden" name="next" value="__NEXT__">
+  <label for="token">访问令牌</label>
+  <input id="token" name="token" type="password" autocomplete="current-password"
+         autofocus required placeholder="粘贴启动窗口里的令牌">
+  <button type="submit">进入工作台</button>
+</form>
+<p class="hint">令牌在启动 GOSHORE 的控制台窗口里，环境变量名为
+<code>GOSHORE_ACCESS_TOKEN</code>。首次用带 <code>?token=</code> 的地址打开后，
+浏览器会记住 30 天，不必重复输入。</p>
+</main></body></html>"""
+
+
+def _login_page(next_path: str, error: str = "") -> str:
+    err = f'<p class="err">{html.escape(error)}</p>' if error else ""
+    return (_LOGIN_TEMPLATE
+            .replace("__ERROR__", err)
+            .replace("__NEXT__", html.escape(next_path, quote=True)))
+
+
+def _set_access_cookie(resp, token: str):
+    # 局域网是 HTTP，不能加 Secure（否则手机永远收不到 Cookie）；
+    # HttpOnly 防脚本读取，SameSite=Lax 挡住跨站写接口的 CSRF。
+    resp.set_cookie(
+        access.COOKIE_NAME, token, max_age=access.COOKIE_MAX_AGE,
+        httponly=True, samesite="lax", path="/",
+    )
+    resp.headers.setdefault("Cache-Control", "no-store")
+    return resp
+
+
+def _request_is_local(request: Request) -> bool:
+    return access.is_loopback(request.client.host if request.client else None)
+
+
+def _login_next(request: Request) -> str:
+    path = request.url.path or "/"
+    rest = [(k, v) for k, v in parse_qsl(request.url.query, keep_blank_values=True) if k != "token"]
+    return path + (("?" + urlencode(rest)) if rest else "")
+
+
+def _deny_lan(request: Request):
+    """未配置令牌时的失败关闭：局域网请求一律拒绝，而不是默默放行。"""
+    msg = ("局域网访问未配置访问令牌。请用 `python run.py --lan` 启动，"
+           "程序会自动生成令牌并打印带令牌的手机地址。")
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"ok": False, "detail": msg}, status_code=403)
+    return HTMLResponse(
+        "<!doctype html><meta charset='utf-8'><title>GOSHORE</title>"
+        "<body style='font:16px/1.7 serif;padding:8vw;max-width:720px;margin:auto'>"
+        "<h1>局域网访问未启用</h1><p>" + html.escape(msg) + "</p></body>",
+        status_code=403,
+    )
+
+
+@app.middleware("http")
+async def _access_guard(request: Request, call_next):
+    """回环请求直接放行；局域网请求必须持有令牌（未配置则失败关闭）。"""
+    if _request_is_local(request):
+        # 防 DNS rebinding：绑定 127.0.0.1 时，攻击者域名可解析到回环，
+        # 浏览器沿用 evil.example 作为 Host，socket 来源却是 127.0.0.1。
+        # 只允许 localhost / IP 字面量，拒绝借回环来源绕过令牌。
+        if not access.host_header_allowed(request.headers.get("host")):
+            return JSONResponse(
+                {"ok": False, "detail": "Host 头不是本机地址，已拒绝（防 DNS rebinding）。"},
+                status_code=403,
+            )
+        return await call_next(request)
+
+    expected = access.access_token()
+    path = request.url.path
+    # 探活与登录页本身不需要令牌；登录页必须能打开才能输入令牌。
+    if path in ("/login", "/api/health"):
+        return await call_next(request)
+    if not expected:
+        return _deny_lan(request)
+
+    supplied = request.cookies.get(access.COOKIE_NAME) or request.headers.get("x-goshore-token")
+    query_token = request.query_params.get("token")
+    if query_token and access.token_matches(query_token, expected):
+        # 首次带 ?token= 打开：种 Cookie 后把 token 从地址栏去掉（不留在历史/Referer）。
+        target = path
+        rest = [(k, v) for k, v in parse_qsl(request.url.query, keep_blank_values=True)
+                if k != "token"]
+        if rest:
+            target += "?" + urlencode(rest)
+        if request.method in ("GET", "HEAD"):
+            return _set_access_cookie(RedirectResponse(target, status_code=303), expected)
+        return _set_access_cookie(JSONResponse({"ok": True}), expected)
+
+    if access.token_matches(supplied, expected):
+        return await call_next(request)
+
+    if path.startswith("/api/"):
+        return JSONResponse(
+            {"ok": False, "detail": "需要访问令牌：请用启动时打印的带 ?token= 地址打开，或用 X-GOSHORE-Token 请求头。"},
+            status_code=401,
+        )
+    return RedirectResponse("/login?next=" + urlencode({"next": _login_next(request)}), status_code=302)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    nxt = access.safe_next(request.query_params.get("next"))
+    if _request_is_local(request) or access.token_matches(request.cookies.get(access.COOKIE_NAME)):
+        return RedirectResponse(nxt, status_code=303)
+    if not access.access_token():
+        return HTMLResponse(
+            _login_page(nxt, "服务端没有配置访问令牌；请用 python run.py --lan 启动。"),
+            status_code=503,
+        )
+    return HTMLResponse(_login_page(nxt))
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request):
+    form = await request.form()
+    nxt = access.safe_next(form.get("next"))
+    token = access.access_token()
+    if not token:
+        return HTMLResponse(_login_page(nxt, "服务端没有配置访问令牌。"), status_code=503)
+    candidate = str(form.get("token") or "")
+    if not access.token_matches(candidate, token):
+        return HTMLResponse(_login_page(nxt, "令牌不正确，请从启动窗口重新复制。"), status_code=401)
+    return _set_access_cookie(RedirectResponse(nxt, status_code=303), token)
+
+
+# 只保留本机开发地址的 CORS；同源页面本来不需要 CORS。
 try:
     from fastapi.middleware.cors import CORSMiddleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["null", "http://127.0.0.1:8765", "http://localhost:8765"],
+        # 不再放行 Origin: null：任意本地 HTML 文件都能借它调用本机写接口。
+        # 同源页面不需要 CORS；这里只保留本机开发地址。
+        allow_origins=["http://127.0.0.1:8765", "http://localhost:8765"],
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
 except Exception:
     pass
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """给所有响应补最低限度的浏览器安全头。
+
+    - `X-Frame-Options: DENY`：防点击劫持（令牌 Cookie 在跨站 iframe 里通常
+      不会发送，但不能把纵深防御押在 SameSite 上）。
+    - `Referrer-Policy: no-referrer`：`?token=` 首次登录即使被重定向，也不把
+      地址经 Referer 带给第三方。
+    - `X-Content-Type-Options: nosniff`：避免上传/静态文件被嗅探成脚本。
+    """
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return resp
 
 
 @app.get("/api/health")
@@ -417,8 +593,14 @@ def _open_app_pipeline():
 
 
 @app.post("/api/open_app")
-def api_open_app():
-    """异步拉起模拟器 + APP。立即返回，进度用 /api/open_app/status 轮询。"""
+def api_open_app(request: Request):
+    """异步拉起模拟器 + APP。立即返回，进度用 /api/open_app/status 轮询。
+
+    只允许本机触发：这个接口会执行 adb / 启动模拟器，属于本机进程控制；
+    即使局域网请求持有访问令牌，也不该让手机端遥控电脑上的模拟器。
+    """
+    if not _request_is_local(request):
+        raise HTTPException(403, "该操作只能在运行服务的电脑上执行")
     with _OPEN_APP_LOCK:
         state = str(_OPEN_APP["state"])
         if state in ("booting", "launching"):

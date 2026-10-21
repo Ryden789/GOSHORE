@@ -52,9 +52,11 @@ def test_reuse_without_service_returns_2():
     assert desktop.main(["--reuse", "--port", str(_free_port())]) == 2
 
 
-def test_keeps_lan_listening():
-    """桌面壳不得把监听收紧到 127.0.0.1 —— 那会直接废掉手机端 /m/。"""
-    assert 'host="0.0.0.0"' in SRC
+def test_defaults_to_loopback_and_lan_is_explicit():
+    """默认只监听 127.0.0.1；手机访问必须显式 --lan 并走令牌。"""
+    assert 'host = "0.0.0.0" if args.lan else "127.0.0.1"' in SRC
+    assert 'add_argument("--lan"' in SRC
+    assert "access.ensure_access_token()" in SRC
 
 
 def test_window_url_is_http():

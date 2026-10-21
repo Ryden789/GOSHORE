@@ -26,8 +26,29 @@ function sanitizeTag(tag) {
   if (close) return "</" + name + ">";
   const allowed = { img: ["src", "alt", "width", "height"], a: ["href", "title"],
                     td: ["colspan", "rowspan"], th: ["colspan", "rowspan"] }[name] || [];
+  // 浏览器会先解 HTML 实体再解析 URL：`jav&#x61;script:` 等价于 `javascript:`。
+  // 因此协议判断必须基于解码后的值，否则实体编码就能绕过白名单（持久型 XSS）。
+  // 只解数字实体与少量会拆开协议名的命名实体；未知实体保留原文，宁可少认。
+  const decodeEntities = raw => String(raw ?? "").replace(
+    /&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]+);?/gi,
+    (whole, body) => {
+      if (body[0] === "#") {
+        const hex = body[1].toLowerCase() === "x";
+        const n = parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
+        if (!Number.isFinite(n) || n <= 0 || n > 0x10ffff) return whole;
+        try { return String.fromCodePoint(n); } catch { return whole; }
+      }
+      const named = {
+        amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+        colon: ":", tab: "\t", newline: "\n", nbsp: "\u00a0",
+        sol: "/", bsol: "\\", period: ".", comma: ",", lpar: "(", rpar: ")",
+      };
+      const k = body.toLowerCase();
+      return Object.prototype.hasOwnProperty.call(named, k) ? named[k] : whole;
+    });
   const urlOk = v => {
-    const t = v.trim().replace(/[\u0000-\u0020]/g, "");     // 先去掉空白/控制字符，防绕过
+    // 浏览器解析 URL 时会忽略空白/控制字符（含 Tab、换行），这里同样先清掉。
+    const t = decodeEntities(v).replace(/[\u0000-\u0020\u007f-\u009f]/g, "");
     if (/^https?:\/\//i.test(t)) return true;
     if (t.startsWith("#")) return true;
     if (/^data:/i.test(t)) return /^data:image\/(?:png|jpe?g|gif|webp|bmp);base64,/i.test(t);
@@ -40,12 +61,15 @@ function sanitizeTag(tag) {
   let a;
   while ((a = attrRe.exec(attrStr))) {
     const an = a[1].toLowerCase();
-    const av = a[2] !== undefined ? a[2] : (a[3] !== undefined ? a[3] : (a[4] || ""));
-    if (an === "class") { if (/^[A-Za-z0-9 _-]*$/.test(av)) keep.push('class="' + av + '"'); continue; }
+    const raw = a[2] !== undefined ? a[2] : (a[3] !== undefined ? a[3] : (a[4] || ""));
+    // 统一解码后再校验/输出：避免“校验看原文、浏览器看解码值”的错位。
+    // escText 会重新转义，所以解码不会让属性值逃逸出双引号。
+    const av = decodeEntities(raw);
+    if (an === "class") { if (/^[A-Za-z0-9 _-]*$/.test(av)) keep.push('class="' + escText(av) + '"'); continue; }
     if (allowed.indexOf(an) < 0) continue;          // on* / style / id 等一律丢弃
     if (an === "src" || an === "href") { if (!urlOk(av)) continue; }
     else if (!/^\d{1,4}$/.test(av.trim())) continue;
-    keep.push(an + '="' + av.replace(/"/g, "&quot;") + '"');
+    keep.push(an + '="' + escText(av) + '"');
   }
   return "<" + name + (keep.length ? " " + keep.join(" ") : "") + ">";
 }

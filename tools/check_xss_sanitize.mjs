@@ -107,12 +107,24 @@ const APP_XSS = [
   ["<form action=x><input name=a></form>", "form", "form 删除"],
   ["<noscript><img src=x onerror=alert(1)></noscript>", "noscript", "noscript 删除"],
   ["<a href=\"//evil.com/x\">x</a>", "evil.com", "协议相对 URL 剥离（// 开头）"],
+  // 浏览器先解 HTML 实体再解析 URL：编码后的 javascript: 必须同样被剥离。
+  ["<a href=\"jav&#x61;script:alert(1)\">x</a>", "jav&#x61;script:", "十六进制实体编码的 javascript: 剥离"],
+  ["<a href=\"&#106;avascript:alert(1)\">x</a>", "&#106;avascript:", "十进制实体编码的 javascript: 剥离"],
+  ["<a href=\"javascript&#58;alert(1)\">x</a>", "javascript&#58;", "实体编码冒号的 javascript: 剥离"],
+  ["<a href=\"javascript&colon;alert(1)\">x</a>", "javascript&colon;", "命名实体冒号的 javascript: 剥离"],
+  ["<a href=\"java&#x09;script:alert(1)\">x</a>", "java&#x09;script:", "Tab 实体拆分的 javascript: 剥离"],
+  ["<a href=\"jav&#x0A;ascript:alert(1)\">x</a>", "jav&#x0A;ascript:", "换行实体拆分的 javascript: 剥离"],
+  ["<a href=\"JaVa&#x53;cRiPt:alert(1)\">x</a>", "JaVa&#x53;cRiPt:", "大小写+实体混合的 javascript: 剥离"],
 ];
 
 for (const [input, needle, label] of APP_XSS) {
   hasNot(appS.sanitizeHtml(input), needle, `A 桌面 sanitizeHtml：${label}`);
   hasNot(mobS.sanitizeHtml(input), needle, `A 移动 sanitizeHtml：${label}`);
 }
+
+// 实体解码不能误伤正常查询串：&amp; 解码再转义后仍应等价于 &amp;。
+has(appS.sanitizeHtml('<a href="https://example.com/?a=1&amp;b=2">x</a>'),
+  'href="https://example.com/?a=1&amp;b=2"', "B 正常 URL 的 &amp; 保留");
 
 // 事件属性经 sanitizeTag 单测（md() 走的正是这条）
 hasNot(appS.sanitizeTag("<img src=x onerror=alert(1)>"), "onerror", "A 桌面 sanitizeTag：img onerror 剥离");
@@ -168,7 +180,7 @@ ok(SHARED_SRC.includes("function sanitizeTag(") && SHARED_SRC.includes("function
 
 function buildDesktopMd() {
   const appNames = ["HTML_WHITELIST", "HTML_WHITELIST_CLOSE"];
-  const sharedNames = ["SANITIZE_TAGS", "SANITIZE_VOID"];
+  const sharedNames = ["SANITIZE_TAGS", "SANITIZE_VOID", "escText"];
   const parts = [];
   for (const n of appNames) parts.push(pick(APP_SRC, "desktop", n));
   for (const n of sharedNames) parts.push(pick(SHARED_SRC, "shared", n));
@@ -194,7 +206,7 @@ const CUT2 = 'else if (!/^\\d{1,4}$/.test(av.trim())) continue;';
 ok(M_TAG_SRC.includes(CUT1) && M_TAG_SRC.includes(CUT2), "E0 移动端 sanitizeTag 里有属性白名单与数值校验");
 const tampered = M_TAG_SRC.split(CUT1).join("").split(CUT2).join("");
 ok(tampered !== M_TAG_SRC, "E1 篡改样本已生效（属性过滤被移除）");
-const tamperedTag = new Function(`${extractConst(SHARED_SRC, "SANITIZE_TAGS")}\n\n${extractConst(SHARED_SRC, "SANITIZE_VOID")}\n\n${tampered}\n\nreturn sanitizeTag;`)();
+const tamperedTag = new Function(`${extractConst(SHARED_SRC, "SANITIZE_TAGS")}\n\n${extractConst(SHARED_SRC, "SANITIZE_VOID")}\n\n${extractConst(SHARED_SRC, "escText")}\n\n${tampered}\n\nreturn sanitizeTag;`)();
 has(tamperedTag("<img src=x onerror=alert(1)>"), "onerror",
     "E2 篡改自检：拆掉属性白名单后 onerror 必须漏出（未漏则说明校验形同虚设）");
 

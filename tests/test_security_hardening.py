@@ -130,6 +130,26 @@ def test_fetch_url_text_rejects_redirect_to_internal(monkeypatch):
     assert "169.254.169.254" not in "".join(seen), "不得真的请求内网地址"
 
 
+def test_fetch_url_text_pins_resolved_ip_but_keeps_host_and_sni(monkeypatch):
+    """连接必须打到刚校验的 IP；Host / TLS SNI 仍是原域名（防 DNS rebinding）。"""
+    import httpx
+
+    seen = {}
+
+    def handler(req):
+        seen["url"] = str(req.url)
+        seen["host"] = req.headers.get("host")
+        seen["sni"] = req.extensions.get("sni_hostname")
+        return httpx.Response(200, text="<p>ok</p>")
+
+    monkeypatch.setattr(importer, "_resolve_ips", lambda host: ["93.184.216.34"])
+    _patch_client(monkeypatch, handler)
+    assert asyncio.run(importer.fetch_url_text("https://example.com/a")) == "ok"
+    assert seen["url"].startswith("https://93.184.216.34/")
+    assert seen["host"] == "example.com"
+    assert seen["sni"] == "example.com"
+
+
 def test_fetch_url_text_rejects_redirect_loop(monkeypatch):
     def handler(req):
         return httpx.Response(302, headers={"location": "/loop"})
@@ -242,20 +262,29 @@ def test_xss_validator_runs_green(node_exe):
     assert "全通过" in (p.stdout or "")
 
 
-# ------------------------------------------- SEC-1：信任模型决策 = 「维持现状 + 补警示」
+# ------------------------------------------- SEC-1：默认本机 + 局域网令牌
 
-def test_lan_risk_warning_in_startup_banner():
-    """启动横幅必须把「局域网无鉴权」讲清楚（否则用户不知道自己在什么风险下用）。"""
+def test_startup_defaults_to_loopback_and_requires_token_for_lan():
+    """默认只监听 127.0.0.1；--lan 必须显式开启并带令牌，不能再宣传“无鉴权”。"""
     src = _read(ROOT / "run.py")
-    assert "0.0.0.0" in src
-    for needle in ("没有登录鉴权", "可信网络", "公共 Wi-Fi"):
-        assert needle in src, f"run.py 启动横幅缺少安全警示：{needle}"
+    assert "127.0.0.1" in src
+    assert '"0.0.0.0" if args.lan else "127.0.0.1"' in src
+    assert "--lan" in src
+    assert "GOSHORE_ACCESS_TOKEN" in src
+    assert "没有登录鉴权" not in src
 
 
-def test_lan_risk_warning_in_readme():
+def test_readme_documents_token_model():
     readme = _read(ROOT / "README.md")
-    for needle in ("安全边界", "没有登录鉴权", "可信网络", "公共 Wi-Fi"):
-        assert needle in readme, f"README 缺少安全边界说明：{needle}"
-    # 必须点明「重置接口只查 confirm 不是访问控制」这个具体误区
-    assert "confirm=true" in readme
+    for needle in ("访问令牌", "默认只监听", "127.0.0.1", "GOSHORE_ACCESS_TOKEN"):
+        assert needle in readme, f"README 缺少访问令牌说明：{needle}"
+
+
+def test_license_and_content_notice_exist():
+    """代码许可与题库版权必须分开写清楚，避免“MIT 覆盖了题目”的误解。"""
+    license_text = _read(ROOT / "LICENSE")
+    assert "MIT License" in license_text
+    notice = _read(ROOT / "NOTICE.md")
+    assert "不覆盖" in notice and "题库" in notice
+    assert "NOTICE.md" in _read(ROOT / "README.md")
 

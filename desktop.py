@@ -11,8 +11,9 @@
 
 三个刻意的选择（改之前先看这里）
 --------------------------------
-* **仍监听 0.0.0.0**：桌面壳只换「显示层」，手机端 ``/m/`` 必须照旧可用。
-  为了"更像桌面应用"把监听收紧到 127.0.0.1，会直接废掉手机功能。
+* **默认只监听 127.0.0.1**：桌面窗口只需要本机回环，默认不把题库暴露给
+  同一局域网。确需手机访问时用 `desktop.py --lan`，会监听 0.0.0.0 并自动
+  生成访问令牌（与 `run.py --lan` 同一套机制）。
 * **必须走 http://127.0.0.1 而不是 file://**：``static/index.html`` 里
   Service Worker 的注册带 ``location.protocol.startsWith("http")`` 判断，
   用 file:// 加载会让 SW 静默失效，缓存版本升级逻辑随之失效。
@@ -22,7 +23,8 @@
 
 用法
 ----
-    python desktop.py                 # 起服务 + 开窗口
+    python desktop.py                 # 起服务 + 开窗口（仅本机）
+    python desktop.py --lan           # 同时开放局域网，打印带令牌的手机地址
     python desktop.py --reuse         # 只开窗口，连接已在运行的服务
     python desktop.py --selftest      # 自检：起服务 → 探活 → 退出（不开窗口）
     python desktop.py --port 8799     # 临时换端口
@@ -49,6 +51,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:                            # noqa: BLE001 — 非 TTY / 已关闭
         pass
 
+from app import access
 from app.config import DATA_DIR, load_settings
 
 APP_TITLE = "GOSHORE 上岸工作台"
@@ -98,7 +101,7 @@ def _is_goshore(port: int) -> bool:
 
 # ------------------------------------------------------------------ 服务线程
 
-def _start_server(port: int):
+def _start_server(port: int, host: str = "127.0.0.1"):
     """在后台线程里跑 uvicorn，返回 (server, thread, errors)。
 
     uvicorn 的 ``install_signal_handlers`` 有主线程守卫（非主线程直接跳过），
@@ -111,7 +114,7 @@ def _start_server(port: int):
     from app.main import app as fastapi_app   # 显式导入，也让静态分析能收集到
 
     cfg = uvicorn.Config(
-        fastapi_app, host="0.0.0.0", port=port, log_level="warning"
+        fastapi_app, host=host, port=port, log_level="warning"
     )
     srv = uvicorn.Server(cfg)
     errors: list[BaseException] = []
@@ -246,12 +249,15 @@ def _alert(msg: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="GOSHORE 桌面模式（原生窗口，不开浏览器）")
     ap.add_argument("--port", type=int, default=None, help="覆盖 data/settings.json 里的端口")
+    ap.add_argument("--lan", action="store_true",
+                    help="同时开放局域网（0.0.0.0），自动生成访问令牌；默认只开本机")
     ap.add_argument("--reuse", action="store_true", help="只开窗口，连接已在运行的服务")
     ap.add_argument("--selftest", action="store_true", help="只自检，不开窗口")
     args = ap.parse_args(argv)
 
     port = args.port or int(load_settings()["port"])
     url = f"http://127.0.0.1:{port}"
+    host = "0.0.0.0" if args.lan else "127.0.0.1"
     srv = None
 
     if args.reuse:
@@ -271,10 +277,16 @@ def main(argv: list[str] | None = None) -> int:
         print("=" * 54)
         print(f"  {APP_TITLE} · 桌面模式")
         print(f"  本机窗口： {url}")
-        print(f"  手机访问： 同一 Wi-Fi 下 http://<本机IPv4>:{port}/m/")
-        print("  桌面窗口只换了显示层，服务仍监听 0.0.0.0，手机端照旧可用")
+        if args.lan:
+            token = access.ensure_access_token()
+            print(f"  手机访问： http://<本机IPv4>:{port}/m/?token={token}")
+            print(f"  访问令牌： {token}")
+            print("  ⚠️ 已开放局域网；非本机请求必须带令牌，不要把带令牌的链接外传。")
+        else:
+            print("  手机访问： 未开启（默认只允许本机）")
+            print("  确需手机访问：关闭本窗口后运行 python desktop.py --lan")
         print("=" * 54)
-        srv, _thread, errors = _start_server(port)
+        srv, _thread, errors = _start_server(port, host)
         if not _wait_ready(port, 30.0, errors):
             detail = f"：{errors[0]!r}" if errors else "（30 秒内未就绪）"
             _alert(f"服务启动失败{detail}\n\n详见 data/logs/ 下的日志。")

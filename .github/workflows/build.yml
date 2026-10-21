@@ -18,7 +18,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest==9.1.1
       - name: 运行测试
         run: |
           # 失败时把「失败的用例名」提升为 GitHub 注解。
@@ -48,6 +48,13 @@ jobs:
           PY
           fi
           exit "$rc"
+      - name: 前端静态校验（15 个 node checker）
+        run: |
+          set -e
+          for f in tools/check_*.mjs; do
+            echo "== $f"
+            node "$f"
+          done
 
   # APK 构建：仅在手动触发时执行。
   # 说明：本项目 Android 构建依赖本地工具链（Chaquopy + .tools/ 下的 Gradle/SDK/wheels，
