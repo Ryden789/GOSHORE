@@ -844,27 +844,24 @@ class AskIn(BaseModel):
     messages: list[dict] = []
 
 
+# 含 3 张压缩图的 JSON 通常 < 6 MB；这里挡住超大请求体，避免在解析阶段
+# 就被恶意客户端用几百 MB 的 base64 拖垮本地进程。
+ASK_MAX_BODY_BYTES = 24 * 1024 * 1024
+
+
 @app.post("/api/ai/ask")
-async def api_ai_ask(b: AskIn):
+async def api_ai_ask(b: AskIn, request: Request):
     """自由提问 AI 答疑：与做题无关，历史存前端 localStorage，服务端不落库。"""
-    msgs = []
-    use_vision = False
-    for m in b.messages[-12:]:
-        role = m.get("role")
-        if role not in ("user", "assistant"):
-            continue
-        raw = m.get("content")
-        if isinstance(raw, list):
-            # 多模态消息（含图片），原样传递
-            msgs.append({"role": role, "content": raw})
-            if any(isinstance(p, dict) and p.get("type") == "image_url" for p in raw):
-                use_vision = True
-        else:
-            content = str(raw or "")[:4000]
-            if content:
-                msgs.append({"role": role, "content": content})
-    if not msgs or msgs[-1]["role"] != "user":
-        raise HTTPException(400, "最后一条必须是用户提问")
+    try:
+        length = int(request.headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        length = 0
+    if length > ASK_MAX_BODY_BYTES:
+        raise HTTPException(413, "问题内容过大，请减少图片数量或压缩后重试")
+    try:
+        msgs, use_vision = ai.normalize_ask_messages(b.messages)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     messages = [{"role": "system", "content": ai.ASK_SYSTEM}] + msgs
 
     async def gen():
@@ -1532,7 +1529,7 @@ async def api_doubt_recheck(qid: str):
     doc = db.get_doc(doc_id) if doc_id else None
 
     parts = [
-        "你是事业单位C类命题质检员。下面是一道真题及其「疑点描述」，请你独立重算/重读，判断疑点是否成立，给出结论与理由，200 字以内。若题目含图片，你无法读图，只能基于文字与给定解析复核，不得臆断图中内容。",
+        "你是行测/职测命题质检员，熟悉国考、省考与事业单位C类命题。下面是一道真题及其「疑点描述」，请你独立重算/重读，判断疑点是否成立，给出结论与理由，200 字以内。若题目含图片，你无法读图，只能基于文字与给定解析复核，不得臆断图中内容。",
         f"【疑点描述】{target['descr']}",
     ]
     if doc:
@@ -1552,7 +1549,7 @@ async def api_doubt_recheck(qid: str):
         parts.append("（题库中未找到原题，仅根据疑点描述判断）")
 
     messages = [
-        {"role": "system", "content": "你是事业单位C类命题质检员，独立复核题目疑点，只给结论与依据。"},
+        {"role": "system", "content": "你是行测/职测命题质检员，独立复核题目疑点，只给结论与依据。"},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
     buf = []

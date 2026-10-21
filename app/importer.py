@@ -465,7 +465,7 @@ async def fetch_url_text(url: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-_EXTRACT_PROMPT = """你是事业单位C类题库录入员。从用户给的网页/文本内容中抽取所有选择题（真题），输出 JSON 数组，不要任何额外文字或 markdown 代码块，JSON 紧凑输出（不缩进、不换行）。
+_EXTRACT_PROMPT = """你是公务员行测/事业单位职测题库录入员，熟悉国考、省考与事业单位C类题型。从用户给的网页/文本内容中抽取所有选择题（真题），输出 JSON 数组，不要任何额外文字或 markdown 代码块，JSON 紧凑输出（不缩进、不换行）。
 
 每题格式：
 {"no":1,"stem":"完整题干（含材料中的设问句）","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","analysis":"一两句简析（60字内）","module":"模块","kaodian":"考点","year":"年份","exam":"试卷名"}
@@ -631,7 +631,7 @@ async def ai_extract_questions(text: str, extra_items: list[dict] | None = None)
     comp = _completeness_note(text, items)
     if comp:
         notes.append(comp)
-    # 选项数异常提示（C类正常为4选项，AI 可能漏抽尾部选项）
+    # 选项数异常提示（行测/职测选择题常见4选项，AI 可能漏抽尾部选项）
     odd = [i + 1 for i, it in enumerate(items) if len(it["options"]) < 4]
     if odd:
         notes.append(f"{len(odd)} 题选项不足4个（第 {', '.join(map(str, odd[:10]))} 题），请在预览中核对")

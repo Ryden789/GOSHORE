@@ -1710,21 +1710,17 @@ class _Handler(BaseHTTPRequestHandler):
     # ---- 自由提问 AI 答疑（不做题也能问，SSE 流式） ----
 
     def _ai_ask(self, b):
-        raw = b.get("messages") or []
-        msgs = []
-        for m in raw[-12:]:
-            role = m.get("role")
-            if role not in ("user", "assistant"):
-                continue
-            content = str(m.get("content") or "")[:4000]
-            if content:
-                msgs.append({"role": role, "content": content})
-        if not msgs or msgs[-1]["role"] != "user":
-            return self._err(400, "最后一条必须是用户提问")
+        # 与 Web 端共用同一套多模态校验：手机拍照后 content 是
+        # [{type:text}, {type:image_url}...]，必须保留 list 并开启视觉模型。
+        # 旧实现 str(content) 会把图片列表压成一段 Python 字典文本，模型收不到图。
+        try:
+            msgs, use_vision = ai.normalize_ask_messages(b.get("messages"))
+        except ValueError as e:
+            return self._err(400, str(e))
         messages = [{"role": "system", "content": ai.ASK_SYSTEM}] + msgs
 
         async def gen():
-            async for kind, payload in ai.stream_chat(messages):
+            async for kind, payload in ai.stream_chat(messages, use_vision=use_vision):
                 yield kind, payload
 
         self._stream_sse(gen())

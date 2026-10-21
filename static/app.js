@@ -6217,8 +6217,8 @@ function aiAskSave(msgs) {
 
 async function renderAiAsk() {
   const chips = [
-    "资料分析常考陷阱有哪些", "数量关系做题慢怎么提速", "判断推理·论证题型怎么破",
-    "言语主旨题有什么方法", "C类综应备考规划建议",
+    "国考行测怎么分配时间", "申论大作文怎么立意", "行测和职测有什么区别",
+    "资料分析常考陷阱有哪些", "数量关系做题慢怎么提速", "C类综应备考规划建议",
   ];
   let msgs = aiAskLoad();
   let streaming = false;
@@ -6227,7 +6227,7 @@ async function renderAiAsk() {
     <div class="panel" style="max-width:860px;margin:24px auto 0;display:flex;flex-direction:column;height:calc(100vh - 150px)">
       <div style="display:flex;align-items:center;gap:12px">
         <h3 style="margin:0;flex:1">AI 答疑
-          <span style="color:var(--ink-2);font-size:calc(13px * var(--fs));font-weight:normal">不做题也能问：知识点 · 技巧 · 考情 · 规划</span>
+          <span style="color:var(--ink-2);font-size:calc(13px * var(--fs));font-weight:normal">行测/职测 · 申论/综应 · 国考考情，拍照也能问</span>
         </h3>
         <button class="btn" id="aiAskNew">🗑 新对话</button>
       </div>

@@ -5874,8 +5874,8 @@ function aiAskSave(m) {
 
 async function renderAiAsk() {
   const chips = [
-    "资料分析常考陷阱有哪些", "数量关系做题慢怎么提速", "判断推理论证题怎么破",
-    "言语主旨题有什么方法", "C类综应备考规划建议",
+    "国考行测怎么分配时间", "申论大作文怎么立意", "行测和职测有什么区别",
+    "资料分析常考陷阱有哪些", "数量关系做题慢怎么提速", "C类综应备考规划建议",
   ];
   let msgs = aiAskLoad();
   let streaming = false;
@@ -5888,7 +5888,11 @@ async function renderAiAsk() {
       </div>
       <div id="aiPreviews" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 0"></div>
       <div style="display:flex;gap:8px;margin-top:8px;align-items:flex-end">
-        <label id="aiImgBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--line,#ddd);border-radius:8px;flex-shrink:0" title="上传图片">
+        <label id="aiCamBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--line,#ddd);border-radius:8px;flex-shrink:0" title="拍照搜题" aria-label="拍照搜题">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          <input type="file" accept="image/*" capture="environment" style="display:none" id="aiCamera">
+        </label>
+        <label id="aiImgBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--line,#ddd);border-radius:8px;flex-shrink:0" title="从相册选择" aria-label="从相册选择">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
           <input type="file" accept="image/*" multiple style="display:none" id="aiFile">
         </label>
@@ -5906,13 +5910,16 @@ async function renderAiAsk() {
   const goBtn = $("#aiGo");
   const newBtn = $("#aiNew");
   const fileInput = $("#aiFile");
+  const cameraInput = $("#aiCamera");
   const previewBox = $("#aiPreviews");
   let attachedImages = [];
 
   const compressImage = (file) => new Promise(resolve => {
     const reader = new FileReader();
+    reader.onerror = () => resolve("");
     reader.onload = e => {
       const img = new Image();
+      img.onerror = () => resolve("");
       img.onload = () => {
         const maxW = 1024;
         let w = img.width, h = img.height;
@@ -5938,16 +5945,21 @@ async function renderAiAsk() {
     });
   };
 
-  fileInput.onchange = async () => {
-    const files = Array.from(fileInput.files).slice(0, 3 - attachedImages.length);
+  const attachFiles = async (inputEl) => {
+    const files = Array.from(inputEl.files).slice(0, 3 - attachedImages.length);
     for (const f of files) {
       if (!f.type.startsWith("image/")) continue;
       const compressed = await compressImage(f);
-      attachedImages.push(compressed);
+      if (compressed) attachedImages.push(compressed);
     }
     renderPreviews();
-    fileInput.value = "";
+    inputEl.value = "";
   };
+
+  // 拍照与相册分开：capture="environment" 让手机直接调后置摄像头，
+  // 相册入口保留 multiple，方便一次补传多张截图。
+  cameraInput.onchange = () => attachFiles(cameraInput);
+  fileInput.onchange = () => attachFiles(fileInput);
 
   const bubble = (role, text, images) => {
     const row = document.createElement("div");

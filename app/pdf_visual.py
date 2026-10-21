@@ -167,7 +167,7 @@ async def _vision_analysis(key: str, base_url: str, images: list[str], stem: str
     """
     content: list[dict] = [{
         "type": "text",
-        "text": ("这是事业单位C类职测的一道题，截图上方是题干图形/图表，下方是 A/B/C/D 四个选项。\n"
+        "text": ("这是行测/职测的一道题，截图上方是题干图形/图表，下方是 A/B/C/D 四个选项。\n"
                  f"正确答案：{answer}\n题干文字：{stem[:200]}\n"
                  "请输出紧凑 JSON（不要 markdown 代码块）：{\"module\":\"...\",\"kaodian\":\"...\",\"analysis\":\"...\"}\n"
                  "module 只能是：常识判断 / 言语理解 / 数量关系 / 判断推理 / 资料分析 / 综合分析；"
