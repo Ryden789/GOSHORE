@@ -32,10 +32,25 @@ def _today_str() -> str:
     import datetime as _dt
     return _dt.date.today().isoformat()
 
+# 端点已退役的模型名 → 当前可用名。手机端设置是独立的
+# users/data_<uid>.settings.json，不能只改桌面 config.DEFAULTS。
+_MOBILE_MODEL_ALIASES = {
+    "deepseek-v4.1-flash-20261017": "deepseek-flash",
+    "deepseek-chat": "deepseek-flash",
+}
+
+
+def _normalize_mobile_model(s: dict) -> None:
+    for key in ("deepseek_model", "deepseek_vision_model"):
+        value = s.get(key)
+        if isinstance(value, str):
+            s[key] = _MOBILE_MODEL_ALIASES.get(value.strip(), value)
+
+
 _MOBILE_SETTINGS_DEFAULTS = {
     "deepseek_base_url": "https://api.deepseek.com",
     "deepseek_api_key": "",
-    "deepseek_model": "deepseek-chat",
+    "deepseek_model": "deepseek-flash",
     # N3 考试倒计时：'YYYY-MM-DD'，空则首页不显示横幅
     "exam_date": "",
     # N2 学习提醒：开关 / 每日提醒时间 'HH:mm' / 仅当天计划未完成时提醒
@@ -70,6 +85,7 @@ def _mobile_load_settings() -> dict:
             s.update(json.loads(p.read_text(encoding="utf-8")))
         except Exception:
             pass
+    _normalize_mobile_model(s)
     return s
 
 
@@ -94,6 +110,7 @@ def _mobile_save_settings(patch: dict) -> None:
     p = _USERS_DIR / f"data_{uid}.settings.json"
     s = _mobile_load_settings()
     s.update(patch)
+    _normalize_mobile_model(s)
     tmp = p.with_name(p.name + ".tmp")
     tmp.write_text(json.dumps(s, ensure_ascii=False, indent=2),
                    encoding="utf-8")
@@ -110,7 +127,7 @@ async def _settings_test() -> dict:
     if not key:
         return {"ok": False, "error": "尚未填写 API Key"}
     payload = {
-        "model": s.get("deepseek_model") or "deepseek-chat",
+        "model": s.get("deepseek_model") or "deepseek-flash",
         "messages": [{"role": "user", "content": "ping"}],
         "max_tokens": 1,
         "stream": False,

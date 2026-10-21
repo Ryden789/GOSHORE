@@ -4,7 +4,7 @@
 
 - 纯本地运行，学习记录不上传第三方（多设备同步为**端到端加密**的可选功能，见下）
 - 桌面端 `http://127.0.0.1:8765`；手机访问需显式 `--lan` 开启，并用启动日志里的**访问令牌**登录
-- Android 源码保留，APK 需本地 Chaquopy/Android 工具链构建；Release **不附带** APK，仓库内提供 `dist/goshor-20261029.apk` 供直接侧载
+- Android 源码保留，APK 需本地 Chaquopy/Android 工具链构建；Release **不附带** APK，仓库内提供 `dist/goshor-20261030.apk` 供直接侧载
 
 ## 功能特性
 
@@ -76,10 +76,10 @@
 
 - **后端**：Python 3.13 / FastAPI / SQLite（FTS5 全文检索）/ httpx
 - **前端**：原生 HTML + CSS + JavaScript（无构建依赖，hash 路由单页应用），「书房纸墨风」设计（米白宣纸底 + 墨色文字 + 朱砂印章色）；桌面端 `static/app.js` 与移动端 `static/m/m.js` 各自负责 UI / 路由，纯逻辑（主题、字号、笔记、草稿、提醒、判分、净化）共享在 `static/shared/`
-- **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-v4.1-flash-20261017`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
+- **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-flash`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 993 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
+- **测试**：pytest 1001 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
 
 ## 快速开始（首次使用顺序）
 
@@ -184,9 +184,9 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 ### 安卓 APP（源码保留，需自行构建）
 
 - **APK 不在 Release 分发**：仓库保留 Android 壳源码，构建依赖本机 Chaquopy / Android SDK
-  工具链（未纳入仓库）。`dist/goshor-20261029.apk` 是 2026-10-21 晚间重建的当前版本（299.95 MB，
-  SHA256 `23FEC27F…35884`，versionCode 2 / versionName 1.1），已含行测/申论/国考 AI 框架、
-  手机直接拍照答疑、P3 共享层、P4 校验与安全加固；旧版本 APK 已清理，
+  工具链（未纳入仓库）。`dist/goshor-20261030.apk` 是 2026-10-21 晚间重建的当前版本（299.95 MB，
+  SHA256 `3eebd224…4980f5`，versionCode 3 / versionName 1.2），已含行测/申论/国考 AI 框架、
+  手机直接拍照答疑、模型名 400 修复、P3 共享层、P4 校验与安全加固；旧版本 APK 已清理，
   仅保留这一份。APK 仍是单库形态（`goshor.db`），与桌面端的 `content.db + user.db` 分离不同。
 - **演示页一键打开**：`docs/05-宣传/软件介绍PPT.html` 第 12 页的「安装并打开安卓 APP」会自动探测本地服务端口 → 没有现成设备就先拉起 **MuMu 模拟器**（没装则退回 Android SDK 的 AVD）→ `adb` 装 APK 并启动 `MainActivity`，全过程约 25 秒，进度实时显示在页面上。若两者都没有，会明确提示「装 MuMu 或插上开着 USB 调试的手机」。
 - **需要最新安卓版**：在 `android/` 下按 build.gradle 注释准备工具链后执行构建；或直接用手机浏览器访问 `--lan` 的 `/m/`（功能对齐移动端网页）。
@@ -241,7 +241,7 @@ GOSHORE/
 │   ├── goshor.db          # 单库模式的老布局（与新布局二选一，见下）
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（993 条）
+├── tests/                 # pytest 用例（1001 条）
 ├── tools/                 # 校验器（15 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── migrate_split.py       # 老单库 → content.db + user.db
@@ -277,7 +277,7 @@ python tools/migrate_split.py             # 真迁移（约 15~45 秒）
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（993 条，跑在临时库上，不碰 data/*.db）
+# 后端单元 / 接口测试（1001 条，跑在临时库上，不碰 data/*.db）
 python -m pytest tests -q
 
 # AI 离线质量评测（不联网、不花 token；低于 95 分退出码 1）
@@ -297,7 +297,7 @@ node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 993 passed**、**AI 评测 33 条全过（100.00 分）**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
+当前基线：**pytest 1001 passed**、**AI 评测 33 条全过（100.00 分）**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
 
 ## 常见问题
 
@@ -319,8 +319,8 @@ python scripts/e2e_mobile.py
 
 ### AI 模型相关
 
-- **默认模型**：`deepseek-v4.1-flash-20261017`。可在「设置 → 题库与 AI」里改。
-- **报错 `Model Not Exist` / 400**：说明该模型名不被当前端点接受，改成 `deepseek-flash`（跟随最新 Flash）即可。
+- **默认模型**：`deepseek-flash`（支持看图，速度快）。可在「设置 → 题库与 AI」里改；需要更强推理可选 `deepseek-v4-pro`。
+- **报错 `Model Not Exist` / 400**：说明该模型名不被当前端点接受。当前端点只接受 `deepseek-flash`、`deepseek-v4-pro`；旧版写入的 `deepseek-v4.1-flash-20261017` / `deepseek-chat` 会在启动时自动迁移为 `deepseek-flash`。
 - **看图（拍照识题 / PDF 图形题）**：默认跟随主模型；若主模型不支持多模态，把「视觉模型」单独设为 `deepseek-flash`。
 - **Key 有效性无法先行探测**：DeepSeek 的认证校验**先于**模型校验，用无效 Key 探测任何模型名都会返回 401，因此只有真实 Key 才能确认模型是否可用。
 

@@ -93,10 +93,9 @@ DEFAULTS = {
     "vault_path": "",
     "deepseek_base_url": "https://api.deepseek.com",
     "deepseek_api_key": "",
-    # V4.1 Flash（20261017）带日期固定版：显式锁定版本，避免服务端滚动升级
-    # 带来的行为漂移。若官方端点不接受该字符串，改回 "deepseek-flash" 即可
-    # （项目里看图功能一直用后者，已验证可用）。
-    "deepseek_model": "deepseek-v4.1-flash-20261017",
+    # 服务端当前只接受 deepseek-flash / deepseek-v4-pro；带日期的旧固定版
+    # （deepseek-v4.1-flash-20261017）会被 400 拒绝。默认用支持看图的 flash。
+    "deepseek_model": "deepseek-flash",
     # 看图（拍照识题 / PDF 图形题）专用模型：必须是原生多模态，且要能关思考模式。
     # 空串表示「跟随 deepseek_model」——这样升级主模型时看图功能自动同步，
     # 不必在 ai.py / cube_vision.py / pdf_visual.py 三处逐一改。
@@ -127,6 +126,26 @@ DEFAULTS = {
     # mtime_ns/size 拼串，用来判断「本机自上次同步后又写入了新数据」。
     "sync_local_stamp": "",
 }
+
+# 已被端点退役、会直接返回 400 的模型名 → 当前等价模型。
+# 只迁移明确退役的别名；用户自建端点/自定义模型名保持原样，不做猜测。
+_RETIRED_MODEL_ALIASES = {
+    "deepseek-v4.1-flash-20261017": "deepseek-flash",
+    "deepseek-chat": "deepseek-flash",
+}
+
+
+def _normalize_model_names(s: dict) -> None:
+    """把存量设置里的退役模型名换成当前可用名。
+
+    旧版 exe 曾把带日期模型写进 settings.json；只改代码默认值无法修复
+    这类存量配置，所以读取和保存时都要归一化。
+    """
+    for key in ("deepseek_model", "deepseek_vision_model"):
+        value = s.get(key)
+        if isinstance(value, str):
+            s[key] = _RETIRED_MODEL_ALIASES.get(value.strip(), value)
+
 
 # ---------------- 视觉模型解析 ----------------
 
@@ -420,6 +439,7 @@ def load_settings() -> dict:
             s.update(disk)
         except Exception:
             pass
+    _normalize_model_names(s)
     dirty = False
     for plain, enc_field in _SECRET_FIELDS.items():
         s[plain] = _plain_of(disk, plain)
@@ -476,6 +496,7 @@ def _save_settings_locked(patch: dict) -> dict:
             s[field] = plain
             s.pop(enc_field, None)
     s.update(patch)
+    _normalize_model_names(s)
     if _dpapi_available():
         for field in _SECRET_FIELDS:      # 明文绝不落盘
             s[field] = ""

@@ -3810,7 +3810,7 @@ async function renderSettings() {
       <div class="field">
         <label>模型</label>
         <input id="setModel" class="m-input" value="${esc(s.deepseek_model)}"/>
-        <div class="muted">deepseek-v4.1-flash-20261017（默认）/ deepseek-flash（跟随最新）/ deepseek-chat（旧版）</div>
+        <div class="muted">deepseek-flash（默认，快且支持看图）/ deepseek-v4-pro（更强，费用更高）</div>
       </div>
       <div class="key-guide">
         <b>🔑 免费申请 DeepSeek Key（约 2 分钟）</b>
