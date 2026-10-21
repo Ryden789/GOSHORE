@@ -13,7 +13,7 @@ from datetime import date as _date
 from pathlib import Path
 
 from . import parser
-from .config import DB_PATH, load_settings
+from .config import (DB_PATH, CONTENT_DB_PATH, USER_DB_PATH, load_settings)
 
 # ============ Schema 拆分 ============
 # 共享内容表（所有账号只读共享：题库、全文索引、时政库）
@@ -45,6 +45,11 @@ CREATE INDEX IF NOT EXISTS idx_docs_fp ON documents(material_fp);
 CREATE INDEX IF NOT EXISTS idx_docs_difficulty ON documents(difficulty);
 CREATE INDEX IF NOT EXISTS idx_docs_year ON documents(year);
 CREATE INDEX IF NOT EXISTS idx_docs_search_text ON documents(search_text);
+-- v10：考点聚合（kind,module,kaodian）与地区筛选的覆盖索引。
+-- 这两条原先只在 _migrate 的 v10 步骤里建（那时只有单库）；拆分后 content.db
+-- 也必须有，否则「考点分布 / 掌握度图谱」会回表扫 documents 全表（实测 9ms→47ms）。
+CREATE INDEX IF NOT EXISTS idx_docs_kind_mod_kd ON documents(kind,module,kaodian);
+CREATE INDEX IF NOT EXISTS idx_docs_region ON documents(region);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
     title, content, tokenize='trigram'
@@ -252,6 +257,130 @@ SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
 # 当前 schema 版本号（每次新增迁移步骤时 +1）
 SCHEMA_VERSION = 12
 
+
+# ---------------- 桌面端「题库 / 个人库」拆分模式 ----------------
+#
+# 判定只看**文件系统**：`content.db` 与 `user.db` 都存在才算 split。
+# 刻意不做进程内缓存：
+#   - 测试会把 `db.CONTENT_DB_PATH` / `db.USER_DB_PATH` 改到 tmp_path，缓存会让
+#     改路径不生效；
+#   - 迁移工具（tools/migrate_split.py）是**另一个进程**，它落盘后本进程只重启
+#     一次即可，没必要在这里做跨进程失效。
+# 两个路径都是本模块的可变变量（由 config 导入），测试用 monkeypatch 改它们。
+class StorageBroken(RuntimeError):
+    """题库库与个人库只剩一个（典型场景：用户误删/误移 content.db）。
+
+    这种情况**绝不能**回落到单库模式：legacy 分支会新建一个空的 goshor.db，
+    界面显示「题库 0 道、进度全空」，用户会以为数据被清光了——实际 personal
+    数据好好地躺在 user.db 里。宁可启动失败并说清楚怎么修。
+    """
+
+
+def split_state() -> str:
+    """当前存储形态：``split`` / ``legacy`` / ``broken``。
+
+    判定规则（只用文件系统，方便用户手工修复）：
+    - content.db + user.db 都在        → split
+    - 只有 content.db，没有 goshor.db  → split（个人库缺失=首次运行，由
+      `_personal_conn` 建空库；用户误删 user.db 也走这里，但题库还在）
+    - 只有 content.db，却有 goshor.db  → broken（两套布局同时在，不猜）
+    - 只有 user.db                     → broken（个人数据在、题库没了，最危险）
+    - 都没有：有 goshor.db             → legacy（老单库）
+              有 .migrated             → broken（迁移过，旧库已改名而新库丢了）
+              都没有                   → legacy（全新安装）
+    """
+    try:
+        has_content = CONTENT_DB_PATH.exists()
+        has_user = USER_DB_PATH.exists()
+        has_legacy = DB_PATH.exists()
+        has_backup = Path(str(DB_PATH) + ".migrated").exists()
+        if has_content and has_user:
+            return "split"
+        if has_content and not has_user:
+            return "broken" if has_legacy else "split"
+        if has_user and not has_content:
+            return "broken"
+        if has_legacy:
+            return "legacy"
+        if has_backup:
+            return "broken"
+        return "legacy"
+    except OSError:
+        return "legacy"
+
+
+def split_enabled() -> bool:
+    """当前是否处于「content.db + user.db」拆分模式（题库与个人数据分文件）。
+
+    注意：判定依据是**题库文件在不在**——user.db 缺了会在 `connect()` 里按
+    首次运行自动建出来，不该因此掉回单库（那会新建一个空 goshor.db，
+    看起来像「题库空了」）。真正的残缺形态由 `split_state()` 判为 broken。
+    """
+    return split_state() == "split"
+
+
+def _broken_message() -> str:
+    """拼一条能照着做的恢复指引（会原样出现在桌面弹窗与日志里）。"""
+    def _size(p: Path) -> str:
+        try:
+            return f"{p.stat().st_size / 1024 / 1024:.1f} MB"
+        except OSError:
+            return "?"
+
+    lines = ["题库库与个人数据不匹配，已停止启动（避免误建空库让你以为数据丢了）。"]
+    lines.append(f"  {CONTENT_DB_PATH.name}："
+                 + (f"存在（{_size(CONTENT_DB_PATH)}）" if CONTENT_DB_PATH.exists() else "缺失"))
+    lines.append(f"  {USER_DB_PATH.name}："
+                 + (f"存在（{_size(USER_DB_PATH)}）" if USER_DB_PATH.exists() else "缺失"))
+    backup = Path(str(DB_PATH) + ".migrated")
+    lines.append("")
+    lines.append("恢复方式（任选一种）：")
+    if backup.exists():
+        lines.append(f"  A. 找回缺失的文件放回 {CONTENT_DB_PATH.parent}（推荐，数据最全）")
+        lines.append("  B. 退回单库模式：把 "
+                     f"{backup.name} 改名为 {DB_PATH.name}，"
+                     f"并把 {USER_DB_PATH.name} 移到别处（如 {USER_DB_PATH.name}.bak），"
+                     "程序会按老单库运行，数据完整")
+    else:
+        lines.append(f"  A. 从备份 zip 里取回缺失的库文件，放回 {CONTENT_DB_PATH.parent}")
+        lines.append("  B. 如果是全新安装，把残留的那个库文件移走，让程序重新初始化")
+    return "\n".join(lines)
+
+
+def content_writer() -> sqlite3.Connection:
+    """打开 content.db 的**可写**连接（导入题库 / 回填指纹用）。
+
+    为什么单独开一条连接，而不是复用 `connect()`：
+    split 模式下 `documents` 在个人库里只是指向共享库的 TEMP VIEW，任何写语句
+    都会报 `cannot modify documents because it is a view`。题库的写入必须落到
+    content.db 本身。调用方负责 close。
+
+    只建 SHARED_SCHEMA：**绝不**把 22 张个人表建进题库文件 —— content.db 要能
+    整体替换/分发，混进个人表结构会让它变成半个用户库。
+    """
+    CONTENT_DB_PATH.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(CONTENT_DB_PATH, check_same_thread=False, timeout=15)
+    _tune(conn)
+    _ensure_wal(conn, str(CONTENT_DB_PATH))
+    conn.executescript(SHARED_SCHEMA)
+    # 旧题库可能缺 difficulty / material_fp 列（与 legacy init_db 同一套补丁）
+    _ensure_content_columns(conn)
+    return conn
+
+
+def _is_real_table(conn: sqlite3.Connection, name: str) -> bool:
+    """当前连接的主库里 `name` 是否为**真实表**（不是 TEMP VIEW）。
+
+    split 模式 / 手机端：`documents`、`shizheng` 都是 TEMP VIEW（真实表在只读
+    附加的共享库里）→ 返回 False，调用方据此把写入改到个人库（doc_overrides /
+    shizheng_quiz）。legacy 桌面端：真实表 → True。
+    """
+    row = conn.execute(
+        "SELECT type FROM sqlite_master WHERE name=?", (name,)
+    ).fetchone()
+    return bool(row and row["type"] == "table")
+
+
 # 艾宾浩斯记忆阶梯：stage 1..6 -> 间隔天数，学满第 6 档即出计划
 EBBINGHAUS_DAYS = [1, 2, 4, 7, 15, 30]
 
@@ -327,9 +456,13 @@ def snapshot_to(dest: Path | str) -> None:
     `-wal` 里，复制主库会丢掉这部分数据；写入进行中时还可能复制到撕裂的页。
     `Connection.backup()` 会拿一致性快照（自动包含 WAL 中的内容），即使此时
     有别的连接正在写也安全，因此备份接口应当用它而不是 `shutil.copy`。
+
+    split 模式下快照源是 **user.db**（个人数据）：content.db 是题库，几百 MB 且
+    可重新分发，备份/同步带上它既慢又没意义（见 api_backup_export）。
     """
     dest = str(dest)
-    src = sqlite3.connect(DB_PATH, timeout=15)
+    src_path = USER_DB_PATH if split_enabled() else DB_PATH
+    src = sqlite3.connect(src_path, timeout=15)
     try:
         out = sqlite3.connect(dest, timeout=15)
         try:
@@ -401,13 +534,18 @@ def _personal_needs_init(conn: sqlite3.Connection) -> bool:
     return not row or int(row["value"]) < SCHEMA_VERSION
 
 
-def _open_personal(own_path: Path) -> sqlite3.Connection:
-    """打开个人库并只读附加共享题库（不建表、不迁移，便于失败后重开）。"""
+def _open_personal(own_path: Path,
+                   shared_path: Path | None = None) -> sqlite3.Connection:
+    """打开个人库并只读附加共享题库（不建表、不迁移，便于失败后重开）。
+
+    `shared_path` 默认 `DB_PATH`（手机端 / legacy），桌面 split 模式传
+    `CONTENT_DB_PATH` —— 共享题库从单库变成了独立的题库文件。
+    """
     # uri=True：连接级开启 URI 识别，ATTACH 的只读 file: URI 才生效
     conn = sqlite3.connect(own_path.resolve().as_uri(),
                            check_same_thread=False, uri=True, timeout=15)
     _tune(conn)
-    shared_uri = DB_PATH.resolve().as_uri() + "?mode=ro"
+    shared_uri = (shared_path or DB_PATH).resolve().as_uri() + "?mode=ro"
     conn.execute("ATTACH DATABASE ? AS shared", (shared_uri,))
     return conn
 
@@ -427,13 +565,14 @@ def _personal_db_blank(own_path: Path) -> bool:
         return True                      # 文件还不存在
 
 
-def _init_personal_db(own_path: Path, key: str) -> None:
+def _init_personal_db(own_path: Path, key: str,
+                      shared_path: Path | None = None) -> None:
     """在初始化锁内完成个人库的「切 WAL + 建表 + 迁移」（幂等，可重复调用）。
 
     用自己的临时连接，跑完即关 —— 不要复用调用方那条连接：它可能是对着
     空库/半初始化库开出来的「陈旧连接」。
     """
-    conn = _open_personal(own_path)
+    conn = _open_personal(own_path, shared_path)
     try:
         _ensure_wal(conn, key)
         conn.executescript(PERSONAL_SCHEMA)
@@ -460,68 +599,17 @@ def _personal_writable(conn: sqlite3.Connection) -> bool:
     return True
 
 
-def connect() -> sqlite3.Connection:
-    uid = _current_uid.get()
-    if not IS_MOBILE or uid is None:
-        # 桌面端 / 未设置身份：原路径，单库直连
-        DB_PATH.parent.mkdir(exist_ok=True)
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=15)
-        _tune(conn)
-        _ensure_wal(conn, str(DB_PATH))
-        return conn
+def _create_shared_views(conn: sqlite3.Connection) -> None:
+    """在个人库连接上把共享题库暴露成 TEMP VIEW。
 
-    # 手机多身份：个人库为主库，共享题库只读附加
-    users_dir = DB_PATH.parent / "users"
-    users_dir.mkdir(exist_ok=True)
-    own_path = users_dir / f"data_{uid}.db"
-    key = str(own_path)
+    split 模式（桌面 + 手机）共用这段 SQL，只有附加库不同：手机端是
+    `DB_PATH`（单库），桌面端是 `content.db`。
 
-    # ① 首次建库：必须在**打开任何长期连接之前**、且在锁内完成。
-    #    并发首次创建同一个库文件时，别的连接会拿到 readonly（见上方说明）。
-    if _personal_db_blank(own_path):
-        with _personal_init_lock(key):
-            if _personal_db_blank(own_path):
-                _init_personal_db(own_path, key)
-
-    # ② 到这里文件必然已非空，开出来的连接可以安全使用。仍加一层兜底：
-    #    WAL 下「最后一条连接关闭」会 checkpoint 并**删除** `-wal`/`-shm`，
-    #    此时另一条仍映射着旧 `-shm` 的连接，下一次写会拿到
-    #    `attempt to write a readonly database`。这是瞬时状态，换一条新连接即可
-    #    （与 `_decay_worker` 的兜底同理）。实测在 C: 盘上并发 8~16 线程时
-    #    单次连接撞上它的概率约 17%，所以重试到 6 次并递增退避。
-    last_err: Exception | None = None
-    for attempt in range(6):
-        conn = _open_personal(own_path)
-        try:
-            if _personal_needs_init(conn):
-                # 版本落后（老库升级），或别人刚建到一半（`_meta` 已建、版本
-                # 还没写）：整段串行，并换一条**新建**的连接继续用。
-                conn.close()
-                with _personal_init_lock(key):
-                    _init_personal_db(own_path, key)
-                conn = _open_personal(own_path)
-            # 稳态补表：全是 `CREATE ... IF NOT EXISTS`，幂等；可兜住「新表只加了
-            # SCHEMA 忘了写迁移」的历史库。此时库已建好、版本最新，不再跑迁移。
-            conn.executescript(PERSONAL_SCHEMA)
-            # 旧版个人库补列（CREATE IF NOT EXISTS 不会加列）
-            _acols = [r["name"] for r in conn.execute("PRAGMA table_info(answers)")]
-            if "guessed" not in _acols:
-                conn.execute(
-                    "ALTER TABLE answers ADD COLUMN guessed INTEGER DEFAULT 0")
-            if _personal_writable(conn):
-                break
-            last_err = sqlite3.OperationalError("个人库连接不可写")
-        except sqlite3.OperationalError as e:
-            if "readonly" not in str(e).lower():
-                conn.close()
-                raise
-            last_err = e
-        conn.close()
-        time.sleep(0.05 * (attempt + 1))
-    else:
-        raise sqlite3.OperationalError(
-            f"个人库连接连续 6 次不可写（{last_err!r}）db={own_path}")
-    # 共享表经 TEMP 视图暴露：documents = 共享题库 + 账号私有导入题
+    注意：这两个视图建好之后，`documents` / `shizheng` 在本连接上就**不可写**了
+    （SQLite: `cannot modify ... because it is a view`）。这是拆分后的设计约束：
+    题库写入一律走 `content_writer()`，个人覆盖写 `doc_overrides` / `shizheng_quiz`。
+    """
+    # documents = 共享题库 + 账号私有导入题（my_documents）
     conn.execute("""
         CREATE TEMP VIEW documents AS
           SELECT d.id,d.path,d.kind,d.qid,d.title,d.module,d.daclass,d.region,
@@ -543,7 +631,94 @@ def connect() -> sqlite3.Connection:
           FROM shared.shizheng s
           LEFT JOIN shizheng_quiz q ON q.period=s.period
     """)
+
+
+def _personal_conn(own_path: Path,
+                   shared_path: Path | None = None) -> sqlite3.Connection:
+    """「个人库 + 只读附加共享库」模式的连接（手机端与桌面 split 共用）。
+
+    手机端：own_path = data/users/data_<uid>.db，shared_path = DB_PATH。
+    桌面端：own_path = USER_DB_PATH（user.db），shared_path = CONTENT_DB_PATH。
+
+    同一套建库/迁移/重试保护：首次建库必须在打开长期连接之前、锁内完成
+    （否则并发首次创建时别的连接会拿到 readonly，见 `_personal_db_blank`）。
+    """
+    key = str(own_path)
+
+    # ① 首次建库：必须在**打开任何长期连接之前**、且在锁内完成。
+    if _personal_db_blank(own_path):
+        with _personal_init_lock(key):
+            if _personal_db_blank(own_path):
+                _init_personal_db(own_path, key, shared_path)
+
+    # ② 到这里文件必然已非空，开出来的连接可以安全使用。仍加一层兜底：
+    #    WAL 下「最后一条连接关闭」会 checkpoint 并**删除** `-wal`/`-shm`，
+    #    此时另一条仍映射着旧 `-shm` 的连接，下一次写会拿到
+    #    `attempt to write a readonly database`。这是瞬时状态，换一条新连接即可
+    #    （与 `_decay_worker` 的兜底同理）。实测在 C: 盘上并发 8~16 线程时
+    #    单次连接撞上它的概率约 17%，所以重试到 6 次并递增退避。
+    last_err: Exception | None = None
+    for attempt in range(6):
+        conn = _open_personal(own_path, shared_path)
+        try:
+            if _personal_needs_init(conn):
+                # 版本落后（老库升级），或别人刚建到一半（`_meta` 已建、版本
+                # 还没写）：整段串行，并换一条**新建**的连接继续用。
+                conn.close()
+                with _personal_init_lock(key):
+                    _init_personal_db(own_path, key, shared_path)
+                conn = _open_personal(own_path, shared_path)
+            # 稳态补表：全是 `CREATE ... IF NOT EXISTS`，幂等；可兜住「新表只加了
+            # SCHEMA 忘了写迁移」的历史库。此时库已建好、版本最新，不再跑迁移。
+            conn.executescript(PERSONAL_SCHEMA)
+            # 旧版个人库补列（CREATE IF NOT EXISTS 不会加列）
+            _acols = [r["name"] for r in conn.execute("PRAGMA table_info(answers)")]
+            if "guessed" not in _acols:
+                conn.execute(
+                    "ALTER TABLE answers ADD COLUMN guessed INTEGER DEFAULT 0")
+            if _personal_writable(conn):
+                break
+            last_err = sqlite3.OperationalError("个人库连接不可写")
+        except sqlite3.OperationalError as e:
+            if "readonly" not in str(e).lower():
+                conn.close()
+                raise
+            last_err = e
+        conn.close()
+        time.sleep(0.05 * (attempt + 1))
+    else:
+        raise sqlite3.OperationalError(
+            f"个人库连接连续 6 次不可写（{last_err!r}）db={own_path}")
+    _create_shared_views(conn)
     return conn
+
+
+def connect() -> sqlite3.Connection:
+    # 只剩一半的存储必须先拦下：回落到单库会新建空库，把「数据还在」伪装成
+    # 「数据全空」，比直接报错更糟。
+    if split_state() == "broken":
+        raise StorageBroken(_broken_message())
+
+    # 桌面端拆分模式优先判断：迁移之后 content.db / user.db 都在，必须走
+    # 「个人库 + 只读题库」，哪怕环境里残留了 IS_MOBILE=1 / uid 的设置
+    # （桌面端不该因为环境变量回落到单库，那会去读一个已经改名的旧库）。
+    if split_enabled():
+        USER_DB_PATH.parent.mkdir(exist_ok=True)
+        return _personal_conn(USER_DB_PATH, CONTENT_DB_PATH)
+
+    uid = _current_uid.get()
+    if not IS_MOBILE or uid is None:
+        # 桌面端 / 未设置身份：原路径，单库直连
+        DB_PATH.parent.mkdir(exist_ok=True)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=15)
+        _tune(conn)
+        _ensure_wal(conn, str(DB_PATH))
+        return conn
+
+    # 手机多身份：个人库为主库，共享题库只读附加
+    users_dir = DB_PATH.parent / "users"
+    users_dir.mkdir(exist_ok=True)
+    return _personal_conn(users_dir / f"data_{uid}.db")
 
 
 def _ensure_doc_indexes(conn: sqlite3.Connection) -> None:
@@ -802,25 +977,30 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
-    _migrate(conn)
-    # 补充列：answers.guessed（旧库可能缺此列）
+def _ensure_personal_columns(conn: sqlite3.Connection) -> None:
+    """个人表的列补丁（旧库可能缺列，CREATE IF NOT EXISTS 不会加列）。"""
     _acols = [r["name"] for r in conn.execute("PRAGMA table_info(answers)")]
     if "guessed" not in _acols:
         conn.execute("ALTER TABLE answers ADD COLUMN guessed INTEGER DEFAULT 0")
         conn.commit()
-    # 补充列：material_fp（材料指纹，用于资料分析同材料归组）
-    cols = [r["name"] for r in conn.execute("PRAGMA table_info(documents)")]
-    if "difficulty" not in cols:
-        conn.execute("ALTER TABLE documents ADD COLUMN difficulty TEXT DEFAULT ''")
-        conn.commit()
-    # 补充列：wordfill_questions.verified（生成题是否通过校验）
     wcols = [r["name"] for r in conn.execute("PRAGMA table_info(wordfill_questions)")]
     if "verified" not in wcols:
         conn.execute(
-            "ALTER TABLE wordfill_questions ADD COLUMN verified INTEGER DEFAULT 0"
-        )
+            "ALTER TABLE wordfill_questions ADD COLUMN verified INTEGER DEFAULT 0")
+        conn.commit()
+
+
+def _ensure_content_columns(conn: sqlite3.Connection) -> None:
+    """题库表的列补丁 + 材料指纹回填（幂等）。
+
+    只对**真实表**执行：split 模式下个人库里的 `documents` 是 TEMP VIEW，
+    ALTER 会失败，而且题库列本来就该由 content.db 自己维护。
+    """
+    if not _is_real_table(conn, "documents"):
+        return
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(documents)")]
+    if "difficulty" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN difficulty TEXT DEFAULT ''")
         conn.commit()
     if "material_fp" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN material_fp TEXT DEFAULT ''")
@@ -851,6 +1031,23 @@ def init_db(conn: sqlite3.Connection) -> None:
         if fp:
             conn.execute("UPDATE documents SET material_fp=? WHERE id=?", (fp, r["id"]))
     conn.commit()
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    """建表 + 迁移（幂等）。
+
+    split 模式下只处理个人库：`documents` / `shizheng` 在 personal 库连接上是
+    只读共享库的 TEMP VIEW，写它们会报错；题库表的维护交给 `content_writer()`。
+    """
+    if split_enabled():
+        conn.executescript(PERSONAL_SCHEMA)
+        _migrate(conn)
+        _ensure_personal_columns(conn)
+        return
+    conn.executescript(SCHEMA)
+    _migrate(conn)
+    _ensure_personal_columns(conn)
+    _ensure_content_columns(conn)
 
 
 def _material_fingerprint(material: str) -> str:
@@ -909,7 +1106,11 @@ def reindex(progress=None) -> dict:
 
     conn = connect()
     init_db(conn)
-    existing = {r["path"]: r["mtime"] for r in conn.execute("SELECT path,mtime FROM documents")}
+    # split 模式：`documents` 在本连接上是只读附加题库的 TEMP VIEW，写它会报
+    # `cannot modify documents because it is a view`。题库的读写统一走
+    # content.db 的独立可写连接；legacy 模式仍然就是这个库本身（行为不变）。
+    wconn = content_writer() if split_enabled() else conn
+    existing = {r["path"]: r["mtime"] for r in wconn.execute("SELECT path,mtime FROM documents")}
     seen: set[str] = set()
 
     files: list[Path] = []
@@ -938,22 +1139,28 @@ def reindex(progress=None) -> dict:
         except Exception as e:  # 单题解析失败不阻断全库
             print(f"[parse-error] {rel}: {e}")
             continue
-        _upsert(conn, p, mt)
+        _upsert(wconn, p, mt)
         changed += 1
         if progress:
             progress(i + 1, total, "index")
         if changed % 200 == 0:
-            conn.commit()
+            wconn.commit()
 
     removed = 0
     for gone in set(existing) - seen:
-        row = conn.execute("SELECT id FROM documents WHERE path=?", (gone,)).fetchone()
+        row = wconn.execute("SELECT id FROM documents WHERE path=?", (gone,)).fetchone()
         if row:
-            conn.execute("DELETE FROM docs_fts WHERE rowid=?", (row["id"],))
-        conn.execute("DELETE FROM documents WHERE path=?", (gone,))
+            wconn.execute("DELETE FROM docs_fts WHERE rowid=?", (row["id"],))
+        wconn.execute("DELETE FROM documents WHERE path=?", (gone,))
         removed += 1
 
-    conn.commit()
+    wconn.commit()
+    # 新增的「材料」题需要补材料指纹（legacy 下 init_db 建列时会回填，split 下
+    # documents 是视图，必须显式在题库连接上补）
+    if wconn is not conn:
+        _ensure_content_columns(wconn)
+        wconn.commit()
+        wconn.close()
     conn.close()
     # 对新增/变更且未标难度的题目做启发式打标
     try:
@@ -1002,8 +1209,12 @@ def search_docs(
             where.append("(title LIKE ? OR search_text LIKE ? OR data LIKE ?)")
             args += [f"%{q}%", f"%{q}%", f"%{q}%"]
         elif len(q) >= 3:
+            # split 模式：docs_fts 在只读附加的题库里，必须显式限定库名。注意
+            # FTS5 的 MATCH 左值不能写成 `shared.docs_fts`（会报 no such column），
+            # 只能 `FROM shared.docs_fts` 后用无限定名做 MATCH。
+            fts = "shared.docs_fts" if split_enabled() else "docs_fts"
             where.append(
-                "id IN (SELECT rowid FROM docs_fts WHERE docs_fts MATCH ?)"
+                f"id IN (SELECT rowid FROM {fts} WHERE docs_fts MATCH ?)"
             )
             safe = q.replace('"', '""')
             args.append(f'"{safe}"')
@@ -3428,8 +3639,12 @@ def _recompute_difficulty(doc_id: int) -> None:
     if n >= 2:
         rate = w / n
         diff = "hard" if rate >= 0.5 else ("mid" if rate >= 0.25 else "easy")
-        if IS_MOBILE:
-            # 共享题库只读：难度变化写入个人覆写表
+        # 题库是否只读：手机端（共享库只读附加）与桌面 split 模式（content.db
+        # 只读附加）都是 TEMP VIEW。此时难度不能写回题库 —— 题库是可分发、
+        # 可整体替换的文件，写进去既改不动（视图）也会让个人数据混进题库。
+        # 改为写个人覆写表 doc_overrides，TEMP VIEW 用
+        # COALESCE(o.difficulty,d.difficulty) 读出来。
+        if not _is_real_table(conn, "documents"):
             conn.execute(
                 "INSERT OR REPLACE INTO doc_overrides(doc_id,difficulty) VALUES(?,?)",
                 (doc_id, diff))
@@ -3484,13 +3699,16 @@ def tag_difficulty_batch(progress=None) -> dict:
         "WHERE difficulty IS NULL OR difficulty=''"
     ).fetchall()
     total = len(rows)
+    # 同 `_recompute_difficulty`：题库是只读附加的（手机端 / 桌面 split）时，
+    # 难度只能落到个人库（my_documents 覆盖，或 doc_overrides 覆写）。
+    shared_readonly = not _is_real_table(conn, "documents")
     easy = mid = hard = 0
     for i, r in enumerate(rows):
         diff = _guess_difficulty(
             r["title"] or "", r["search_text"] or "", r["kaodian"] or "",
             r["tags"] or "", r["qid"] or "", r["path"] or ""
         )
-        if IS_MOBILE:
+        if shared_readonly:
             # 先尝试更新 my_documents（用户私有导入题可直接写）
             cur = conn.execute(
                 "UPDATE my_documents SET difficulty=? WHERE id=? "
@@ -3566,15 +3784,49 @@ def get_shizheng(period: str) -> dict | None:
 
 def save_shizheng(period: str, title: str, content: str) -> None:
     conn = connect()
-    conn.execute(
-        "INSERT OR REPLACE INTO shizheng(period,title,content,created_at) VALUES(?,?,?,?)",
-        (period, title, content, time.time()))
-    conn.commit()
-    conn.close()
+    try:
+        if _is_real_table(conn, "shizheng"):
+            conn.execute(
+                "INSERT OR REPLACE INTO shizheng(period,title,content,created_at)"
+                " VALUES(?,?,?,?)",
+                (period, title, content, time.time()))
+            conn.commit()
+            return
+        if split_enabled():
+            # split 模式：shizheng 的真实表在 content.db 里（题库的一部分，可分发）。
+            # 时政内容是**题库数据**不是个人数据，所以写回题库文件，而不是塞进
+            # user.db（user.db 里没有、也不该有 shizheng 表）。
+            w = content_writer()
+            try:
+                w.execute(
+                    "INSERT OR REPLACE INTO shizheng(period,title,content,created_at)"
+                    " VALUES(?,?,?,?)",
+                    (period, title, content, time.time()))
+                w.commit()
+            finally:
+                w.close()
+            return
+        # 手机端：共享题库是只读附加的文件，时政内容属于题库数据，这里写不进去
+        # （拆分前就是 "cannot modify shizheng because it is a view"，语义不变，
+        #  不能像桌面 split 那样去写本机的 content.db —— 那会在手机上凭空生出一个
+        #  题库文件）。时政更新由题库分发/桌面端负责。
+        conn.execute(
+            "INSERT OR REPLACE INTO shizheng(period,title,content,created_at)"
+            " VALUES(?,?,?,?)",
+            (period, title, content, time.time()))
+    finally:
+        conn.close()
 
 
 def _ensure_sz_quiz(conn: sqlite3.Connection) -> None:
-    """shizheng 表补 quiz 列（自测题 JSON，旧库迁移）。"""
+    """shizheng 表补 quiz 列（自测题 JSON，旧库迁移）。
+
+    只在 shizheng 是**真实表**时执行：手机端 / 桌面 split 下它是只读附加题库的
+    TEMP VIEW，ALTER 一定会失败；这些场景的 quiz 列由题库文件（content.db /
+    桌面单库）自己维护（SHARED_SCHEMA 已含该列）。
+    """
+    if not _is_real_table(conn, "shizheng"):
+        return
     cols = {r[1] for r in conn.execute("PRAGMA table_info(shizheng)")}
     if "quiz" not in cols:
         conn.execute("ALTER TABLE shizheng ADD COLUMN quiz TEXT DEFAULT ''")
@@ -3582,9 +3834,13 @@ def _ensure_sz_quiz(conn: sqlite3.Connection) -> None:
 
 
 def save_shizheng_quiz(period: str, quiz: str) -> None:
-    """保存某期时政的自测题 JSON 文本。"""
+    """保存某期时政的自测题 JSON 文本。
+
+    题库只读（手机端 / 桌面 split）时写个人库的 `shizheng_quiz`（TEMP VIEW 会
+    与共享表 join 把覆写值读出来）；legacy 单库仍直接写 `shizheng.quiz`。
+    """
     conn = connect()
-    if IS_MOBILE:
+    if not _is_real_table(conn, "shizheng"):
         conn.execute(
             "INSERT OR REPLACE INTO shizheng_quiz(period,quiz) VALUES(?,?)",
             (period, quiz))
@@ -3597,9 +3853,18 @@ def save_shizheng_quiz(period: str, quiz: str) -> None:
 
 def get_shizheng_quiz(period: str) -> str:
     conn = connect()
-    if IS_MOBILE:
-        row = conn.execute(
-            "SELECT quiz FROM shizheng_quiz WHERE period=?", (period,)).fetchone()
+    if not _is_real_table(conn, "shizheng"):
+        # 个人覆写优先；共享表里的 quiz 是「迁移前桌面端直接写进题库」的历史值，
+        # 用 COALESCE 兜底，保证拆分后原有自测题不丢。
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(q.quiz, s.quiz) AS quiz FROM shared.shizheng s "
+                "LEFT JOIN shizheng_quiz q ON q.period=s.period WHERE s.period=?",
+                (period,)).fetchone()
+        except sqlite3.OperationalError:
+            # 老手机库的共享 shizheng 可能还没有 quiz 列 → 退回只读个人覆写
+            row = conn.execute(
+                "SELECT quiz FROM shizheng WHERE period=?", (period,)).fetchone()
     else:
         _ensure_sz_quiz(conn)
         row = conn.execute(

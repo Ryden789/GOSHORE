@@ -34,24 +34,42 @@ from .config import (STATIC_DIR, DATA_DIR, DB_PATH, SETTINGS_PATH, BASE_DIR, REM
 from .print_export import esc, rich_text, render_html
 
 
+# 存储残缺（只剩一半库）时记录原因，lifespan 捕获 StorageBroken 时写入，
+# 由 /api/health 暴露出去——排查「题库突然空了」时一眼看到真正原因。
+_STORAGE_ERROR: dict[str, str] = {}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    db.init_db(db.connect())
-    # 首次启动自动构建索引（库为空时）
-    conn = db.connect()
-    n = conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
-    conn.close()
-    if n == 0:
-        # 首次启动的自动建索引是「锦上添花」：用户没配 vault、vault 很大、
-        # 或某个文件解析炸了，都不能让整个服务起不来（窗口会白屏）。
-        try:
-            db.reindex()
-        except Exception as e:  # noqa: BLE001
-            print(f"[reindex] 首次建索引跳过：{e}")
-    _startup_selfcheck()
+    try:
+        db.init_db(db.connect())
+        # 首次启动自动构建索引（库为空时）
+        conn = db.connect()
+        n = conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+        conn.close()
+        if n == 0:
+            # 首次启动的自动建索引是「锦上添花」：用户没配 vault、vault 很大、
+            # 或某个文件解析炸了，都不能让整个服务起不来（窗口会白屏）。
+            try:
+                db.reindex()
+            except Exception as e:  # noqa: BLE001
+                print(f"[reindex] 首次建索引跳过：{e}")
+        _startup_selfcheck()
+    except db.StorageBroken as e:
+        # 存储残缺时**仍然把服务起起来**：窗口能打开、页面能把这条原因显示给
+        # 用户（各数据接口会统一返回 503 + 这个说明）。比进程直接退出、窗口
+        # 一闪而过好得多——后者用户只会以为软件坏了。
+        print("\033[91m" + "=" * 60)
+        print(str(e))
+        print("=" * 60 + "\033[0m")
+        _STORAGE_ERROR.clear()
+        _STORAGE_ERROR.update(msg=str(e))
     yield
     # 退出前给后台掌握度衰减（建议9）一点时间收尾，避免留下半截批次
-    db.wait_decay_bg(2.0)
+    try:
+        db.wait_decay_bg(2.0)
+    except Exception:  # noqa: BLE001  存储残缺时收尾也可能失败
+        pass
 
 
 def _startup_selfcheck() -> None:
@@ -87,6 +105,19 @@ def _startup_selfcheck() -> None:
 
 app = FastAPI(title="GOSHORE 上岸", lifespan=lifespan)
 
+
+@app.exception_handler(db.StorageBroken)
+async def _storage_broken_handler(_request: Request, exc: db.StorageBroken):
+    """题库库/个人库只剩一半时，给前端一条能读懂的话，而不是 500 栈。
+
+    桌面窗口里会直接渲染这段文字：用户看到的是「content.db 缺失，怎么恢复」，
+    而不是「Internal Server Error」。
+    """
+    return JSONResponse(
+        status_code=503,
+        content={"ok": False, "storage_broken": True, "detail": str(exc)},
+    )
+
 # 允许本地 file:// 演示页（Origin: null）调用 open_app 接口
 try:
     from fastapi.middleware.cors import CORSMiddleware
@@ -102,8 +133,19 @@ except Exception:
 
 @app.get("/api/health")
 def api_health():
-    """轻量探活：演示页用它发现本地服务实际使用的端口。"""
-    return {"ok": True, "app": "goshore"}
+    """轻量探活：演示页用它发现本地服务实际使用的端口。
+
+    `storage` 顺带暴露存储形态（split / legacy / broken），排查「题库突然空了」
+    时不用再去翻日志：broken 就是 content.db 丢了，不是数据被删。
+    """
+    try:
+        state = db.split_state()
+    except Exception:  # noqa: BLE001  探活接口不能因为存储异常而 500
+        state = "unknown"
+    out = {"ok": True, "app": "goshore", "storage": state}
+    if _STORAGE_ERROR.get("msg"):
+        out["storage_error"] = _STORAGE_ERROR["msg"]
+    return out
 
 
 # ---------------- 一键拉起模拟器 APP ----------------
@@ -1711,8 +1753,17 @@ async def api_shizheng_quiz(b: ShizhengGenIn):
 
 # ---------------- 备份 / 恢复 ----------------
 
+def _user_db_path() -> Path:
+    """当前「个人数据库」的路径：split 模式是 user.db，legacy 是 goshor.db。
+
+    刻意读 `db` 模块里的变量（而不是本模块 import 进来的常量）：测试会把
+    `db.DB_PATH` / `db.USER_DB_PATH` monkeypatch 到 tmp_path，本模块的常量不会跟着变。
+    """
+    return db.USER_DB_PATH if db.split_enabled() else db.DB_PATH
+
+
 def _replace_db_file(src) -> None:
-    """把 src 的内容写进当前库（走 SQLite 在线备份 API，不换文件）。
+    """把 src 的内容写进当前个人数据库（走 SQLite 在线备份 API，不换文件）。
 
     为什么不是 `shutil.copy2` + 删 `-wal`：
     - 只覆盖 `goshor.db`、留着旧 `-wal` → 下次打开时 SQLite 会把旧事务**重放**
@@ -1722,11 +1773,14 @@ def _replace_db_file(src) -> None:
 
     用 `Connection.backup()` 把源库页面整份写进目标库，则以上问题都不存在：
     写入走 WAL、对已在运行的服务即时可见，也不需要动文件。
+
+    split 模式下目标换成 user.db：**绝不**碰 content.db（题库是可分发、
+    可整体替换的只读文件，恢复个人备份不该改动它）。
     """
     import sqlite3
     src_conn = sqlite3.connect(str(src), timeout=15)
     try:
-        dst = sqlite3.connect(DB_PATH, timeout=15)
+        dst = sqlite3.connect(_user_db_path(), timeout=15)
         try:
             src_conn.backup(dst)
             dst.commit()
@@ -1736,9 +1790,43 @@ def _replace_db_file(src) -> None:
         src_conn.close()
 
 
+def _prune_content_tables_from_user_db() -> None:
+    """split 模式下把「旧整库备份」带进 user.db 的题库表清掉。
+
+    升级用户可能导入旧版备份：那份 `goshor.db` 里有 documents / docs_fts /
+    shizheng 真实表，恢复后它们会落在 user.db 里。split 模式下这几张表永远被
+    TEMP VIEW 遮蔽（读不到），留着只会让 user.db 平白胖几百 MB，之后每次备份/
+    同步都把题库重新背一遍。题库的唯一来源是 content.db，所以这里删除并
+    VACUUM 收回空间；个人表一律不动。
+    """
+    import sqlite3
+    conn = sqlite3.connect(_user_db_path(), timeout=15)
+    try:
+        names = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        dropped = False
+        for t in ("documents", "docs_fts", "shizheng"):
+            if t in names:
+                conn.execute(f'DROP TABLE "{t}"')
+                dropped = True
+        if dropped:
+            conn.commit()
+            # 纯空间回收，失败不该让「已经恢复成功」的导入报错
+            try:
+                conn.execute("VACUUM")
+            except sqlite3.Error:
+                pass
+    except sqlite3.Error:
+        # 清理是尽力而为：即便 DROP 没成功（例如库被别的连接锁住），
+        # 个人数据也已经恢复完毕，下次导入/下次启动还能再清。
+        pass
+    finally:
+        conn.close()
+
+
 @app.get("/api/backup/export")
 def api_backup_export():
-    """打包 goshor.db + settings.json + essay_questions.json 为 zip 下载。
+    """打包当前个人库 + settings.json + essay_questions.json 为 zip 下载。
 
     整库已 400MB+，这里做两处必要处理，否则接口会「假死」：
     1. **一致性快照**：用 SQLite 在线备份 API 导出，而不是直接复制主库。
@@ -1748,6 +1836,11 @@ def api_backup_export():
        压缩包堆在 BytesIO 里（实测 430MB→132MB，耗时 60.4s，客户端 120s 超时），
        改 compresslevel=1 后耗时 17.1s（3.5×）、体积 141MB，内存峰值从 130MB+
        降到可忽略。
+
+    两种模式的差异只有「快照源」`db.snapshot_to` 内部处理：legacy 是 goshor.db，
+    split 是 user.db（个人数据）。**split 模式的备份里永远不含 content.db**：
+    题库几百 MB、可重新分发，把它塞进每次备份/同步既慢，也让「恢复个人数据」变成
+    「回滚题库」。zip 内的文件名仍叫 `goshor.db`，这样旧版导入端/手机端不用改。
     """
     import shutil
     import tempfile
@@ -1760,7 +1853,7 @@ def api_backup_export():
             db.snapshot_to(snap)
         except Exception:
             # 极端情况下退回直接复制（至少保证能导出，只是可能缺 WAL 尾部数据）
-            shutil.copyfile(DB_PATH, snap)
+            shutil.copyfile(_user_db_path(), snap)
 
         zpath = tmpdir / "backup.zip"
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED,
@@ -1784,7 +1877,11 @@ def api_backup_export():
 
 @app.post("/api/backup/import")
 async def api_backup_import(file: UploadFile):
-    """从备份 zip 恢复（覆盖 db / settings / essay 题库），需重启服务生效。"""
+    """从备份 zip 恢复（覆盖个人库 / settings / essay 题库），需重启服务生效。
+
+    split 模式下 zip 里那份 `goshor.db` 实际是 user.db 的内容：只覆盖个人库，
+    **content.db 不动**（题库不随个人备份走，也不该被旧备份回滚）。
+    """
     import zipfile
     import shutil
     import tempfile
@@ -1809,6 +1906,10 @@ async def api_backup_import(file: UploadFile):
                     return {"ok": False, "error": "goshor.db 校验失败"}
                 _replace_db_file(tmp_db)
                 ok_files.append("goshor.db")
+                if db.split_enabled():
+                    # 旧版「整库」备份会把题库表一起写进 user.db，恢复后立刻摘掉
+                    # （见 _prune_content_tables_from_user_db 的说明）
+                    _prune_content_tables_from_user_db()
                 if "settings.json" in names:
                     shutil.copy2(Path(td) / "settings.json", SETTINGS_PATH)
                     ok_files.append("settings.json")
@@ -1874,8 +1975,12 @@ def _sync_ready(s: dict) -> str:
 
 
 def _local_stamp() -> str:
-    """本地数据版本戳（主库 + WAL 一起算，见 `sync_webdav.file_stamp`）。"""
-    return sync_webdav.file_stamp([str(DB_PATH)])
+    """本地数据版本戳（个人库 + WAL 一起算，见 `sync_webdav.file_stamp`）。
+
+    split 模式下只算 user.db：content.db 是题库，同步的是个人数据；把题库算进
+    版本戳会让「换个题库文件」被误判成「本地数据变了」而触发假冲突。
+    """
+    return sync_webdav.file_stamp([str(_user_db_path())])
 
 
 def _device_name() -> str:
@@ -1883,10 +1988,11 @@ def _device_name() -> str:
 
 
 def _sync_pack(tmpdir) -> tuple:
-    """打包桌面备份（goshor.db 一致性快照 + settings.json + essay 题库）。
+    """打包桌面备份（个人库一致性快照 + settings.json + essay 题库）。
 
     返回 (zip 路径, 明文字节数)；清单与 `/api/backup/export` 保持一致，
-    便于「云端恢复」后与手动导出包互换使用。
+    便于「云端恢复」后与手动导出包互换使用。split 模式下快照源是 user.db，
+    不含题库（见 `api_backup_export` 的说明）。
     """
     import shutil
     from pathlib import Path as _P
@@ -1895,7 +2001,7 @@ def _sync_pack(tmpdir) -> tuple:
     try:
         db.snapshot_to(snap)
     except Exception:
-        shutil.copyfile(DB_PATH, snap)
+        shutil.copyfile(_user_db_path(), snap)
     pairs = [(snap, "goshor.db")]
     if SETTINGS_PATH.exists():
         pairs.append((SETTINGS_PATH, "settings.json"))

@@ -5,6 +5,10 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+# 迁移工具留下的老库退路（goshor.db.migrated，动辄 400 MB+），绝不可入库
+data/*.db.migrated
+data/*.db.bak
+data/.split-migrate-*/
 # 桌面模式（desktop.py）的 WebView2 用户数据：localStorage / 缓存，随程序生成，不分发
 data/webview/
 

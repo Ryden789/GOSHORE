@@ -236,6 +236,10 @@ def commit_items(items: list[dict], defaults: dict) -> dict:
 
     conn = db.connect()
     db.init_db(conn)
+    # split 模式下 documents / docs_fts 是只读 TEMP VIEW（题库在 content.db），
+    # 任何写都会报 "cannot modify ... because it is a view"；题库写入统一走
+    # content_writer()。legacy 单库模式仍然直接写 conn。
+    wconn = db.content_writer() if db.split_enabled() else conn
     saved, failed = 0, []
     batch = time.strftime("%Y%m%d%H%M%S")
     for i, item in enumerate(items, 1):
@@ -248,10 +252,13 @@ def commit_items(items: list[dict], defaults: dict) -> dict:
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(text, encoding="utf-8")
             p = parser.parse(rel, text)
-            db._upsert(conn, p, fp.stat().st_mtime)
+            db._upsert(wconn, p, fp.stat().st_mtime)
             saved += 1
         except Exception as e:
             failed.append(f"第{i}题入库失败：{e}")
+    wconn.commit()
+    if wconn is not conn:
+        wconn.close()
     conn.commit()
     conn.close()
     return {"ok": True, "saved": saved, "failed": failed, "total": db.facets().get("counts", {}).get("真题", 0)}

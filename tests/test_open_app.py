@@ -60,7 +60,10 @@ def _stub(monkeypatch, *, devices, emulator=None, launch=None, mumu=None):
 def test_health_endpoint():
     r = CLIENT.get("/api/health")
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "app": "goshore"}
+    d = r.json()
+    # 只校验稳定契约：演示页靠它探活，storage 字段是后加的排查信息
+    assert d["ok"] is True and d["app"] == "goshore"
+    assert d["storage"] in ("split", "legacy", "unknown")
 
 
 def test_status_starts_idle():

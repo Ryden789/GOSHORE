@@ -78,7 +78,7 @@
 - **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-v4.1-flash-20261017`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 867 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
+- **测试**：pytest 897 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
 
 ## 快速开始（首次使用顺序）
 
@@ -196,12 +196,16 @@ GOSHORE/
 │   └── vendor/            # 第三方前端库
 ├── android/               # WebView 壳 / Chaquopy 独立版工程
 ├── data/                  # 本地数据（不入仓库）
-│   ├── goshor.db          # 题库与学习记录
+│   ├── content.db         # 题库（只读，可整体替换 / 分发）
+│   ├── user.db            # 个人数据（作答 / 卡片 / 错题 / 计划 / 设置副本）
+│   ├── goshor.db          # 单库模式的老布局（与新布局二选一，见下）
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（867 条）
+├── tests/                 # pytest 用例（897 条）
 ├── tools/                 # 校验器（15 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
+│   ├── migrate_split.py       # 老单库 → content.db + user.db
+│   ├── check_content.py       # 题库内容体检（坏题 / 缺答案）
 │   ├── create_shortcut.py     # 建/删桌面快捷方式
 │   ├── make_desktop_icon.py   # 由 PWA 图标生成多尺寸 .ico
 │   └── shot_desktop_window.py # 截取运行中的窗口（验证打包产物）
@@ -209,10 +213,30 @@ GOSHORE/
 └── docs/                  # 开发文档（按用途归类，见 docs/）
 ```
 
+### 题库与个人数据分开放（推荐）
+
+`data/` 下有两种布局，程序按「文件在不在」自动选择，不需要改配置：
+
+| 布局 | 判定 | 备份体积 |
+|---|---|---|
+| **分离**（推荐） | `content.db` + `user.db` 都在 | **0.8 MB / 0.08 秒** |
+| 单库（老） | 只有 `goshor.db` | 142 MB / 8 秒 |
+
+分离之后：题库（23,491 篇，约 430 MB）与被替换无关的个人数据完全分开，所以「导出备份」「WebDAV 同步」只传那 1.8 MB 的个人库，题库可以整体替换或直接分发。
+
+老的 `data/goshor.db` 用一条命令拆开（只跑一次，原库会改名成 `goshor.db.migrated` 保留，不删）：
+
+```bash
+python tools/migrate_split.py --dry-run   # 先看会搬什么
+python tools/migrate_split.py             # 真迁移（约 15~45 秒）
+```
+
+> 迁移后如果弄丢了 `content.db`，程序会**拒绝启动并说明怎么恢复**，而不是新建一个空库让你以为进度被清空了。保留的 `goshor.db.migrated` 就是退路：改回 `goshor.db`、把 `user.db` 移走，就回到单库模式，数据完整。
+
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（867 条，跑在临时库上，不碰 data/goshor.db）
+# 后端单元 / 接口测试（897 条，跑在临时库上，不碰 data/goshor.db）
 python -m pytest tests -q
 
 # 前端静态校验器（无需浏览器；本机无 node 时自动跳过）
@@ -224,7 +248,7 @@ node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 867 passed**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
+当前基线：**pytest 897 passed**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
 
 ## 常见问题
 

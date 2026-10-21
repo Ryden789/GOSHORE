@@ -82,6 +82,11 @@ def _guard_real_db():
 def temp_db(tmp_path, monkeypatch):
     """把 db.DB_PATH 指向临时库，初始化 schema 后交给用例使用。"""
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "goshor.db")
+    # 拆分模式的两个路径也要指到 tmp_path：否则本机 data/ 一旦迁移过，
+    # split_enabled() 会看到真实的 content.db/user.db，整套用例就会跑在
+    # 测试自己造的临时 goshor.db 之外（这里刻意让它们不存在 = legacy 模式）
+    monkeypatch.setattr(db, "CONTENT_DB_PATH", tmp_path / "content.db")
+    monkeypatch.setattr(db, "USER_DB_PATH", tmp_path / "user.db")
     monkeypatch.setattr(db, "IS_MOBILE", False)
     conn = db.connect()
     db.init_db(conn)
@@ -93,6 +98,8 @@ def temp_db(tmp_path, monkeypatch):
 def mobile_db(tmp_path, monkeypatch):
     """手机端多身份库：共享库 + 个人库 + TEMP VIEW。"""
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "goshor.db")
+    monkeypatch.setattr(db, "CONTENT_DB_PATH", tmp_path / "content.db")
+    monkeypatch.setattr(db, "USER_DB_PATH", tmp_path / "user.db")
     monkeypatch.setattr(db, "IS_MOBILE", False)
     conn = db.connect()
     db.init_db(conn)
@@ -101,6 +108,20 @@ def mobile_db(tmp_path, monkeypatch):
     db.set_user(1)
     yield db
     db.IS_MOBILE = False
+
+
+@pytest.fixture(autouse=True)
+def _isolate_split_paths(tmp_path, monkeypatch):
+    """默认把所有用例隔离在 legacy 单库模式。
+
+    拆分模式判定只看 `content.db` / `user.db` 是否存在。本机 `data/` 一旦跑过
+    `tools/migrate_split.py`，只 patch `db.DB_PATH` 的老用例就会掉进 split 模式，
+    读写**真实**的 user.db —— 这里统一把两个路径指到 tmp_path（不创建文件，
+    因此 `split_enabled()` 仍是 False）。需要 split 模式的用例自己 patch 路径
+    并建好这两个文件即可（monkeypatch 后写会覆盖这里的值）。
+    """
+    monkeypatch.setattr(db, "CONTENT_DB_PATH", tmp_path / "content.db")
+    monkeypatch.setattr(db, "USER_DB_PATH", tmp_path / "user.db")
 
 
 def seed_docs(conn, docs: list[dict]) -> None:

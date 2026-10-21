@@ -34,6 +34,14 @@ else:
 DATA_DIR = BASE_DIR / "data"
 STATIC_DIR = BUNDLE_DIR / "static"
 DB_PATH = DATA_DIR / "goshor.db"
+# 桌面端「题库 / 个人数据」拆分后的两个库（见 tools/migrate_split.py）：
+#   content.db  题库（documents / docs_fts / shizheng），可整体替换、可分发，
+#               不带任何用户作答记录；
+#   user.db     个人数据（answers / marks / review_plan / ... + doc_overrides）。
+# 两者**同时存在**才算 split 模式；否则回落单库 legacy 模式，行为与旧版一致
+# —— 未迁移的用户、以及只建了一个库的测试都不受影响。
+CONTENT_DB_PATH = DATA_DIR / "content.db"
+USER_DB_PATH = DATA_DIR / "user.db"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
 DEFAULTS = {
