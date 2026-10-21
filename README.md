@@ -185,8 +185,8 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 
 - **APK 不在 Release 分发**：仓库保留 Android 壳源码，构建依赖本机 Chaquopy / Android SDK
   工具链（未纳入仓库）。`dist/goshor-20261021.apk` 是 2026-10-21 重建的当前版本（299.95 MB，
-  SHA256 `009dac2f…efe366`），已含 P3 共享层、P4 校验与安全加固；更早的 `dist/goshor-2026100*.apk`
-  不含这些改动，请勿混用。APK 仍是单库形态（`goshor.db`），与桌面端的 `content.db + user.db` 分离不同。
+  SHA256 `009dac2f…efe366`），已含 P3 共享层、P4 校验与安全加固；旧版本 APK 已清理，
+  仅保留这一份。APK 仍是单库形态（`goshor.db`），与桌面端的 `content.db + user.db` 分离不同。
 - **演示页一键打开**：`docs/05-宣传/软件介绍PPT.html` 第 12 页的「安装并打开安卓 APP」会自动探测本地服务端口 → 没有现成设备就先拉起 **MuMu 模拟器**（没装则退回 Android SDK 的 AVD）→ `adb` 装 APK 并启动 `MainActivity`，全过程约 25 秒，进度实时显示在页面上。若两者都没有，会明确提示「装 MuMu 或插上开着 USB 调试的手机」。
 - **需要最新安卓版**：在 `android/` 下按 build.gradle 注释准备工具链后执行构建；或直接用手机浏览器访问 `--lan` 的 `/m/`（功能对齐移动端网页）。
 - **命令行等价物**：`tools\open_app.bat`，或已注册的 `goshor://open` 协议。
