@@ -135,10 +135,10 @@ HttpOnly Cookie（30 天），之后直接访问 `http://<电脑IP>:8765/m/` 即
 
 ### 桌面软件版（单文件 exe，免装 Python）
 
-不想装 Python、也不想开浏览器，可以直接下载 Release 里的 `GOSHORE-desktop.exe`（68.6 MB），
+不想装 Python、也不想开浏览器，可以直接下载 Release 里的 `GOSHORE-desktop.exe`（70.4 MB），
 或使用本机打包的 `dist\GOSHORE上岸工作台.exe`：
 
-> 下载页：<https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.21>
+> 下载页：<https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.23>
 > 同时附带 `content-sample.db`，可手动放进 `data\` 作为题库。
 
 - **双击即用**：原生窗口打开（无地址栏），服务在后台跑，**默认只监听本机**。
@@ -178,7 +178,7 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 ```
 
 > 打包配置里**刻意不包含 `data/`**：那是用户的学习库（动辄几百 MB），打进 exe 会让安装包膨胀、用户数据随版本被覆盖，也无法把软件单独发给别人。
-> exe 体积：GitHub Actions 构建约 **68.6 MB**；本机开发环境因依赖版本不同约 96 MB，属正常差异。
+> exe 体积：GitHub Actions 构建约 **70.4 MB**；本机开发环境因依赖版本不同约 96 MB，属正常差异。
 > `--onefile` 每次启动要解包，机械盘 + 杀软实时扫描下首次双击可能等几秒。若要更快的启动，可把 `--onefile` 换成 `--onedir`。
 
 ### 安卓 APP（源码保留，需自行构建）
@@ -311,7 +311,7 @@ python scripts/e2e_mobile.py
 
 - **双击没反应**：先看 `data\logs\desktop-YYYYMMDD.log`。exe 是 `--windowed`，没有控制台，所有输出都写这个文件。
 - **不要放在会被同步/删除的目录**：`--onefile` 每次启动会把自身解包到临时目录；把 exe 放在 `Program Files` 等**无写权限**的目录会让 `data\` 建不出来。建议放 `D:\GOSHORE-Desktop\` 这类可写目录。
-- **首次启动慢**：Release 版 68.6 MB 单文件要解包，机械盘 + 杀毒实时扫描下可能等几秒；建大规模题库索引时会额外耗时，壳会打印进度，不会误判失败。
+- **首次启动慢**：Release 版 70.4 MB 单文件要解包，机械盘 + 杀毒实时扫描下可能等几秒；建大规模题库索引时会额外耗时，壳会打印进度，不会误判失败。
 - **杀软误报**：无数字签名的 PyInstaller 产物偶发误报，添加信任即可。
 - **换新 exe 后快捷方式失效**：把新 exe 覆盖到部署目录，再跑一次 `python tools/create_shortcut.py`。
 
