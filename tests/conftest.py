@@ -14,6 +14,18 @@ from pathlib import Path
 
 import pytest
 
+# Windows + Python 3.13.9：os.mkdir(mode=0o700) 会落一条只允许当前用户的 DACL，
+# DSH 沙箱的受限令牌随后连目录列表都拿不到 —— pytest 的 tmp_path 全程用 0o700，
+# 于是所有用临时目录的用例都在 setup 阶段 PermissionError。
+# Windows 上 mode 本应被忽略（见 os.mkdir 文档），这里恢复该语义；只影响测试进程。
+if os.name == "nt":
+    _os_mkdir = os.mkdir
+
+    def _mkdir_ignore_mode(path, mode=0o777, *, dir_fd=None):
+        return _os_mkdir(path, 0o777) if dir_fd is None else _os_mkdir(path, 0o777, dir_fd=dir_fd)
+
+    os.mkdir = _mkdir_ignore_mode
+
 # 让 tests/ 能 import app 包（仓库根目录入 sys.path）
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:

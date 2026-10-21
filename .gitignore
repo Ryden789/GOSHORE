@@ -22,6 +22,11 @@ data/test*.pdf
 scripts/_*.py
 scripts/_*_tmp/
 .tmp/
+# pytest 的临时目录与缓存（DSH 沙箱下可能残留、普通权限删不掉）
+.pytest_tmp*/
+.pytest_cache/
+# 测试/脚本遗留的根目录临时目录
+/tmp*/
 # 宣传材料导出产物（PDF / 逐页 PNG，可由 docs/05-宣传/*.md 重新生成，不分发）
 /output/
 /tmp/
