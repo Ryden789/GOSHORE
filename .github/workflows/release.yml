@@ -8,7 +8,7 @@ on:
       tag:
         description: "Release tag（必须已存在）"
         required: true
-        default: "v2026.10.21"
+        default: "v2026.10.25"
 
 permissions:
   contents: write

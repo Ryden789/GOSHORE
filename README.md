@@ -138,7 +138,7 @@ HttpOnly Cookie（30 天），之后直接访问 `http://<电脑IP>:8765/m/` 即
 不想装 Python、也不想开浏览器，可以直接下载 Release 里的 `GOSHORE-desktop.exe`（70.4 MB），
 或使用本机打包的 `dist\GOSHORE上岸工作台.exe`：
 
-> 下载页：<https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.24>
+> 下载页：<https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.25>
 > 同时附带 `content-sample.db`，可手动放进数据目录作为题库（默认 `%LOCALAPPDATA%\GOSHORE\data\`；若 exe 旁边已有 `data\`，则是该便携目录）。
 
 - **双击即用**：原生窗口打开（无地址栏），服务在后台跑，**默认只监听本机**。
