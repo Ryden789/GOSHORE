@@ -64,6 +64,24 @@ def test_wrong_passphrase_raises():
         sync_webdav.decrypt_bytes(blob, "wrong")
 
 
+def test_file_stamp_ignores_empty_wal(tmp_path):
+    """空 WAL 只是 SQLite 的临时文件，不该让版本戳变化。
+
+    回归：最后一条连接关闭时 SQLite 会删除 / 重建 0 字节 `-wal`，其 mtime
+    变化曾被算进版本戳，导致刚上传完就提示“本机有未同步修改”（CI 偶发）。
+    """
+    p = tmp_path / "user.db"
+    p.write_bytes(b"main")
+    wal = tmp_path / "user.db-wal"
+    base = sync_webdav.file_stamp([p])
+
+    wal.write_bytes(b"")
+    assert sync_webdav.file_stamp([p]) == base
+
+    wal.write_bytes(b"pending")
+    assert sync_webdav.file_stamp([p]) != base
+
+
 def test_tampered_ciphertext_raises():
     """encrypt-then-MAC：改一个字节就必须解不开，绝不能解出垃圾再覆盖本地。"""
     blob = bytearray(sync_webdav.encrypt_bytes(b"payload-abc", "pw"))

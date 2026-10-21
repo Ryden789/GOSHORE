@@ -403,7 +403,11 @@ def file_stamp(paths) -> str:
         for suffix in ("", "-wal"):
             try:
                 st = os.stat(f"{raw}{suffix}")
-                parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+                # 空 WAL 不算数据：SQLite 在最后一条连接关闭时会删掉它 / 重建一个
+                # 0 字节文件，mtime 随之跳动；把它算进版本戳会让“刚同步完”立刻
+                # 变成“本机有改动”（CI 上偶发假冲突）。
+                parts.append("0:0" if st.st_size == 0
+                             else f"{st.st_mtime_ns}:{st.st_size}")
             except OSError:
                 parts.append("0:0")
     return "|".join(parts)

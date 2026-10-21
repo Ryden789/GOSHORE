@@ -2169,6 +2169,26 @@ def _local_stamp() -> str:
     return sync_webdav.file_stamp([str(_user_db_path())])
 
 
+def _settle_local_stamp() -> str:
+    """先 checkpoint 再取版本戳。
+
+    上传结束时若 `-wal` 里还有已提交事务，SQLite 会在后续连接关闭时自动
+    checkpoint，`-wal` 的 mtime/size 随之变化，刚存下的基准戳立刻“过期”，
+    表现为刚上传完就提示「本机有未同步修改」（CI 上偶发）。先把 WAL 落盘
+    并截断，再取戳，基准才是稳定的。
+    """
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(_user_db_path()), timeout=15)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return _local_stamp()
+
+
 def _device_name() -> str:
     return sync_webdav.device_name()
 
@@ -2254,11 +2274,12 @@ def api_sync_up():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     now = datetime.datetime.now().isoformat(timespec="seconds")
+    stamp = _settle_local_stamp()
     save_settings({
         "sync_last_at": now, "sync_last_up_at": now,
         "sync_last_size": size, "sync_device": _device_name(),
         # 上传后本机就是云端的内容，重置基准 stamp，避免下次下载误报冲突
-        "sync_local_stamp": _local_stamp(),
+        "sync_local_stamp": stamp,
     })
     return {"ok": True, "size": size, "plain_size": plain_size,
             "remote": remote, "at": now, "note": "已加密上传（云端只见密文）"}
