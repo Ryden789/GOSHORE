@@ -23,8 +23,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const BLOCK_START = "/* N2 学习提醒 · 网页端";
 const SOURCES = [
-  { label: "桌面 app.js", rel: "static/app.js", end: "/* 手绘 SVG 饼图" },
-  { label: "移动 m.js", rel: "static/m/m.js", end: "/* 安全富文本" },
+  { label: "桌面 app.js", rel: "static/app.js", html: "static/index.html" },
+  { label: "移动 m.js", rel: "static/m/m.js", html: "static/m/index.html" },
 ];
 
 /* ---------------- 源码抽取 ---------------- */
@@ -189,17 +189,23 @@ function has(hay, needle, msg) {
   ok(String(hay).includes(needle), `${msg}（找不到 ${JSON.stringify(needle)}：${JSON.stringify(hay)}）`);
 }
 
-/* ---------------- 装载双端实现 ---------------- */
+/* ---------------- 装载共享实现 ---------------- */
+
+// N2 提醒块已收敛到 static/shared/core.js（两端页面在各自脚本前加载）。
+// Pref 仍在各端，继续按端抽取；提醒块只从共享文件取一份。
+const SHARED_REL = "static/shared/core.js";
+const sharedSrc = fs.readFileSync(path.join(ROOT, SHARED_REL), "utf8");
+const sharedBlock = extractBlock(sharedSrc, "/* shared-core:end");
 
 const IMPLS = {};
 for (const s of SOURCES) {
   const src = fs.readFileSync(path.join(ROOT, s.rel), "utf8");
-  const block = extractBlock(src, s.end);
   const pref = extractBraced(src, "const Pref = {");
   if (!pref) throw new Error(`${s.rel} 里找不到 const Pref = {...}（N2 提醒块依赖它）`);
-  IMPLS[s.label] = { pref, block, src };
+  IMPLS[s.label] = { pref, block: sharedBlock, src,
+                     html: fs.readFileSync(path.join(ROOT, s.html), "utf8") };
 }
-console.log(`抽取到 ${Object.keys(IMPLS).length} 份 N2 提醒块：${Object.keys(IMPLS).join("、")}`);
+console.log(`N2 提醒块来自 ${SHARED_REL}（${SOURCES.length} 个前端共用）`);
 
 /* ---------------- 1. 偏好读写往返 ---------------- */
 
@@ -448,12 +454,16 @@ for (const [label, code] of Object.entries(IMPLS)) {
     `${label}：水合失败时应保留本地缓存`);
 }
 
-/* ---------------- 7. 双端同源 ---------------- */
+/* ---------------- 7. 单一实现 + 双端同源 ---------------- */
 
 {
   const labels = Object.keys(IMPLS);
-  eq(IMPLS[labels[0]].block, IMPLS[labels[1]].block,
-    `双端同源：${labels[0]} 与 ${labels[1]} 的 N2 提醒块源码已漂移，请同步（N2 要求双端口径一致）`);
+  ok(sharedSrc.includes(BLOCK_START), `${SHARED_REL} 必须包含 N2 提醒块`);
+  for (const label of labels) {
+    ok(!norm(IMPLS[label].src).includes("function hydrateReminderPref("),
+      `${label} 仍在内联 N2 提醒实现——它应只存在于 ${SHARED_REL}`);
+    has(IMPLS[label].html, "/shared/core.js", `${label}：页面必须加载共享逻辑 ${SHARED_REL}`);
+  }
   eq(IMPLS[labels[0]].pref, IMPLS[labels[1]].pref,
     "双端同源：两处 Pref 实现已漂移，键前缀/编码方式必须一致，否则偏好互不识别");
 }

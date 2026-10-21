@@ -87,8 +87,20 @@ function makeContext() {
   });
 }
 
+// 共享逻辑已从 app.js / m.js 抽到 static/shared/：先按页面顺序装载，
+// 再执行本端脚本，否则顶层会引用未定义的 Theme / DraftPaper / ReminderWeb 等。
+const SHARED_SCRIPTS = [
+  "static/shared/sanitize.js",
+  "static/shared/settle.js",
+  "static/shared/core.js",
+];
+
 function loadScript(rel) {
   const ctx = makeContext();
+  for (const shared of SHARED_SCRIPTS) {
+    const code = fs.readFileSync(path.join(ROOT, shared), "utf8");
+    vm.runInContext(code, ctx, { filename: shared });
+  }
   const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
   vm.runInContext(src, ctx, { filename: rel });
   return ctx;

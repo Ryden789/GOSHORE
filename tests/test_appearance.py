@@ -38,6 +38,7 @@ M_CSS = ROOT / "static" / "m" / "m.css"
 INDEX = ROOT / "static" / "index.html"
 M_INDEX = ROOT / "static" / "m" / "index.html"
 SW_JS = ROOT / "static" / "sw.js"
+SHARED_CORE = ROOT / "static" / "shared" / "core.js"
 CHECK_APPEARANCE = ROOT / "tools" / "check_appearance.mjs"
 
 VERSION = "20261020"
@@ -45,6 +46,20 @@ VERSION = "20261020"
 
 def _norm(p: Path) -> str:
     return p.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def _assert_shared_loaded(shared_name: str):
+    """共享块已从两端脚本迁出：两个页面都要在各自脚本前加载共享文件。"""
+    for html, own in ((INDEX, "app.js"), (M_INDEX, "m/m.js")):
+        h = _norm(html)
+        assert f"/shared/{shared_name}" in h, f"{html.name} 未加载 /shared/{shared_name}"
+        assert h.index(f"/shared/{shared_name}") < h.index(f"/{own}"), \
+            f"{html.name} 必须先加载 /shared/{shared_name} 再加载本端脚本"
+
+
+def _assert_not_inline(needle: str):
+    for p in (APP_JS, M_JS):
+        assert needle not in _norm(p), f"{p.name} 仍内联共享块（应只在 static/shared/）"
 
 
 def _theme_block(src: str) -> str:
@@ -76,34 +91,31 @@ def _dark_block(css: str) -> str:
 # ============================================================
 
 def test_theme_block_identical_across_clients():
-    """双端主题块必须逐字节一致（与 N1/N2 同一规矩，防两端逻辑漂移）。"""
-    a = _theme_block(_norm(APP_JS))
-    b = _theme_block(_norm(M_JS))
-    assert a == b, "双端 N5 主题块不一致"
+    """主题块只保留一份共享实现（原双端逐字节一致改为单一来源）。"""
+    a = _theme_block(_norm(SHARED_CORE))
     assert len(a) > 1800, "主题块疑似被删空"
+    _assert_not_inline("/* N5 夜间模式")
+    _assert_shared_loaded("core.js")
 
 
 def test_theme_block_has_no_heavy_lib():
-    for p in (APP_JS, M_JS):
-        blk = _theme_block(_norm(p))
-        assert "require(" not in blk and "import " not in blk, f"{p.name} 主题块引入了模块"
-        assert "http://" not in blk and "https://" not in blk, f"{p.name} 主题块引了外部资源"
+    blk = _theme_block(_norm(SHARED_CORE))
+    assert "require(" not in blk and "import " not in blk, "shared/core.js 主题块引入了模块"
+    assert "http://" not in blk and "https://" not in blk, "shared/core.js 主题块引了外部资源"
 
 
 def test_theme_block_uses_single_pref_key():
     """主题只用一个偏好键 theme，不得顺手写别的键。"""
-    for p in (APP_JS, M_JS):
-        blk = _theme_block(_norm(p))
-        assert 'KEY: "theme"' in blk, f"{p.name} 主题块缺少 KEY 定义"
-        keys = set(re.findall(r'Pref\.(?:get|set)\(\s*"([^"]+)"', blk))
-        assert keys == set(), f"{p.name} 主题块应通过 KEY 取偏好，不该出现字面键：{keys}"
+    blk = _theme_block(_norm(SHARED_CORE))
+    assert 'KEY: "theme"' in blk, "shared/core.js 主题块缺少 KEY 定义"
+    keys = set(re.findall(r'Pref\.(?:get|set)\(\s*"([^"]+)"', blk))
+    assert keys == set(), f"shared/core.js 主题块应通过 KEY 取偏好，不该出现字面键：{keys}"
 
 
 def test_theme_block_exposes_three_modes():
-    for p in (APP_JS, M_JS):
-        blk = _theme_block(_norm(p))
-        assert '"auto", "light", "dark"' in blk, f"{p.name} 主题块三态白名单缺失"
-        assert "prefers-color-scheme: dark" in blk, f"{p.name} 主题块未处理跟随系统"
+    blk = _theme_block(_norm(SHARED_CORE))
+    assert '"auto", "light", "dark"' in blk, "shared/core.js 主题块三态白名单缺失"
+    assert "prefers-color-scheme: dark" in blk, "shared/core.js 主题块未处理跟随系统"
 
 
 # ============================================================
@@ -235,35 +247,32 @@ def test_validator_has_tamper_self_check():
 # ============================================================
 
 def test_font_block_identical_across_clients():
-    """双端字号块必须逐字节一致（与 N1/N2/N5 同一规矩）。"""
-    a = _font_block(_norm(APP_JS))
-    b = _font_block(_norm(M_JS))
-    assert a == b, "双端 N4 字号块不一致"
+    """字号块只保留一份共享实现（原双端逐字节一致改为单一来源）。"""
+    a = _font_block(_norm(SHARED_CORE))
     assert len(a) > 1200, "字号块疑似被删空"
+    _assert_not_inline("/* N4 字号与阅读偏好")
+    _assert_shared_loaded("core.js")
 
 
 def test_font_block_has_no_heavy_lib():
-    for p in (APP_JS, M_JS):
-        blk = _font_block(_norm(p))
-        assert "require(" not in blk and "import " not in blk, f"{p.name} 字号块引入了模块"
-        assert "http://" not in blk and "https://" not in blk, f"{p.name} 字号块引了外部资源"
+    blk = _font_block(_norm(SHARED_CORE))
+    assert "require(" not in blk and "import " not in blk, "shared/core.js 字号块引入了模块"
+    assert "http://" not in blk and "https://" not in blk, "shared/core.js 字号块引了外部资源"
 
 
 def test_font_block_migrates_legacy_keys():
     """旧移动端 U-7 用 s/m/b 三档；升级到四档后必须迁移，否则老用户偏好被降级。"""
-    for p in (APP_JS, M_JS):
-        blk = _font_block(_norm(p))
-        assert 'LEGACY: { s: "sm", m: "md", b: "lg" }' in blk, f"{p.name} 字号块缺少旧值迁移表"
-        for key in ('["sm"', '"md"', '"lg"', '"xl"'):
-            assert key in blk, f"{p.name} 字号块四档白名单缺失（{key}）"
+    blk = _font_block(_norm(SHARED_CORE))
+    assert 'LEGACY: { s: "sm", m: "md", b: "lg" }' in blk, "shared/core.js 字号块缺少旧值迁移表"
+    for key in ('["sm"', '"md"', '"lg"', '"xl"'):
+        assert key in blk, f"shared/core.js 字号块四档白名单缺失（{key}）"
 
 
 def test_font_block_exposes_loose_lineheight():
-    for p in (APP_JS, M_JS):
-        blk = _font_block(_norm(p))
-        assert 'dataset.lineheight = "loose"' in blk, f"{p.name} 字号块未实现行高宽松开关"
-        assert "delete document.documentElement.dataset.lineheight" in blk, \
-            f"{p.name} 字号块未实现行高宽松的关闭（应删除属性）"
+    blk = _font_block(_norm(SHARED_CORE))
+    assert 'dataset.lineheight = "loose"' in blk, "shared/core.js 字号块未实现行高宽松开关"
+    assert "delete document.documentElement.dataset.lineheight" in blk, \
+        "shared/core.js 字号块未实现行高宽松的关闭（应删除属性）"
 
 
 def test_font_css_vars_in_both():

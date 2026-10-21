@@ -203,27 +203,41 @@ function has(hay, needle, msg) {
   ok(String(hay).includes(needle), `${msg}（找不到 ${JSON.stringify(needle)}）`);
 }
 
-/* ---------------- 装载双端实现 ---------------- */
+/* ---------------- 装载共享实现 ---------------- */
+
+// N5/N4（以及 N1/N2/G2/G3/G4）已收敛到 static/shared/core.js：页面在各自
+// app.js / m.js 之前加载它。校验器改为「共享文件里只有一份实现」+「两端页面
+// 都按顺序加载了它」+「两端脚本里不再内联」；Pref 仍留在各端，继续按端抽取。
+const SHARED_REL = "static/shared/core.js";
+const sharedSrc = fs.readFileSync(path.join(ROOT, SHARED_REL), "utf8");
+const sharedBlock = extractBlock(sharedSrc);
+const sharedFont = extractFontBlock(sharedSrc);
 
 const IMPLS = {};
 for (const s of SOURCES) {
   const src = fs.readFileSync(path.join(ROOT, s.rel), "utf8");
-  const block = extractBlock(src);
-  const font = extractFontBlock(src);
   const pref = extractBraced(src, "const Pref = {");
   if (!pref) throw new Error(`${s.rel} 里找不到 const Pref = {...}（N5 主题块依赖它）`);
-  IMPLS[s.label] = { pref, block, font, src, css: fs.readFileSync(path.join(ROOT, s.css), "utf8"),
+  IMPLS[s.label] = { pref, block: sharedBlock, font: sharedFont, src,
+                     css: fs.readFileSync(path.join(ROOT, s.css), "utf8"),
                      html: fs.readFileSync(path.join(ROOT, s.html), "utf8") };
 }
-console.log(`抽取到 ${Object.keys(IMPLS).length} 份 N5 主题块：${Object.keys(IMPLS).join("、")}`);
+console.log(`N5/N4 共享块来自 ${SHARED_REL}（${SOURCES.length} 个前端共用）`);
 
-/* ---------------- 1. 双端块逐字节一致 ---------------- */
+/* ---------------- 1. 单一实现：共享文件 + 两端加载 + 不再内联 ---------------- */
 
-const blocks = Object.values(IMPLS).map(x => x.block);
-for (let i = 1; i < blocks.length; i++) {
-  ok(blocks[0] === blocks[i],
-    `双端 N5 主题块不一致（${SOURCES[0].label} vs ${SOURCES[i].label}）——两端必须逐字节相同`);
+for (const s of SOURCES) {
+  const impl = IMPLS[s.label];
+  ok(!norm(impl.src).includes(BLOCK_START),
+    `${s.rel} 仍在内联 N5 主题块——它应只存在于 ${SHARED_REL}`);
+  has(impl.html, "/shared/core.js", `${s.html} 应加载共享逻辑 ${SHARED_REL}`);
+  const sharedAt = impl.html.indexOf("/shared/core.js");
+  const ownAt = impl.html.indexOf(s.rel.replace(/^static/, ""));
+  ok(sharedAt >= 0 && ownAt >= 0 && sharedAt < ownAt,
+    `${s.html} 必须先加载 ${SHARED_REL} 再加载 ${s.rel}（共享块里的名字在脚本顶层）`);
 }
+ok(sharedSrc.includes(BLOCK_START) && sharedSrc.includes(N4_START),
+  `${SHARED_REL} 必须包含 N5 主题块与 N4 字号块`);
 
 /* ---------------- 2. 纯函数：归一 / 解析 / 系统判定 ---------------- */
 
@@ -422,12 +436,12 @@ for (const s of SOURCES) {
 
 /* ---------------- 7. N4 字号与阅读偏好 ---------------- */
 
-// 7.1 双端字号块逐字节一致
+// 7.1 N4 字号块只在共享文件里维护，两端不再内联
 {
-  const fb = Object.values(IMPLS).map(x => x.font);
-  for (let i = 1; i < fb.length; i++) {
-    ok(fb[0] === fb[i],
-      `双端 N4 字号块不一致（${SOURCES[0].label} vs ${SOURCES[i].label}）——两端必须逐字节相同`);
+  ok(sharedSrc.includes(N4_START), `${SHARED_REL} 应包含 N4 字号块`);
+  for (const s of SOURCES) {
+    ok(!norm(IMPLS[s.label].src).includes(N4_START),
+      `${s.rel} 仍在内联 N4 字号块——它应只存在于 ${SHARED_REL}`);
   }
 }
 

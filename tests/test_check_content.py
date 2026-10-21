@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -57,12 +58,16 @@ def _opts(*correct_idx: int) -> list[dict]:
 
 
 def _run(db: Path, *extra: str) -> subprocess.CompletedProcess:
+    # 子进程 stdout 被管道接走时，Windows 默认用 locale 编码（cp936）输出中文，
+    # 而这里按 UTF-8 解码，会把“严重问题 0 道”读成乱码。显式要求 UTF-8 输出。
+    env = {**os.environ, "PYTHONUTF8": "1"}
     return subprocess.run(
         [sys.executable, str(TOOL), "--db", str(db), *extra],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
     )
 
 

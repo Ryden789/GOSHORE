@@ -37,8 +37,8 @@ def test_exam_daub_settlement(node_exe):
                        errors="replace", timeout=180)
     out = (r.stdout or "") + (r.stderr or "")
     assert r.returncode == 0, "涂卡统一判分校验未通过：\n" + out
-    # 防止脚本被改成空跑
-    assert "抽取到 2 份 settleExam" in out, out
+    # 防止脚本被改成空跑；settleExam 已收敛为共享单份
+    assert "抽取到 1 份 settleExam" in out, out
     assert "自检" in out, out
     assert "双端口径一致" in out, out
 
@@ -57,10 +57,13 @@ def m_src() -> str:
 
 @pytest.mark.parametrize("src_fixture", ["app_src", "m_src"])
 def test_both_frontends_define_settle_exam(request, src_fixture):
-    """双端都必须有统一的 settleExam(docs, answers) 判分函数（同名同签名）。"""
+    """settleExam 只有一份共享实现；两端 summary() 都调用它。"""
     src = request.getfixturevalue(src_fixture)
-    assert re.search(r"function\s+settleExam\s*\(\s*docs\s*,\s*answers\s*\)", src), \
-        f"{src_fixture} 缺少 settleExam(docs, answers)"
+    shared = (ROOT / "static" / "shared" / "settle.js").read_text(encoding="utf-8")
+    assert re.search(r"function\s+settleExam\s*\(\s*docs\s*,\s*answers\s*\)", shared)
+    assert not re.search(r"function\s+settleExam\s*\(", src), \
+        f"{src_fixture} 仍内联 settleExam（应只在 static/shared/settle.js）"
+    assert "settleExam(" in src, f"{src_fixture} 未调用共享 settleExam"
 
 
 @pytest.mark.parametrize("src_fixture", ["app_src", "m_src"])

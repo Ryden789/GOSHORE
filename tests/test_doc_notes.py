@@ -374,13 +374,22 @@ def _extract_block(src: str) -> str:
 
 
 def test_frontend_block_byte_identical():
-    a = _extract_block(APP_JS.read_text(encoding="utf-8"))
-    m = _extract_block(M_JS.read_text(encoding="utf-8"))
-    assert a == m, "双端 G3/G4 共享块必须逐字节一致"
+    """G3/G4 共享块只有一份实现，双端加载同一文件。"""
+    core = ROOT / "static" / "shared" / "core.js"
+    block = _extract_block(core.read_text(encoding="utf-8"))
+    assert "const NoteBox =" in block
+    for p in (APP_JS, M_JS):
+        assert "/* G3 题目自由笔记" not in p.read_text(encoding="utf-8"), f"{p.name} 仍内联 G3/G4"
+    for html in (ROOT / "static" / "index.html", ROOT / "static" / "m" / "index.html"):
+        h = html.read_text(encoding="utf-8")
+        assert "/shared/core.js" in h
+        own = "/m/m.js?v" if html.parent.name == "m" else "/app.js?v"
+        assert h.index("/shared/core.js") < h.index(own)
 
 
 def test_frontend_declares_notebox_and_swipe():
-    block = _extract_block(APP_JS.read_text(encoding="utf-8"))
+    core = ROOT / "static" / "shared" / "core.js"
+    block = _extract_block(core.read_text(encoding="utf-8"))
     for name in ("const NoteBox = {", "const SwipePaging = {"):
         assert name in block, f"共享块缺 {name}"
     for method in ("async load(", "async save(", "html(", "bind(", "flush(",

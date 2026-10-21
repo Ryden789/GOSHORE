@@ -38,6 +38,7 @@ function hasNot(hay, needle, msg) {
 
 const APP_SRC = norm(fs.readFileSync(APP_JS, "utf8"));
 const M_SRC = norm(fs.readFileSync(M_JS, "utf8"));
+const SHARED_SRC = norm(fs.readFileSync(path.join(ROOT, "static", "shared", "sanitize.js"), "utf8"));
 
 /* ---------------- 抽取 ---------------- */
 
@@ -78,8 +79,12 @@ function buildSanitizer(src, kind) {
   return new Function(parts.join("\n\n"))();
 }
 
-const appS = buildSanitizer(APP_SRC, "desktop");
-const mobS = buildSanitizer(M_SRC, "mobile");
+// 净化实现已收敛到 static/shared/sanitize.js：桌面/移动加载同一份，
+// 不再各存一份逐字节相同的副本。校验器只构建一个实例，双端一致性改为
+// 静态断言「两个页面都加载共享文件、两个脚本都不再内联」。
+const sharedS = buildSanitizer(SHARED_SRC, "shared");
+const appS = sharedS;
+const mobS = sharedS;
 
 /* ---------------- A 危险构造必须被剥离 ---------------- */
 
@@ -142,41 +147,34 @@ eq(appS.sanitizeHtml("<unknown>文字</unknown>"), "文字", "B 非白名单标�
 eq(appS.sanitizeHtml("<td colspan=\"abc\">a</td>"), "<td>a</td>", "B 非法 colspan 丢弃");
 eq(appS.sanitizeHtml("a < b"), "a &lt; b", "B 裸 < 被转义");
 
-/* ---------------- C 双端输出逐字节一致 ---------------- */
+/* ---------------- C 单一实现：两端加载同一份 ---------------- */
 
-const PARITY = [
-  "<img src=x onerror=alert(1)>",
-  "<img src=\"/img?path=a.png\" alt=\"图\">",
-  "<p onclick=\"x\">hi</p>",
-  "<a href=\"javascript:alert(1)\">x</a>",
-  "<table><tr><td colspan=\"2\">a</td></tr></table>",
-  "<script>alert(1)</script>正文",
-  "<sub>2</sub> 与 <sup>3</sup>",
-  "文字 < 符号 & 与 \"引号\" 与 '单引号'",
-  "<unknown>文字</unknown>",
-  "<div style=\"color:red\">x</div>",
-  "<img src=\"data:text/html;base64,AA\">",
-  "<a href=\"//evil.com/x\">x</a>",
-];
-
-for (const input of PARITY) {
-  eq(mobS.sanitizeHtml(input), appS.sanitizeHtml(input),
-     `C 双端 sanitizeHtml 输出一致：${JSON.stringify(input)}`);
+for (const rel of ["static/index.html", "static/m/index.html"]) {
+  const html = fs.readFileSync(path.join(ROOT, rel), "utf8");
+  const sharedAt = html.indexOf("/shared/sanitize.js");
+  const ownAt = html.indexOf(rel.includes("/m/") ? "/m/m.js" : "/app.js");
+  ok(sharedAt >= 0, `${rel} 必须加载 /shared/sanitize.js`);
+  ok(sharedAt >= 0 && ownAt >= 0 && sharedAt < ownAt,
+    `${rel} 必须先加载 /shared/sanitize.js 再加载本端脚本`);
 }
-for (const tag of ["<img src=x onerror=alert(1)>", "<p class=\"a b\">", "<td colspan=\"2\">",
-                   "<a href=\"javascript:x\">", "</p>", "<br>", "<unknown>"]) {
-  eq(mobS.sanitizeTag(tag), appS.sanitizeTag(tag), `C 双端 sanitizeTag 输出一致：${JSON.stringify(tag)}`);
+for (const [label, src] of [["桌面 app.js", APP_SRC], ["移动 m.js", M_SRC]]) {
+  ok(!src.includes("const SANITIZE_TAGS"), `${label} 仍在内联净化常量——应只存在于 shared/sanitize.js`);
+  ok(!src.includes("function sanitizeTag("), `${label} 仍在内联 sanitizeTag——应只存在于 shared/sanitize.js`);
 }
+ok(SHARED_SRC.includes("function sanitizeTag(") && SHARED_SRC.includes("function sanitizeHtml("),
+  "static/shared/sanitize.js 必须定义 sanitizeTag / sanitizeHtml");
 
 /* ---------------- D 桌面 md() 端到端 ---------------- */
 
 function buildDesktopMd() {
-  const names = ["HTML_WHITELIST", "HTML_WHITELIST_CLOSE", "SANITIZE_TAGS", "SANITIZE_VOID"];
+  const appNames = ["HTML_WHITELIST", "HTML_WHITELIST_CLOSE"];
+  const sharedNames = ["SANITIZE_TAGS", "SANITIZE_VOID"];
   const parts = [];
-  for (const n of names) parts.push(pick(APP_SRC, "desktop", n));
+  for (const n of appNames) parts.push(pick(APP_SRC, "desktop", n));
+  for (const n of sharedNames) parts.push(pick(SHARED_SRC, "shared", n));
   parts.push(extractBraced(APP_SRC, "function esc("));
   parts.push(extractBraced(APP_SRC, "function stripWl("));
-  parts.push(extractBraced(APP_SRC, "function sanitizeTag("));
+  parts.push(extractBraced(SHARED_SRC, "function sanitizeTag("));
   const mdFn = extractBraced(APP_SRC, "function md(");
   if (!mdFn) throw new Error("在 desktop 源码里抽不到 function md(");
   parts.push(mdFn, "return md;");
@@ -190,13 +188,13 @@ has(appMd("A<br>B"), "<br>", "D 桌面 md()：<br> 仍被放行（回归 md 一�
 
 /* ---------------- E 篡改自检 ---------------- */
 
-const M_TAG_SRC = extractBraced(M_SRC, "function sanitizeTag(");
+const M_TAG_SRC = extractBraced(SHARED_SRC, "function sanitizeTag(");
 const CUT1 = 'if (allowed.indexOf(an) < 0) continue;';
 const CUT2 = 'else if (!/^\\d{1,4}$/.test(av.trim())) continue;';
 ok(M_TAG_SRC.includes(CUT1) && M_TAG_SRC.includes(CUT2), "E0 移动端 sanitizeTag 里有属性白名单与数值校验");
 const tampered = M_TAG_SRC.split(CUT1).join("").split(CUT2).join("");
 ok(tampered !== M_TAG_SRC, "E1 篡改样本已生效（属性过滤被移除）");
-const tamperedTag = new Function(`${extractConst(M_SRC, "SANITIZE_TAGS")}\n\n${extractConst(M_SRC, "SANITIZE_VOID")}\n\n${tampered}\n\nreturn sanitizeTag;`)();
+const tamperedTag = new Function(`${extractConst(SHARED_SRC, "SANITIZE_TAGS")}\n\n${extractConst(SHARED_SRC, "SANITIZE_VOID")}\n\n${tampered}\n\nreturn sanitizeTag;`)();
 has(tamperedTag("<img src=x onerror=alert(1)>"), "onerror",
     "E2 篡改自检：拆掉属性白名单后 onerror 必须漏出（未漏则说明校验形同虚设）");
 

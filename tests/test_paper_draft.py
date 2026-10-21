@@ -475,18 +475,23 @@ def _draft_block(src: str) -> str:
 
 
 def test_draft_block_identical_across_clients():
-    """双端草稿块必须逐字节一致（N2 也是这个规矩，防两端逻辑漂移）。"""
-    a = _draft_block(_norm(APP_JS))
-    b = _draft_block(_norm(M_JS))
-    assert a == b, "双端 N1 草稿块不一致"
+    """N1 草稿块只有一份共享实现，双端加载同一文件。"""
+    core = ROOT / "static" / "shared" / "core.js"
+    a = _draft_block(_norm(core))
     assert len(a) > 4000, "草稿块疑似被删空"
+    for p in (APP_JS, M_JS):
+        assert "const DraftPaper = {" not in _norm(p), f"{p.name} 仍内联 N1 草稿块"
+    for html in (ROOT / "static" / "index.html", ROOT / "static" / "m" / "index.html"):
+        h = html.read_text(encoding="utf-8")
+        assert "/shared/core.js" in h
+        own = "/m/m.js?v" if html.parent.name == "m" else "/app.js?v"
+        assert h.index("/shared/core.js") < h.index(own)
 
 
 def test_draft_block_has_no_heavy_lib():
-    for p in (APP_JS, M_JS):
-        blk = _draft_block(_norm(p))
-        assert "require(" not in blk and "import " not in blk, f"{p.name} 草稿块引入了模块"
-        assert "http://" not in blk and "https://" not in blk, f"{p.name} 草稿块引了外部资源"
+    blk = _draft_block(_norm(ROOT / "static" / "shared" / "core.js"))
+    assert "require(" not in blk and "import " not in blk, "shared/core.js 草稿块引入了模块"
+    assert "http://" not in blk and "https://" not in blk, "shared/core.js 草稿块引了外部资源"
 
 
 def test_runpaper_wires_draft_lifecycle():
@@ -569,10 +574,9 @@ def test_static_cache_version_bumped():
 
 def test_no_legacy_draft_keys():
     """草稿只走 /api/paper-draft/*，不得偷偷用别的 localStorage 键（除兜底 draft_<scope>）。"""
-    for p in (APP_JS, M_JS):
-        blk = _draft_block(_norm(p))
-        keys = set(re.findall(r'Pref\.(?:get|set)\("([^"]+)"', blk))
-        assert keys <= {"draft_"}, f"{p.name} 草稿块出现了计划外的偏好键：{keys}"
+    blk = _draft_block(_norm(ROOT / "static" / "shared" / "core.js"))
+    keys = set(re.findall(r'Pref\.(?:get|set)\("([^"]+)"', blk))
+    assert keys <= {"draft_"}, f"草稿块出现了计划外的偏好键：{keys}"
 
 
 def test_node_draft_validator(node_exe):

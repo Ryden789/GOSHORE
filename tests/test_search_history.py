@@ -26,6 +26,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 APP_JS = ROOT / "static" / "app.js"
 M_JS = ROOT / "static" / "m" / "m.js"
+SHARED_CORE = ROOT / "static" / "shared" / "core.js"
 SERVER = ROOT / "android" / "app" / "src" / "main" / "python" / "goshor_server.py"
 CHECKER = ROOT / "tools" / "check_batch4.mjs"
 
@@ -40,15 +41,20 @@ def _sh_block(path: Path) -> str:
 # ---------------- 静态层 ----------------
 
 def test_search_history_block_byte_identical():
-    """双端 G6 块必须逐字节一致。"""
-    a = _sh_block(APP_JS)
-    b = _sh_block(M_JS)
-    assert a == b, "G6 SearchHistory 块在两端不一致"
+    """G6 块只有一份共享实现，双端加载同一文件。"""
+    a = _sh_block(SHARED_CORE)
     assert "const SearchHistory" in a
+    for p in (APP_JS, M_JS):
+        assert "const SearchHistory = {" not in p.read_text(encoding="utf-8"), f"{p.name} 仍内联 G6"
+    for html in (ROOT / "static" / "index.html", ROOT / "static" / "m" / "index.html"):
+        h = html.read_text(encoding="utf-8")
+        assert "/shared/core.js" in h
+        own = "/m/m.js?v" if html.parent.name == "m" else "/app.js?v"
+        assert h.index("/shared/core.js") < h.index(own)
 
 
 def test_search_history_single_pref_key_no_lib():
-    blk = _sh_block(APP_JS)
+    blk = _sh_block(SHARED_CORE)
     assert 'KEY: "searchhist"' in blk
     assert "Pref.get" in blk and "Pref.set" in blk
     assert "MAX: 20" in blk

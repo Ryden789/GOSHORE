@@ -83,12 +83,14 @@ function eq(got, want, msg) {
 
 /* ---------------- 逐个场景 ---------------- */
 
+const SHARED_REL = "static/shared/settle.js";
+const SHARED_SRC = fs.readFileSync(path.join(ROOT, SHARED_REL), "utf8");
+
 const IMPLS = {
-  "桌面 app.js": loadSettle("static/app.js"),
-  "移动 m.js": loadSettle("static/m/m.js"),
+  "共享 settleExam": loadSettle(SHARED_REL),
 };
 
-console.log(`抽取到 ${Object.keys(IMPLS).length} 份 settleExam：${Object.keys(IMPLS).join("、")}`);
+console.log(`抽取到 1 份 settleExam：${SHARED_REL}（桌面/移动共用，双端不再各存副本）`);
 
 const results = {};
 for (const [label, settle] of Object.entries(IMPLS)) {
@@ -188,21 +190,23 @@ for (const [label, settle] of Object.entries(IMPLS)) {
   results[label] = r;
 }
 
-// 8) 双端同源：两份 settleExam 对同一输入必须给出逐字节一致的结论
+// 8) 双端同源：判分只有一份共享实现，两端页面都在各自脚本前加载它
 {
   const names = Object.keys(IMPLS);
-  const [a, b] = names;
-  for (const k of ["full", "partial", "blank", "allWrong", "edge"]) {
-    const strip = st => JSON.stringify({
-      items: st.items, ok: st.ok, wrongIdx: st.wrongIdx, blankIdx: st.blankIdx, judgedN: st.judgedN,
-    });
-    ok(strip(results[a][k]) === strip(results[b][k]),
-      `双端同源：${a} 与 ${b} 在场景「${k}」上的结果不一致`);
+  const label = names[0];
+  ok(SHARED_SRC.includes("function settleExam("), `${SHARED_REL} 必须定义 settleExam`);
+  for (const rel of ["static/app.js", "static/m/m.js"]) {
+    const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    ok(!extractFn(src, "settleExam"),
+      `${rel} 仍在内联 settleExam——它应只存在于 ${SHARED_REL}`);
   }
-  // 也校验源码本身没有出现漂移的痕迹（函数体逐字符一致）
-  const srcA = extractFn(fs.readFileSync(path.join(ROOT, "static/app.js"), "utf8"), "settleExam");
-  const srcB = extractFn(fs.readFileSync(path.join(ROOT, "static/m/m.js"), "utf8"), "settleExam");
-  ok(srcA === srcB, "双端同源：两处 settleExam 的源码已漂移，请同步（建议8 要求统一判分口径）");
+  for (const rel of ["static/index.html", "static/m/index.html"]) {
+    const html = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    const sharedAt = html.indexOf("/shared/settle.js");
+    const ownAt = html.indexOf(rel.includes("/m/") ? "/m/m.js" : "/app.js");
+    ok(sharedAt >= 0 && ownAt >= 0 && sharedAt < ownAt,
+      `${rel} 必须先加载 ${SHARED_REL} 再加载本端脚本（${label} 只跑一次共享实现）`);
+  }
 }
 
 console.log(`\n共执行 ${checks} 项断言。`);
@@ -211,7 +215,7 @@ console.log(`\n共执行 ${checks} 项断言。`);
 // 校验器若自身失效（比如断言写反、抽取失败），会永远"通过"，那就毫无意义。
 // 这里把真实的 settleExam 源码「篡改」成把答对判成答错，必须被识别出来。
 {
-  const srcA = extractFn(fs.readFileSync(path.join(ROOT, "static/app.js"), "utf8"), "settleExam");
+  const srcA = extractFn(SHARED_SRC, "settleExam");
   const brokenSrc = srcA.replace("a.sel === correctObj.label", "a.sel !== correctObj.label");
   ok(brokenSrc !== srcA, "自检：未能构造出被篡改的实现（替换目标已失效，请同步更新本校验）");
   if (brokenSrc !== srcA) {

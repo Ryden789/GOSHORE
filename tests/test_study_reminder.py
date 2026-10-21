@@ -36,6 +36,7 @@ from app.main import app
 ROOT = Path(__file__).resolve().parent.parent
 APP_JS = ROOT / "static" / "app.js"
 M_JS = ROOT / "static" / "m" / "m.js"
+SHARED_CORE = ROOT / "static" / "shared" / "core.js"
 SERVER = ROOT / "android" / "app" / "src" / "main" / "python" / "goshor_server.py"
 JAVA = ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "goshor" / "app"
 MANIFEST = ROOT / "android" / "app" / "src" / "main" / "AndroidManifest.xml"
@@ -307,11 +308,17 @@ def _pref_src(src: str) -> str:
 
 
 def test_both_frontends_have_identical_reminder_block(app_src, m_src):
-    """N2 提醒逻辑在两端必须逐字节一致（防漂移，和 N3 的 countdownBanner 同款约束）。"""
-    a = _reminder_block(app_src, "/* 手绘 SVG 饼图")
-    m = _reminder_block(m_src, "/* 安全富文本")
-    assert a == m, "双端 N2 提醒块已漂移，请把改动同步到两端"
+    """N2 提醒逻辑只有一份共享实现，双端加载同一文件。"""
+    shared = SHARED_CORE.read_text(encoding="utf-8")
+    a = _reminder_block(shared, "/* shared-core:end")
     assert "hydrateReminderPref" in a and "ReminderWeb" in a, "提醒块内容不完整"
+    for label, src in (("app.js", app_src), ("m.js", m_src)):
+        assert BLOCK_START not in src, f"{label} 仍内联 N2 提醒块"
+    for html in (ROOT / "static" / "index.html", ROOT / "static" / "m" / "index.html"):
+        h = html.read_text(encoding="utf-8")
+        assert "/shared/core.js" in h
+        own = "/m/m.js?v" if html.parent.name == "m" else "/app.js?v"
+        assert h.index("/shared/core.js") < h.index(own)
 
 
 def test_both_frontends_have_identical_pref(app_src, m_src):
@@ -393,8 +400,8 @@ def test_home_banner_reads_settings_not_localstorage(app_src):
 def test_reminder_yields_to_native(request, src_fixture):
     """APP 内（window.GoshorNative 存在）必须让位原生：不起轮询、也不弹网页通知。"""
     src = request.getfixturevalue(src_fixture)
-    block = _reminder_block(
-        src, "/* 手绘 SVG 饼图" if src_fixture == "app_src" else "/* 安全富文本")
+    assert BLOCK_START not in src, "共享块仍内联在本端脚本"
+    block = _reminder_block(SHARED_CORE.read_text(encoding="utf-8"), "/* shared-core:end")
     assert block.count("window.GoshorNative") >= 5, \
         "提醒块应多处检查原生（start/tick/syncPlanState/状态/排程）"
     start = block[block.index("start() {"):block.index("tick() {")]
@@ -406,10 +413,9 @@ def test_reminder_yields_to_native(request, src_fixture):
 
 def test_reminder_block_pulls_no_heavy_lib(app_src, m_src):
     """前端不引重型库：提醒块里不得出现 import/require/CDN 地址。"""
-    for label, end in (("app.js", "/* 手绘 SVG 饼图"), ("m.js", "/* 安全富文本")):
-        block = _reminder_block(app_src if label == "app.js" else m_src, end)
-        assert "require(" not in block and "import " not in block, f"{label} 提醒块引入了模块"
-        assert "http://" not in block and "https://" not in block, f"{label} 提醒块引了外部资源"
+    block = _reminder_block(SHARED_CORE.read_text(encoding="utf-8"), "/* shared-core:end")
+    assert "require(" not in block and "import " not in block, "提醒块引入了模块"
+    assert "http://" not in block and "https://" not in block, "提醒块引了外部资源"
 
 
 def test_node_reminder_validator(node_exe):
@@ -422,16 +428,15 @@ def test_node_reminder_validator(node_exe):
 
 def test_reminder_notify_prefers_service_worker(app_src, m_src):
     """Android Chrome 不支持 `new Notification()`，必须优先走 SW showNotification。"""
-    for label, end in (("app.js", "/* 手绘 SVG 饼图"), ("m.js", "/* 安全富文本")):
-        block = _reminder_block(app_src if label == "app.js" else m_src, end)
-        assert "showReminderNotify" in block, f"{label} 缺少统一的弹通知入口"
-        assert "showNotification" in block, f"{label} 未走 Service Worker 弹通知"
-        assert "navigator.serviceWorker" in block, f"{label} 未探测 Service Worker"
-        assert "fallbackNotify" in block, f"{label} 缺少无 SW 时的回落路径"
-        # 回落必须是「同步」的，否则没有 SW 的环境里 tick() 之后什么都看不到
-        fb = block[block.index("function fallbackNotify"):]
-        fb = fb[:fb.index("\n}")]
-        assert "new Notification(" in fb, f"{label} 的回落实现未使用构造器"
+    block = _reminder_block(SHARED_CORE.read_text(encoding="utf-8"), "/* shared-core:end")
+    assert "showReminderNotify" in block, "缺少统一的弹通知入口"
+    assert "showNotification" in block, "未走 Service Worker 弹通知"
+    assert "navigator.serviceWorker" in block, "未探测 Service Worker"
+    assert "fallbackNotify" in block, "缺少无 SW 时的回落路径"
+    # 回落必须是「同步」的，否则没有 SW 的环境里 tick() 之后什么都看不到
+    fb = block[block.index("function fallbackNotify"):]
+    fb = fb[:fb.index("\n}")]
+    assert "new Notification(" in fb, "回落实现未使用构造器"
 
 
 def test_service_worker_handles_notification_click():

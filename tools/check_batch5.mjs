@@ -21,8 +21,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BLOCK_START = "/* G3 题目自由笔记";
 const BLOCK_END = "/* N1 断点续做";
 const SOURCES = [
-  { label: "桌面 app.js", rel: "static/app.js" },
-  { label: "移动 m.js", rel: "static/m/m.js" },
+  { label: "桌面 app.js", rel: "static/app.js", html: "static/index.html" },
+  { label: "移动 m.js", rel: "static/m/m.js", html: "static/m/index.html" },
 ];
 
 const norm = s => s.replace(/\r\n/g, "\n");
@@ -144,25 +144,38 @@ function buildSandbox(code, env = {}) {
 
 /* ---------------- 装载 ---------------- */
 
+// G3/G4 共享块已收敛到 static/shared/core.js（两端页面在各自脚本前加载）。
+// Pref 仍在各端，继续按端抽取；共享块只从共享文件取一份。
+const SHARED_REL = "static/shared/core.js";
+const sharedSrc = fs.readFileSync(path.join(ROOT, SHARED_REL), "utf8");
+const sharedBlock = extractBlock(sharedSrc);
+
 const IMPLS = {};
 for (const s of SOURCES) {
   const src = fs.readFileSync(path.join(ROOT, s.rel), "utf8");
   IMPLS[s.label] = {
-    block: extractBlock(src),
+    block: sharedBlock,
     pref: extractBraced(src, "const Pref = {"),
     src,
+    html: fs.readFileSync(path.join(ROOT, s.html), "utf8"),
   };
   if (!IMPLS[s.label].pref) throw new Error(`${s.rel} 里找不到 const Pref = {...}`);
 }
-console.log(`抽取到 ${Object.keys(IMPLS).length} 份 G3/G4 共享块：${Object.keys(IMPLS).join("、")}`);
+console.log(`G3/G4 共享块来自 ${SHARED_REL}（${SOURCES.length} 个前端共用）`);
 
-/* ---------------- 1. 双端块逐字节一致 ---------------- */
+/* ---------------- 1. 单一实现：共享文件 + 两端加载 + 不再内联 ---------------- */
 
-const blocks = Object.values(IMPLS).map(x => x.block);
-for (let i = 1; i < blocks.length; i++) {
-  ok(blocks[0] === blocks[i],
-    `双端 G3/G4 共享块不一致（${SOURCES[0].label} vs ${SOURCES[i].label}）——必须逐字节相同`);
+for (const s of SOURCES) {
+  const impl = IMPLS[s.label];
+  ok(!norm(impl.src).includes(BLOCK_START),
+    `${s.rel} 仍在内联 G3/G4 共享块——它应只存在于 ${SHARED_REL}`);
+  has(impl.html, "/shared/core.js", `${s.html} 应加载共享逻辑 ${SHARED_REL}`);
+  const sharedAt = impl.html.indexOf("/shared/core.js");
+  const ownAt = impl.html.indexOf(s.rel.replace(/^static/, ""));
+  ok(sharedAt >= 0 && ownAt >= 0 && sharedAt < ownAt,
+    `${s.html} 必须先加载 ${SHARED_REL} 再加载 ${s.rel}`);
 }
+ok(sharedSrc.includes(BLOCK_START), `${SHARED_REL} 必须包含 G3 笔记块`);
 
 /* ---------------- 2. NoteBox：load 服务端优先 / 回落本地 ---------------- */
 

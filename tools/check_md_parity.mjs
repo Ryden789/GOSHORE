@@ -39,6 +39,9 @@ function has(hay, needle, msg) {
 
 const APP_SRC = norm(fs.readFileSync(APP_JS, "utf8"));
 const M_SRC = norm(fs.readFileSync(M_JS, "utf8"));
+// 净化实现已收敛到共享文件：桌面 md() 仍用自己的白名单/esc/stripWl，
+// 但 SANITIZE_TAGS / SANITIZE_VOID / sanitizeTag 改从 /shared/sanitize.js 抽。
+const SHARED_SRC = norm(fs.readFileSync(path.join(ROOT, "static", "shared", "sanitize.js"), "utf8"));
 
 /* ---------------- 抽取：带花括号的函数体 ---------------- */
 
@@ -72,18 +75,20 @@ function extractConst(src, name) {
   return out.join("\n");
 }
 
-function buildMd(src, kind) {
+function buildMd(src, kind, sharedSrc = null) {
   const parts = [];
   const need = ["esc", "stripWl"];
+  const sharedNames = ["SANITIZE_TAGS", "SANITIZE_VOID", "sanitizeTag"];
   if (kind === "desktop") {
     // 桌面 md() 的白名单标签要过 sanitizeTag（剥 onerror 等），因此把它连同
     // 依赖的两个常量一起抽出来；移动端 md() 整体转义 HTML，不需要。
     need.push("HTML_WHITELIST", "HTML_WHITELIST_CLOSE", "SANITIZE_TAGS", "SANITIZE_VOID", "sanitizeTag");
   }
   for (const n of need) {
+    const from = (kind === "desktop" && sharedSrc && sharedNames.includes(n)) ? sharedSrc : src;
     const code = n === "esc" && kind === "mobile"
-      ? extractConst(src, "esc")
-      : extractBraced(src, `function ${n}(`) || extractConst(src, n);
+      ? extractConst(from, "esc")
+      : extractBraced(from, `function ${n}(`) || extractConst(from, n);
     if (!code) throw new Error(`在 ${kind} 源码里抽不到 ${n}（改写了？请同步本校验）`);
     parts.push(code);
   }
@@ -94,7 +99,7 @@ function buildMd(src, kind) {
   return new Function(parts.join("\n\n"))();
 }
 
-const appMd = buildMd(APP_SRC, "desktop");
+const appMd = buildMd(APP_SRC, "desktop", SHARED_SRC);
 const mobMd = buildMd(M_SRC, "mobile");
 
 /* ---------------- 归一器：HTML → 块序列规范串 ---------------- */

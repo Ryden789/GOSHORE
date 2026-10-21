@@ -27,8 +27,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BLOCK_START = "/* N1 断点续做";
 const BLOCK_END = "/* N2 学习提醒 · 网页端";
 const SOURCES = [
-  { label: "桌面 app.js", rel: "static/app.js" },
-  { label: "移动 m.js", rel: "static/m/m.js" },
+  { label: "桌面 app.js", rel: "static/app.js", html: "static/index.html" },
+  { label: "移动 m.js", rel: "static/m/m.js", html: "static/m/index.html" },
 ];
 
 /* ---------------- 源码抽取 ---------------- */
@@ -204,25 +204,37 @@ function has(hay, needle, msg) {
   ok(String(hay).includes(needle), `${msg}（找不到 ${JSON.stringify(needle)}）`);
 }
 
-/* ---------------- 装载双端实现 ---------------- */
+/* ---------------- 装载共享实现 ---------------- */
+
+// N1 草稿块已收敛到 static/shared/core.js（两端页面在各自脚本前加载）。
+// Pref 仍在各端，继续按端抽取；草稿块只从共享文件取一份。
+const SHARED_REL = "static/shared/core.js";
+const sharedSrc = fs.readFileSync(path.join(ROOT, SHARED_REL), "utf8");
+const sharedBlock = extractBlock(sharedSrc);
 
 const IMPLS = {};
 for (const s of SOURCES) {
   const src = fs.readFileSync(path.join(ROOT, s.rel), "utf8");
-  const block = extractBlock(src);
   const pref = extractBraced(src, "const Pref = {");
   if (!pref) throw new Error(`${s.rel} 里找不到 const Pref = {...}（N1 草稿块依赖它）`);
-  IMPLS[s.label] = { pref, block, src };
+  IMPLS[s.label] = { pref, block: sharedBlock, src,
+                     html: fs.readFileSync(path.join(ROOT, s.html), "utf8") };
 }
-console.log(`抽取到 ${Object.keys(IMPLS).length} 份 N1 草稿块：${Object.keys(IMPLS).join("、")}`);
+console.log(`N1 草稿块来自 ${SHARED_REL}（${SOURCES.length} 个前端共用）`);
 
-/* ---------------- 1. 双端块逐字节一致 ---------------- */
+/* ---------------- 1. 单一实现：共享文件 + 两端加载 + 不再内联 ---------------- */
 
-const blocks = Object.values(IMPLS).map(x => x.block);
-for (let i = 1; i < blocks.length; i++) {
-  ok(blocks[0] === blocks[i],
-    `双端 N1 草稿块不一致（${SOURCES[0].label} vs ${SOURCES[i].label}）——两端必须逐字节相同`);
+for (const s of SOURCES) {
+  const impl = IMPLS[s.label];
+  ok(!norm(impl.src).includes("const DraftPaper = {"),
+    `${s.rel} 仍在内联 N1 草稿实现——DraftPaper 应只存在于 ${SHARED_REL}`);
+  has(impl.html, "/shared/core.js", `${s.html} 应加载共享逻辑 ${SHARED_REL}`);
+  const sharedAt = impl.html.indexOf("/shared/core.js");
+  const ownAt = impl.html.indexOf(s.rel.replace(/^static/, ""));
+  ok(sharedAt >= 0 && ownAt >= 0 && sharedAt < ownAt,
+    `${s.html} 必须先加载 ${SHARED_REL} 再加载 ${s.rel}`);
 }
+ok(sharedSrc.includes(BLOCK_START), `${SHARED_REL} 必须包含 N1 草稿块`);
 
 /* ---------------- 2. 纯函数：序列化 / 还原 / 对齐 ---------------- */
 
@@ -525,7 +537,11 @@ for (const [label, code] of Object.entries(IMPLS)) {
   has(code.src, "resumeScope", `${label}：runPaper 必须支持 resumeScope（否则「继续」点不动）`);
   has(code.src, "draftResume", `${label}：必须实现 draftResume（卡片点击的落点）`);
   has(code.src, "draftClearTimers()", `${label}：route() 必须清理草稿定时器`);
-  has(code.src, "pagehide", `${label}：必须监听 pagehide 兜底`);
+}
+// pagehide 兜底随共享块迁到了 static/shared/core.js：只注册一次，桌面/移动共用。
+has(sharedSrc, 'window.addEventListener("pagehide"', `shared/core.js：必须监听 pagehide 兜底`);
+for (const s of SOURCES) {
+  has(IMPLS[s.label].html, "/shared/core.js", `${s.label}：页面必须加载共享逻辑（pagehide 在其中）`);
 }
 
 /* ---------------- 汇总 ---------------- */

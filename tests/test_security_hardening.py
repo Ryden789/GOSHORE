@@ -32,6 +32,7 @@ from tests.jsutil import fn_src
 ROOT = Path(__file__).resolve().parent.parent
 APP_JS = ROOT / "static" / "app.js"
 M_JS = ROOT / "static" / "m" / "m.js"
+SHARED_SANITIZE = ROOT / "static" / "shared" / "sanitize.js"
 SERVER = ROOT / "android" / "app" / "src" / "main" / "python" / "goshor_server.py"
 XSS_CHECKER = ROOT / "tools" / "check_xss_sanitize.mjs"
 
@@ -178,25 +179,35 @@ def test_mobile_server_reuses_hardened_fetch():
 
 # ------------------------------------------------------------- XSS：双端净化
 
-@pytest.mark.parametrize("path", [APP_JS, M_JS])
+@pytest.mark.parametrize("path", [SHARED_SANITIZE])
 def test_both_ends_have_sanitizer(path):
+    """净化实现只有一份；两端页面加载它，脚本本身不再内联。"""
     src = _read(path)
     fn_src(src, "sanitizeTag")      # 不存在会 AssertionError
     fn_src(src, "sanitizeHtml")
     assert "SANITIZE_TAGS" in src and "escText" in src
+    for p in (APP_JS, M_JS):
+        own = _read(p)
+        assert "function sanitizeTag(" not in own, f"{p.name} 仍内联 sanitizeTag"
+        assert "SANITIZE_TAGS" not in own, f"{p.name} 仍内联 SANITIZE_TAGS"
+    for html in (ROOT / "static" / "index.html", ROOT / "static" / "m" / "index.html"):
+        h = html.read_text(encoding="utf-8")
+        assert "/shared/sanitize.js" in h
+        own = "/m/m.js?v" if html.parent.name == "m" else "/app.js?v"
+        assert h.index("/shared/sanitize.js") < h.index(own)
 
 
 def test_sanitize_tag_is_byte_identical_across_ends():
-    """两端净化实现必须逐字节一致（否则一端修了另一端还漏）。"""
-    a = fn_src(_read(APP_JS), "sanitizeTag")
-    b = fn_src(_read(M_JS), "sanitizeTag")
-    assert a == b, "桌面与移动的 sanitizeTag 实现已漂移"
+    """两端共用同一份 sanitizeTag 实现，不存在第二份副本可漂移。"""
+    assert fn_src(_read(SHARED_SANITIZE), "sanitizeTag")
+    for p in (APP_JS, M_JS):
+        assert "function sanitizeTag(" not in _read(p), f"{p.name} 仍有独立 sanitizeTag"
 
 
 def test_sanitize_html_is_byte_identical_across_ends():
-    a = fn_src(_read(APP_JS), "sanitizeHtml")
-    b = fn_src(_read(M_JS), "sanitizeHtml")
-    assert a == b, "桌面与移动的 sanitizeHtml 实现已漂移"
+    assert fn_src(_read(SHARED_SANITIZE), "sanitizeHtml")
+    for p in (APP_JS, M_JS):
+        assert "function sanitizeHtml(" not in _read(p), f"{p.name} 仍有独立 sanitizeHtml"
 
 
 def test_rawHtml_goes_through_sanitizer():

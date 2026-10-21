@@ -33,6 +33,7 @@ from app.main import app
 ROOT = Path(__file__).resolve().parent.parent
 APP_JS = ROOT / "static" / "app.js"
 M_JS = ROOT / "static" / "m" / "m.js"
+SHARED_CORE = ROOT / "static" / "shared" / "core.js"
 SERVER = ROOT / "android" / "app" / "src" / "main" / "python" / "goshor_server.py"
 REAL_SETTINGS = ROOT / "data" / "settings.json"
 
@@ -264,16 +265,22 @@ def _goal_block(path: Path) -> str:
 
 
 def test_goal_block_byte_identical():
-    """双端 G2 块（含 GoalRing）必须逐字节一致，防两端漂移。"""
-    a = _goal_block(APP_JS)
-    b = _goal_block(M_JS)
-    assert a == b, "G2 共享块在 app.js 与 m.js 之间不一致"
+    """G2 块（含 GoalRing）只有一份共享实现，双端加载同一文件。"""
+    a = _goal_block(SHARED_CORE)
     assert "const GoalRing" in a
+    for p in (APP_JS, M_JS):
+        assert "/* G2 每日目标" not in p.read_text(encoding="utf-8"), f"{p.name} 仍内联 G2 块"
+    for html in (ROOT / "static" / "index.html", ROOT / "static" / "m" / "index.html"):
+        h = html.read_text(encoding="utf-8")
+        assert "/shared/core.js" in h, f"{html.name} 未加载 shared/core.js"
+        own = "/m/m.js?v" if html.parent.name == "m" else "/app.js?v"
+        assert h.index("/shared/core.js") < h.index(own), \
+            f"{html.name} 应先加载 shared/core.js"
 
 
 def test_goal_ring_is_inline_svg_no_lib():
     """进度环必须是内联 SVG（stroke-dasharray 控比例），不引重型图表库。"""
-    blk = _goal_block(APP_JS)
+    blk = _goal_block(SHARED_CORE)
     assert "<svg" in blk and "stroke-dasharray" in blk
     assert "rotate(-90" in blk
     for lib in ("chart.js", "d3", "echarts", "raphael"):
