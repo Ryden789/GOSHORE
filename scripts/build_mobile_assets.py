@@ -1,15 +1,15 @@
 """构建独立版安卓 App 的打包资产（.tools/mobile_prep/mobile_assets）
 
 默认模式（完整构建）：
-1) 数据库副本：删除 FTS 表与全部个人数据表（新架构下共享库只保留
-   documents 题库与 shizheng 时政库），再 VACUUM
+1) 数据库副本：优先复制 data/content.db（P0 拆库后的题库），旧单库环境回退
+   data/goshor.db；删除 FTS 表与全部个人数据表，再 VACUUM
 2) 扫描题目 JSON，收集实际引用的图片
 3) 生成 payload.zip：数据库（DEFLATE）+ 图片（STORED）
-4) 复制手机前端 static/m → assets/web/m
+4) 复制手机前端 static/m 与共享层 static/shared → assets/web
 
 --pack-update 模式（题库热更新包）：
-从 data/goshor.db 出 goshor-update-vN.zip（manifest.json + 剥离个人表并
-VACUUM 的 goshor.db + 相对上一版新增的 img/ 图片）。
+从 data/content.db（旧环境回退 data/goshor.db）出 goshor-update-vN.zip
+（manifest.json + 剥离个人表并 VACUUM 的 goshor.db + 相对上一版新增的 img/ 图片）。
 硬校验：新库必须包含上一版全部 doc_id（只增不删），否则拒绝出包。
 
 配合 android/ 工程构建出手机独立运行的多账号 APK（无需电脑）。
@@ -28,7 +28,10 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 from app.accounts import PERSONAL_TABLES  # noqa: E402
 
-SRC = os.path.join(BASE_DIR, "data", "goshor.db")
+# P0 拆库后题库在 content.db；保留旧单库回退，便于历史分支/旧备份直接构建
+_CONTENT = os.path.join(BASE_DIR, "data", "content.db")
+_LEGACY = os.path.join(BASE_DIR, "data", "goshor.db")
+SRC = _CONTENT if os.path.exists(_CONTENT) else _LEGACY
 SETTINGS = os.path.join(BASE_DIR, "data", "settings.json")
 PREP = os.path.join(BASE_DIR, ".tools", "mobile_prep")
 DIST = os.path.join(BASE_DIR, "dist")
@@ -226,6 +229,9 @@ def build_all() -> None:
         shutil.rmtree(web_dst)
     shutil.copytree(os.path.join(BASE_DIR, "static", "m"),
                     os.path.join(web_dst, "m"))
+    # P3 共享逻辑层：手机页以 /shared/*.js 加载，APK 必须一并进 web/
+    shutil.copytree(os.path.join(BASE_DIR, "static", "shared"),
+                    os.path.join(web_dst, "shared"))
     # 申论/综应真题库随前端分发（小文件，每次启动覆盖，无升级遗漏）
     shutil.copy2(os.path.join(BASE_DIR, "data", "essay_questions.json"),
                  os.path.join(web_dst, "m", "essay_questions.json"))

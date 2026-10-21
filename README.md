@@ -4,7 +4,7 @@
 
 - 纯本地运行，学习记录不上传第三方（多设备同步为**端到端加密**的可选功能，见下）
 - 桌面端 `http://127.0.0.1:8765`；手机访问需显式 `--lan` 开启，并用启动日志里的**访问令牌**登录
-- Android 源码保留，但 APK 需本地 Chaquopy/Android 工具链自行构建；Release **不附带** APK
+- Android 源码保留，APK 需本地 Chaquopy/Android 工具链构建；Release **不附带** APK，仓库内提供 `dist/goshor-20261021.apk` 供直接侧载
 
 ## 功能特性
 
@@ -183,9 +183,10 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 
 ### 安卓 APP（源码保留，需自行构建）
 
-- **APK 不在 Release 分发**：仓库保留 Android 壳源码，但构建依赖本机 Chaquopy / Android SDK
-  工具链（未纳入仓库），因此没有可验证的最新 APK。`dist\goshor-*.apk` 是 2026-10 上旬的旧产物，
-  **不含**后续的拆库、共享层与访问令牌等改动，请勿当作当前版本使用。
+- **APK 不在 Release 分发**：仓库保留 Android 壳源码，构建依赖本机 Chaquopy / Android SDK
+  工具链（未纳入仓库）。`dist/goshor-20261021.apk` 是 2026-10-21 重建的当前版本（299.95 MB，
+  SHA256 `009dac2f…efe366`），已含 P3 共享层、P4 校验与安全加固；更早的 `dist/goshor-2026100*.apk`
+  不含这些改动，请勿混用。APK 仍是单库形态（`goshor.db`），与桌面端的 `content.db + user.db` 分离不同。
 - **演示页一键打开**：`docs/05-宣传/软件介绍PPT.html` 第 12 页的「安装并打开安卓 APP」会自动探测本地服务端口 → 没有现成设备就先拉起 **MuMu 模拟器**（没装则退回 Android SDK 的 AVD）→ `adb` 装 APK 并启动 `MainActivity`，全过程约 25 秒，进度实时显示在页面上。若两者都没有，会明确提示「装 MuMu 或插上开着 USB 调试的手机」。
 - **需要最新安卓版**：在 `android/` 下按 build.gradle 注释准备工具链后执行构建；或直接用手机浏览器访问 `--lan` 的 `/m/`（功能对齐移动端网页）。
 - **命令行等价物**：`tools\open_app.bat`，或已注册的 `goshor://open` 协议。
