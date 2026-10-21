@@ -47,7 +47,7 @@
 > `15 个静态校验器 EXIT=0`、`E2E 33 路由 / 79 项断言全通过`（2026-10-21 实测），随每次交付滚动更新。
 > 历史基线（2026-10-09）为 843 passed / 79 项断言、（2026-10-20 上午）852 passed / 78 项断言、（2026-10-21 P3 时）915 passed，均已被取代。
 > 代码规模口径：纯代码 **154 文件 / 64,865 行**（剔除 `static/vendor/` 与构建产物，含测试与 15 个校验器），另有数据文件 8,314 行。
-> 桌面分发：GitHub Release [v2026.10.25](https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.25) 附 exe 与 `content-sample.db`。
+> 桌面分发：GitHub Release [v2026.10.26](https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.26) 附 exe 与 `content-sample.db`。
 
 ## 当前项目评估
 
