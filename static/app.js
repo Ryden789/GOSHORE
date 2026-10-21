@@ -3870,6 +3870,7 @@ async function renderSettings() {
     <div class="page-head rise">
       <h1 class="page-title">设置</h1>
       <p class="page-desc">所有配置仅保存在本机 · 改动后点「保存」生效，外观设置即时生效</p>
+      ${s.data_dir ? `<p class="hint" style="margin:-6px 0 14px">数据保存位置：<code>${esc(s.data_dir)}</code>　关闭软件不会清空，升级时也不要删除这个目录。</p>` : ""}
     </div>
     <div class="settings-index rise rise-1" aria-label="设置分区快速定位">
       <button class="si-btn" type="button" data-sec="sec-ai">题库与 AI</button>

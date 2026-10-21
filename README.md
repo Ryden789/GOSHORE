@@ -79,7 +79,7 @@
 - **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-v4.1-flash-20261017`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 971 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
+- **测试**：pytest 984 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
 
 ## 快速开始（首次使用顺序）
 
@@ -139,14 +139,14 @@ HttpOnly Cookie（30 天），之后直接访问 `http://<电脑IP>:8765/m/` 即
 或使用本机打包的 `dist\GOSHORE上岸工作台.exe`：
 
 > 下载页：<https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.23>
-> 同时附带 `content-sample.db`，可手动放进 `data\` 作为题库。
+> 同时附带 `content-sample.db`，可手动放进数据目录作为题库（默认 `%LOCALAPPDATA%\GOSHORE\data\`；若 exe 旁边已有 `data\`，则是该便携目录）。
 
 - **双击即用**：原生窗口打开（无地址栏），服务在后台跑，**默认只监听本机**。
 - **手机访问**：需要时用 `GOSHORE-desktop.exe --lan` 启动，日志里会打印带令牌的手机地址；默认不加 `--lan` 时局域网连不上。令牌机制与 `python run.py --lan` 相同（见上一节）。
-- **自带示例题库**：首次运行会把内置的 240 道示例题放进 `data\content.db`，开箱就能刷（导入自己的题源是追加，不覆盖）。
-- **首次运行自动建库**：exe 旁边会生成 `data\`（题库库文件、设置、WebView 存储、日志），**不携带任何 API Key**，数据完全留在本机。
-- **换电脑 / 备份**：只拷 exe 就是全新空库；连同 `data\` 一起拷走，则题库、记录、设置原样带走。
-- **日志位置**：`data\logs\desktop-YYYYMMDD.log`（exe 无控制台，出问题看这里）。
+- **自带示例题库**：首次运行会把内置的 240 道示例题放进数据目录的 `content.db`，开箱就能刷（导入自己的题源是追加，不覆盖）。
+- **首次运行自动建库**：Windows 默认在 `%LOCALAPPDATA%\GOSHORE\data\` 生成 `content.db`、`user.db`、`settings.json`、WebView 存储和日志；如果 exe 旁边已经存在 `data\`（便携版 / 老用户），则继续用旁边目录，不迁移、不覆盖。数据完全留在本机。
+- **换电脑 / 备份**：默认数据目录跟着 Windows 用户走。换电脑要连同 `%LOCALAPPDATA%\GOSHORE\data\` 一起拷走；只拷 exe 不会带走旧记录。想把数据放在 exe 旁边，就在 exe 同目录建一个 `data\` 再启动，程序会自动按便携版处理。
+- **日志位置**：数据目录下的 `logs\desktop-YYYYMMDD.log`（exe 无控制台，出问题看这里；设置页会显示当前实际数据目录）。
 - **环境要求**：Windows 10/11 64 位 + WebView2 运行时（Win11 自带；Win10 若缺，需装微软的 Evergreen Runtime）。
 
 **目录约定（打包后为什么数据不会丢）**：`app/config.py` 把两类路径分开算，这是 exe 能安全使用的关键 ——
@@ -154,10 +154,10 @@ HttpOnly Cookie（30 天），之后直接访问 `http://<电脑IP>:8765/m/` 即
 | 常量 | 源码运行 | 冻结成 exe 后 |
 |---|---|---|
 | `BUNDLE_DIR` | 仓库根 | `_MEIPASS`（临时解压目录，只读） |
-| `BASE_DIR` | 仓库根 | **exe 所在目录** |
-| `DATA_DIR` | `<根>/data` | **`<exe目录>/data`** |
+| `BASE_DIR` | 仓库根 | **exe 所在目录**（资源/工具，不是用户数据） |
+| `DATA_DIR` | `<根>/data` | **`%LOCALAPPDATA%\GOSHORE\data`**；exe 旁已有 `data\` 时为 `<exe目录>/data` |
 
-> 若把用户数据算到 `BUNDLE_DIR` 下，单文件模式每次启动都会新建临时目录，**关闭窗口后题库和作答记录全部消失**。因此 `static/` 走 `BUNDLE_DIR`，`data/` 一律走 `BASE_DIR`。
+> 若把用户数据算到 `BUNDLE_DIR` 下，单文件模式每次启动都会新建临时目录，**关闭窗口后题库和作答记录全部消失**；而把数据固定放 exe 旁边，又会在「从压缩包/聊天附件直接双击、exe 被 Windows 解到 `%TEMP%` 运行」时落进一次性目录。因此 `static/` 走 `BUNDLE_DIR`，冻结版数据默认走 `LOCALAPPDATA`，只有检测到已有便携 `data/` 时才沿用 exe 旁边，保证老用户升级不丢记录。冻结版也可用 `GOSHORE_DATA_DIR` 显式指定数据目录（优先级最高，排障/测试用）。
 
 **首次导入大量题库时**：桌面壳发现端口已监听后会放宽等待上限到 10 分钟（每 10 秒打印进度），不会在 30 秒时误判「启动失败」。几万篇 md 的全量索引只发生一次。
 
@@ -234,13 +234,13 @@ GOSHORE/
 │   └── content-sample.db  # 示例题库（随仓库/Release 分发）
 ├── .github/workflows/     # CI 与 Release 构建上传
 ├── android/               # WebView 壳 / Chaquopy 独立版工程
-├── data/                  # 本地数据（不入仓库）
+├── data/                  # 源码运行时的本地数据（不入仓库；桌面冻结版默认在 %LOCALAPPDATA%\GOSHORE\data）
 │   ├── content.db         # 题库（只读，可整体替换 / 分发）
 │   ├── user.db            # 个人数据（作答 / 卡片 / 错题 / 计划 / 设置副本）
 │   ├── goshor.db          # 单库模式的老布局（与新布局二选一，见下）
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（971 条）
+├── tests/                 # pytest 用例（984 条）
 ├── tools/                 # 校验器（15 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── migrate_split.py       # 老单库 → content.db + user.db
@@ -276,7 +276,7 @@ python tools/migrate_split.py             # 真迁移（约 15~45 秒）
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（971 条，跑在临时库上，不碰 data/*.db）
+# 后端单元 / 接口测试（984 条，跑在临时库上，不碰 data/*.db）
 python -m pytest tests -q
 
 # AI 离线质量评测（不联网、不花 token；低于 95 分退出码 1）
@@ -296,7 +296,7 @@ node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 971 passed**、**AI 评测 33 条全过（100.00 分）**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
+当前基线：**pytest 984 passed**、**AI 评测 33 条全过（100.00 分）**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
 
 ## 常见问题
 
@@ -310,8 +310,8 @@ python scripts/e2e_mobile.py
 
 ### 桌面软件版（exe）专属问题
 
-- **双击没反应**：先看 `data\logs\desktop-YYYYMMDD.log`。exe 是 `--windowed`，没有控制台，所有输出都写这个文件。
-- **不要放在会被同步/删除的目录**：`--onefile` 每次启动会把自身解包到临时目录；把 exe 放在 `Program Files` 等**无写权限**的目录会让 `data\` 建不出来。建议放 `D:\GOSHORE-Desktop\` 这类可写目录。
+- **双击没反应**：先看数据目录下的 `logs\desktop-YYYYMMDD.log`（默认 `%LOCALAPPDATA%\GOSHORE\data\logs\`）。exe 是 `--windowed`，没有控制台，所有输出都写这个文件。
+- **不要删数据目录**：默认数据不跟 exe 走，卸载/替换 exe 不会清空记录；反过来说，清理 `%LOCALAPPDATA%\GOSHORE\data\` 就等于清空题库与作答记录。便携版则不要删除 exe 旁边的 `data\`。
 - **首次启动慢**：Release 版 70.4 MB 单文件要解包，机械盘 + 杀毒实时扫描下可能等几秒；建大规模题库索引时会额外耗时，壳会打印进度，不会误判失败。
 - **杀软误报**：无数字签名的 PyInstaller 产物偶发误报，添加信任即可。
 - **换新 exe 后快捷方式失效**：把新 exe 覆盖到部署目录，再跑一次 `python tools/create_shortcut.py`。
@@ -328,7 +328,7 @@ python scripts/e2e_mobile.py
 - 学习记录、账号、错题等全部存于本地 SQLite，**不包含在 Git 仓库中**（见 `.gitignore`）
 - API Key 仅在调用 DeepSeek 服务时使用，本地加密存储
 - 备份请用页面内的**导出备份**（`/api/backup/export`，走 SQLite 在线备份 API 生成一致性快照 zip），而不是直接复制正在写入的 `.db` 文件
-- 手动备份需覆盖：`data/user.db`（个人记录）、`data/content.db`（题库，可单独替换）、`data/users/`（移动端 `accounts.db` + `data_<uid>.db`）、`data/settings.json`、`data/essay_questions.json`；日常只需用页面内的导出备份（只含个人库）
+- 手动备份需覆盖当前数据目录（源码运行为仓库 `data/`，桌面冻结版默认 `%LOCALAPPDATA%\GOSHORE\data\`）：`user.db`（个人记录）、`content.db`（题库，可单独替换）、`users/`（移动端 `accounts.db` + `data_<uid>.db`）、`settings.json`、`essay_questions.json`；日常只需用页面内的导出备份（只含个人库）
 - 多设备同步走 WebDAV 时**只上传加密后的密文**，同步口令不落明文
 - **局域网访问默认关闭**：`run.py` / 桌面版默认只监听 `127.0.0.1`；`--lan` 才监听 `0.0.0.0`，且必须携带访问令牌（除 `/login`、`/api/health`）。令牌是 HTTP 明文传输，仍请只在可信网络使用。
 

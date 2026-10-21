@@ -8,8 +8,10 @@
 换成日志文件，顺带让用户之后能排查问题。
 
 第二个职责是冻结后的目录约定：PyInstaller 单文件模式运行时先把 exe 解到临时
-目录，且**每次启动都是一个新的临时目录**。用户数据必须写在 exe 旁边，
-这部分由 app/config.py 负责（_FROZEN 分支），这里只补日志目录。
+目录，且**每次启动都是一个新的临时目录**；exe 本身也可能被 Windows 从压缩包
+解到 %TEMP% 再运行。用户数据不能跟着这些临时目录走，具体位置由
+app/config.py 的 _resolve_data_dir() 决定（默认 LOCALAPPDATA\\GOSHORE\\data，
+exe 旁边已有 data/ 时沿用便携目录）。日志跟数据放在一起，方便排查。
 """
 from __future__ import annotations
 
@@ -20,16 +22,15 @@ from pathlib import Path
 
 
 def _user_dir() -> Path:
-    """exe 旁边的目录；源码运行时是仓库根。"""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    """用户数据目录（不是 exe/_MEIPASS 临时目录）。"""
+    from app.config import DATA_DIR
+
+    return DATA_DIR
 
 
 def _redirect_streams() -> None:
     """windowed 模式下把 stdout/stderr 接到 data/logs/，避免 print 炸掉。"""
-    base = _user_dir()
-    log_dir = base / "data" / "logs"
+    log_dir = _user_dir() / "logs"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         # 按天分文件，避免无限增长；单次运行追加写

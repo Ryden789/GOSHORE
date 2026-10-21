@@ -18,11 +18,53 @@ try:  # wintypes 仅 Windows CPython 自带，安卓/其他平台降级为 None
 except Exception:
     wt = None
 
-# 打包成单文件 exe（PyInstaller）后，源码和 static/ 被解到临时目录 _MEIPASS，
-# 而 data/ 必须留在 exe 旁边 —— 数据库、设置、WebView 存储都是用户数据，
-# 写进临时目录等于每次关窗全部丢失。所以两种目录分开算：
-#   BUNDLE_DIR  资源只读，跟着打包产物走（源码运行时与 BASE_DIR 相同）；
-#   BASE_DIR    用户数据根目录，源码运行时是仓库根，冻结后是 exe 所在目录。
+# 打包成单文件 exe（PyInstaller）后，源码和 static/ 被解到临时目录 _MEIPASS。
+# 用户数据绝不能写进 _MEIPASS：关窗即删，下次启动就是一个全新的空库。
+# 但也不能无条件写 exe 旁边：从压缩包/聊天附件直接双击时，exe 本身常被
+# Windows 解到 %TEMP% 运行，旁边同样是「一次性目录」。因此冻结版默认落到
+# 当前用户的 LOCALAPPDATA，只有检测到旁边已有 data/（便携版/老用户）时才
+# 继续用旁边目录，保证已有数据不会因为升级而「消失」。
+#   BASE_DIR    程序目录（资源/工具），源码运行时是仓库根，冻结后是 exe 所在目录；
+#   BUNDLE_DIR  只读资源，跟着打包产物走（源码运行时与 BASE_DIR 相同）；
+#   DATA_DIR    用户数据目录，数据库/设置/WebView 存储都放这里。
+APP_NAME = "GOSHORE"
+
+
+def _default_data_dir(env: dict | None = None) -> Path:
+    """没有便携 data/ 时的稳定用户数据目录。
+
+    Windows 用 LOCALAPPDATA（本地、不漫游），macOS/Linux 没有该变量时
+    退回 APPDATA 或 ~/.goshore。单测把 env 显式传进来，避免碰真实用户目录。
+    """
+    env = os.environ if env is None else env
+    for key in ("LOCALAPPDATA", "APPDATA"):
+        raw = (env.get(key) or "").strip()
+        if raw:
+            return Path(raw) / APP_NAME / "data"
+    return Path.home() / f".{APP_NAME.lower()}" / "data"
+
+
+def _resolve_data_dir(frozen: bool, app_dir: Path, env: dict | None = None) -> Path:
+    """决定用户数据目录。
+
+    优先级：
+      1. ``GOSHORE_DATA_DIR`` 环境变量（精确指定 data 目录，便于高级用户/测试）；
+      2. 冻结版且 exe 旁边已有 ``data/`` —— 视为便携版，继续用原目录；
+      3. 冻结版默认 ``%LOCALAPPDATA%/GOSHORE/data``；
+      4. 源码运行：仓库根 ``data/``。
+    """
+    env = os.environ if env is None else env
+    if not frozen:
+        return Path(app_dir) / "data"
+    override = (env.get("GOSHORE_DATA_DIR") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    portable = Path(app_dir) / "data"
+    if portable.is_dir():
+        return portable
+    return _default_data_dir(env)
+
+
 _FROZEN = bool(getattr(sys, "frozen", False))
 if _FROZEN:
     BASE_DIR = Path(sys.executable).resolve().parent
@@ -31,7 +73,7 @@ else:
     BASE_DIR = Path(__file__).resolve().parent.parent
     BUNDLE_DIR = BASE_DIR
 
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = _resolve_data_dir(_FROZEN, BASE_DIR)
 STATIC_DIR = BUNDLE_DIR / "static"
 DB_PATH = DATA_DIR / "goshor.db"
 # 桌面端「题库 / 个人数据」拆分后的两个库（见 tools/migrate_split.py）：
@@ -367,7 +409,9 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 
 def load_settings() -> dict:
-    DATA_DIR.mkdir(exist_ok=True)
+    # 冻结版默认目录在 LOCALAPPDATA/GOSHORE/data，父目录 GOSHORE 可能还不存在；
+    # 这里必须 parents=True，否则首次启动会直接抛 FileNotFoundError。
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     s = dict(DEFAULTS)
     disk: dict = {}
     if SETTINGS_PATH.exists():

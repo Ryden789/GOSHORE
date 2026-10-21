@@ -771,10 +771,21 @@ def api_img(path: str):
 
 @app.get("/api/app-apk")
 def api_app_apk():
-    fp = DATA_DIR.parent / "dist" / "goshor.apk"
-    if not fp.exists():
+    # APK 是程序产物，不是用户数据：DATA_DIR 现在可能落在 LOCALAPPDATA，
+    # 不能再用 DATA_DIR.parent 反推程序目录。冻结版 BASE_DIR 是 exe 所在目录：
+    # exe 在仓库根时 APK 在 BASE_DIR/dist；本机开发时 exe 本身就在 dist 里，
+    # 此时 APK 与 exe 同级，所以两个位置都要找。
+    search_dirs = [BASE_DIR / "dist", BASE_DIR]
+    # 归档名带日期（goshor-20261021.apk），旧脚本/旧文档仍可能产出 goshor.apk。
+    # 两者都接受，取修改时间最新的一个，避免页面上的下载链接因改名而 404。
+    candidates = []
+    for folder in dict.fromkeys(search_dirs):
+        if folder.is_dir():
+            candidates.extend(p for p in folder.glob("goshor*.apk") if p.is_file())
+    if not candidates:
         raise HTTPException(404, "APK 尚未构建")
-    return FileResponse(fp, filename="goshor.apk",
+    fp = max(candidates, key=lambda p: p.stat().st_mtime)
+    return FileResponse(fp, filename=fp.name,
                         media_type="application/vnd.android.package-archive")
 
 
@@ -1656,6 +1667,9 @@ def api_settings_get():
     # O1：WebDAV 密码 / 同步口令绝不回给前端，只暴露「是否已配置」
     s["sync_has_password"] = bool(s.pop("sync_password", ""))
     s["sync_has_passphrase"] = bool(s.pop("sync_passphrase", ""))
+    # 只读展示用：让用户能确认记录到底落在哪个目录（冻结版默认
+    # LOCALAPPDATA，便携版/老用户仍可能是 exe 旁边）。不是可写设置项。
+    s["data_dir"] = str(DATA_DIR)
     return s
 
 
