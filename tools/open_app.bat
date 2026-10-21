@@ -45,10 +45,33 @@ if not defined SERIAL (
     )
 )
 
+rem ===== 3b. launch MuMu player when no device yet =====
+if not defined SERIAL (
+    set "MUMU=%ProgramFiles%\Netease\MuMu\nx_main\mumu-cli.exe"
+    if not exist "%MUMU%" set "MUMU=%ProgramFiles(x86)%\Netease\MuMu\nx_main\mumu-cli.exe"
+    if not exist "%MUMU%" set "MUMU=D:\Program Files\Netease\MuMu\nx_main\mumu-cli.exe"
+    if not exist "%MUMU%" set "MUMU=%LOCALAPPDATA%\Programs\MuMu\nx_main\mumu-cli.exe"
+    if exist "%MUMU%" (
+        echo [INFO] STARTING_MUMU
+        "%MUMU%" control --vmindex 0 launch >nul 2>&1
+        for /l %%n in (1,1,30) do (
+            if not defined SERIAL (
+                "%ADB%" connect 127.0.0.1:16384 >nul 2>&1
+                "%ADB%" connect 127.0.0.1:7555 >nul 2>&1
+                for /f "skip=1 tokens=1,2" %%a in ('"%ADB%" devices 2^>nul') do (
+                    if "%%b"=="device" if not defined SERIAL set "SERIAL=%%a"
+                )
+                if not defined SERIAL timeout /t 4 >nul
+            )
+        )
+    )
+)
+
 if not defined SERIAL (
     echo [ERR] NO_DEVICE
     if "%SILENT%"=="1" exit /b 1
-    echo No emulator or device found. Start your Android emulator first.
+    echo No emulator or device found.
+    echo Install MuMu player, or plug in a phone with USB debugging on.
     pause
     exit /b 1
 )
@@ -56,10 +79,19 @@ if not defined SERIAL (
 echo [OK] DEVICE=%SERIAL%
 
 rem ===== 4. install APK if missing =====
+set "ROOT=%~dp0.."
+set "APK=%ROOT%\dist\goshor-20261009.apk"
+if not exist "%APK%" set "APK=%ROOT%\android\app\build\outputs\apk\debug\app-debug.apk"
 "%ADB%" -s %SERIAL% shell pm list packages com.goshor.app 2>nul | findstr /i "goshor" >nul
 if errorlevel 1 (
     echo [INFO] INSTALLING_APK
-    "%ADB%" -s %SERIAL% install -r -d "D:\GOSHORE\android\app\build\outputs\apk\debug\app-debug.apk"
+    if not exist "%APK%" (
+        echo [ERR] NO_APK
+        if "%SILENT%"=="1" exit /b 1
+        pause
+        exit /b 1
+    )
+    "%ADB%" -s %SERIAL% install -r -d "%APK%"
 )
 
 rem ===== 5. launch app =====

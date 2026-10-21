@@ -78,7 +78,7 @@
 - **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-v4.1-flash-20261017`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 856 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
+- **测试**：pytest 867 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
 
 ## 快速开始（首次使用顺序）
 
@@ -151,6 +151,12 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 > 打包配置里**刻意不包含 `data/`**：那是用户的学习库（动辄几百 MB），打进 exe 会让安装包膨胀、用户数据随版本被覆盖，也无法把软件单独发给别人。
 > exe 体积约 89.5 MB；`--onefile` 每次启动要解包，机械盘 + 杀软实时扫描下首次双击可能等几秒。若要更快的启动，可把 `--onefile` 换成 `--onedir`。
 
+### 安卓 APP 与「一键打开」按钮
+
+- **APK**：`dist\goshor-*.apk`（约 286 MB，内置 Python 后端 + SQLite + 预置题库），装到任意 Android 8+ 设备即可独立运行，不依赖电脑、不依赖网络。
+- **演示页一键打开**：`docs/05-宣传/软件介绍PPT.html` 第 12 页的「安装并打开安卓 APP」会自动探测本地服务端口 → 没有现成设备就先拉起 **MuMu 模拟器**（没装则退回 Android SDK 的 AVD）→ `adb` 装 APK 并启动 `MainActivity`，全过程约 25 秒，进度实时显示在页面上。若两者都没有，会明确提示「装 MuMu 或插上开着 USB 调试的手机」。
+- **命令行等价物**：`tools\open_app.bat`，或已注册的 `goshor://open` 协议。
+
 ### 哪些能离线用，哪些需要联网 / API Key
 
 | 能力 | 是否需要联网 / API Key |
@@ -193,7 +199,7 @@ GOSHORE/
 │   ├── goshor.db          # 题库与学习记录
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（856 条）
+├── tests/                 # pytest 用例（867 条）
 ├── tools/                 # 校验器（15 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── create_shortcut.py     # 建/删桌面快捷方式
@@ -206,7 +212,7 @@ GOSHORE/
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（856 条，跑在临时库上，不碰 data/goshor.db）
+# 后端单元 / 接口测试（867 条，跑在临时库上，不碰 data/goshor.db）
 python -m pytest tests -q
 
 # 前端静态校验器（无需浏览器；本机无 node 时自动跳过）
@@ -218,7 +224,7 @@ node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 856 passed**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
+当前基线：**pytest 867 passed**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
 
 ## 常见问题
 

@@ -4,6 +4,11 @@ from __future__ import annotations
 import datetime
 import json
 import mimetypes
+import os
+import shutil
+import subprocess
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -21,7 +26,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision, sync_webdav
-from .config import (STATIC_DIR, DATA_DIR, DB_PATH, SETTINGS_PATH, REMINDER_KEYS,
+from .config import (STATIC_DIR, DATA_DIR, DB_PATH, SETTINGS_PATH, BASE_DIR, REMINDER_KEYS,
                      GOAL_KEYS, load_settings, reminder_patch, goal_patch,
                      save_settings, SYNC_KEYS, sync_patch, SYNC_REMOTE_DEFAULT)
 # 可打印导出页（G5）：与手机端 goshor_server.py 共用同一份拼装逻辑。
@@ -95,33 +100,303 @@ except Exception:
     pass
 
 
+@app.get("/api/health")
+def api_health():
+    """轻量探活：演示页用它发现本地服务实际使用的端口。"""
+    return {"ok": True, "app": "goshore"}
+
+
 # ---------------- 一键拉起模拟器 APP ----------------
+
+_OPEN_APP_LOCK = threading.Lock()
+_OPEN_APP = {"state": "idle", "msg": "", "started": 0.0}
+_EMULATOR_BOOT_TIMEOUT = 300.0      # 冷启动模拟器最长等待（秒）
+_MUMU_BOOT_TIMEOUT = 180.0          # 冷启动 MuMu 模拟器最长等待（秒）
+_MUMU_ADB_PORTS = (16384, 7555)     # MuMu 12/15 与 MuMu 6 的 adb 端口
+_BAT_TIMEOUT = 180.0                # 安装 APK + 拉起 Activity 的兜底超时
+
+
+def _first_existing(paths):
+    for p in paths:
+        if not p:
+            continue
+        try:
+            if Path(p).exists():
+                return Path(p)
+        except OSError:
+            continue
+    return None
+
+
+def _sdk_roots():
+    """候选 SDK 根目录：仓库内置 → 环境变量 → 用户默认安装位置。"""
+    roots = [BASE_DIR / ".android-sdk"]
+    for key in ("ANDROID_SDK_ROOT", "ANDROID_HOME"):
+        val = os.environ.get(key)
+        if val:
+            roots.append(Path(val))
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        roots.append(Path(local) / "Android" / "Sdk")
+    return roots
+
+
+def _adb_path():
+    found = _first_existing(
+        [Path(r"D:\platform-tools-latest-windows\platform-tools\adb.exe")]
+        + [r / "platform-tools" / "adb.exe" for r in _sdk_roots()]
+    )
+    if found:
+        return found
+    which = shutil.which("adb")
+    return Path(which) if which else None
+
+
+def _emulator_path():
+    found = _first_existing([r / "emulator" / "emulator.exe" for r in _sdk_roots()])
+    if found:
+        return found
+    which = shutil.which("emulator")
+    return Path(which) if which else None
+
+
+def _mumu_cli():
+    """网易 MuMu 模拟器的命令行工具；装了就能用它拉起安卓实例。"""
+    cands = []
+    home = os.environ.get("MUMU_HOME")
+    if home:
+        cands.append(Path(home) / "nx_main" / "mumu-cli.exe")
+    for drive in ("C:", "D:", "E:", "F:"):
+        for base in ("Program Files", "Program Files (x86)"):
+            # 必须带分隔符：Path("D:") / "x" 得到的是盘符相对路径 "D:x"
+            cands.append(Path(f"{drive}\\{base}\\Netease\\MuMu\\nx_main\\mumu-cli.exe"))
+    return _first_existing(cands)
+
+
+def _mumu_launch(cli):
+    """拉起 MuMu 的 0 号实例（已在运行时不报错）。"""
+    try:
+        proc = _run([str(cli), "control", "--vmindex", "0", "launch"],
+                    timeout=90, cwd=str(cli.parent))
+    except Exception:
+        return False
+    out = (proc.stdout or b"").decode("utf-8", "ignore")
+    return '"errcode": 0' in out or proc.returncode == 0
+
+
+def _mumu_connect(adb, deadline, elapsed):
+    """MuMu 启动后逐端口 adb connect，直到设备就绪并开机完成。"""
+    while time.time() < deadline:
+        for port in _MUMU_ADB_PORTS:
+            try:
+                _run([str(adb), "connect", f"127.0.0.1:{port}"], timeout=15)
+            except Exception:
+                pass
+        found = _devices(adb)
+        if found and _boot_completed(adb, found[0]):
+            return found[0]
+        _set_open_state("booting", f"MuMu 模拟器正在启动… 已等待 {elapsed()} 秒")
+        time.sleep(4)
+    return None
+
+
+def _run(cmd, timeout=30, **kw):
+    return subprocess.run(cmd, capture_output=True, timeout=timeout, **kw)
+
+
+def _devices(adb):
+    """处于 device 状态（已连接且已授权）的序列号列表。"""
+    try:
+        proc = _run([str(adb), "devices"], timeout=20)
+    except Exception:
+        return []
+    out = (proc.stdout or b"").decode("utf-8", "ignore")
+    serials = []
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            serials.append(parts[0])
+    return serials
+
+
+def _boot_completed(adb, serial):
+    try:
+        proc = _run([str(adb), "-s", serial, "shell", "getprop", "sys.boot_completed"],
+                    timeout=15)
+        return (proc.stdout or b"").decode("utf-8", "ignore").strip() == "1"
+    except Exception:
+        return False
+
+
+def _list_avds(emu):
+    try:
+        proc = _run([str(emu), "-list-avds"], timeout=25, cwd=str(emu.parent))
+        out = (proc.stdout or b"").decode("utf-8", "ignore")
+        return [ln.strip() for ln in out.splitlines()
+                if ln.strip() and not ln.strip().startswith("INFO")]
+    except Exception:
+        return []
+
+
+def _set_open_state(state, msg):
+    with _OPEN_APP_LOCK:
+        _OPEN_APP["state"] = state
+        _OPEN_APP["msg"] = msg
+
+
+def _apk_path():
+    """优先用 dist 下最新的发布 APK，其次退到构建产物。"""
+    cands = []
+    dist = BASE_DIR / "dist"
+    if dist.is_dir():
+        try:
+            cands.extend(sorted(dist.glob("goshor-*.apk"),
+                                key=lambda p: p.stat().st_mtime, reverse=True))
+        except OSError:
+            pass
+    cands.append(BASE_DIR / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk")
+    return _first_existing(cands)
+
+
+def _launch_apk(adb, serial):
+    """装 APK（未安装时）并拉起 MainActivity。"""
+    installed = False
+    try:
+        proc = _run([str(adb), "-s", serial, "shell", "pm", "list", "packages",
+                     "com.goshor.app"], timeout=30)
+        installed = "com.goshor.app" in (proc.stdout or b"").decode("utf-8", "ignore")
+    except Exception:
+        pass
+    if not installed:
+        apk = _apk_path()
+        if apk is None:
+            return False, "找不到可安装的 APK（dist/goshor-*.apk 或 app-debug.apk）"
+        try:
+            _run([str(adb), "-s", serial, "install", "-r", "-d", str(apk)],
+                 timeout=_BAT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return False, "APK 安装超时（约 286 MB），请稍后重试"
+        except Exception as exc:
+            return False, f"APK 安装失败：{exc}"
+    try:
+        proc = _run([str(adb), "-s", serial, "shell", "am", "start", "-n",
+                     "com.goshor.app/.MainActivity"], timeout=60)
+    except Exception as exc:
+        return False, f"启动 APP 失败：{exc}"
+    out = ((proc.stdout or b"") + (proc.stderr or b"")).decode("utf-8", "ignore")
+    if "Error" in out or "Exception" in out:
+        return False, f"启动 APP 失败：{out.strip()[:120]}"
+    return True, "APP 已启动"
+
+
+def _open_app_worker():
+    try:
+        _open_app_pipeline()
+    except Exception as exc:            # 后台线程不得静默死掉
+        _set_open_state("error", f"启动流程异常：{exc}")
+
+
+def _boot_avd(adb, elapsed):
+    """退回 Android SDK 自带模拟器；失败时把原因写进状态并返回 None。"""
+    emu = _emulator_path()
+    if emu is None:
+        _set_open_state("error", "未找到可用的安卓模拟器（MuMu 或 emulator.exe），请先安装其中之一")
+        return None
+    avds = _list_avds(emu)
+    if not avds:
+        _set_open_state("error", "没有可用的安卓虚拟设备（AVD），请先在 Android Studio 中创建")
+        return None
+    avd = avds[0]
+    _set_open_state("booting", f"正在启动模拟器「{avd}」，首次启动约需 1-3 分钟…")
+    try:
+        subprocess.Popen(
+            [str(emu), "-avd", avd, "-no-snapshot", "-no-audio",
+             "-gpu", "swiftshader_indirect"],
+            cwd=str(emu.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+    except Exception as exc:
+        _set_open_state("error", f"模拟器启动失败：{exc}")
+        return None
+    deadline = time.time() + _EMULATOR_BOOT_TIMEOUT
+    while time.time() < deadline:
+        time.sleep(3)
+        found = _devices(adb)
+        if found and _boot_completed(adb, found[0]):
+            return found[0]
+        _set_open_state("booting", f"正在启动模拟器「{avd}」… 已等待 {elapsed()} 秒")
+    _set_open_state("error",
+                    f"模拟器 {int(_EMULATOR_BOOT_TIMEOUT)} 秒内未完成启动。"
+                    "若模拟器窗口一出现即无响应，说明本机 Android Emulator 引擎异常，"
+                    "请重装 emulator 包，或改用其他模拟器（如 MuMu）／网页版。")
+    return None
+
+
+def _open_app_pipeline():
+    adb = _adb_path()
+    if adb is None:
+        _set_open_state("error", "未找到 adb，请安装 Android platform-tools")
+        return
+    try:
+        _run([str(adb), "start-server"], timeout=30)
+    except Exception:
+        pass
+
+    def elapsed():
+        return int(time.time() - _OPEN_APP["started"])
+
+    serials = _devices(adb)
+    serial = serials[0] if serials else None
+
+    if not serial:
+        # 优先用 MuMu：它比 Android SDK 自带模拟器启动快、兼容性好
+        cli = _mumu_cli()
+        if cli is not None:
+            _set_open_state("booting", "正在启动 MuMu 模拟器…")
+            if _mumu_launch(cli):
+                serial = _mumu_connect(adb, time.time() + _MUMU_BOOT_TIMEOUT, elapsed)
+            if not serial:
+                _set_open_state("booting", "MuMu 未能启动，尝试 Android 虚拟设备（AVD）…")
+        if not serial:
+            serial = _boot_avd(adb, elapsed)
+        if not serial:
+            return
+
+    _set_open_state("launching", f"设备已就绪（{serial}），正在安装并打开 APP…")
+    ok, msg = _launch_apk(adb, serial)
+    _set_open_state("done" if ok else "error", msg)
+
 
 @app.post("/api/open_app")
 def api_open_app():
-    """执行 tools/open_app.bat silent：自动连接模拟器并拉起上岸题库 APP"""
-    import subprocess
-    # DATA_DIR 的父目录 = 源码仓库根 / 冻结后的 exe 所在目录
-    bat = DATA_DIR.parent / "tools" / "open_app.bat"
-    if not bat.exists():
-        raise HTTPException(404, "tools/open_app.bat 不存在")
-    try:
-        proc = subprocess.run(
-            ["cmd", "/c", str(bat), "silent"],
-            cwd=str(bat.parent), capture_output=True, timeout=90,
-        )
-        out = (proc.stdout or b"").decode("utf-8", "ignore")
-        if proc.returncode == 0 and "[OK] APP_STARTED" in out:
-            return {"ok": True, "msg": "APP 已在模拟器中启动"}
-        if "[ERR] NO_DEVICE" in out:
-            return {"ok": False, "msg": "未检测到模拟器，请先启动安卓模拟器"}
-        if "[ERR] NO_ADB" in out:
-            return {"ok": False, "msg": "未找到 adb，请安装 Android platform-tools"}
-        if "[INFO] INSTALLING_APK" in out:
-            return {"ok": False, "msg": "APK 自动安装未完成，请重新点击或手动安装"}
-        return {"ok": False, "msg": "启动失败，请直接运行 tools/open_app.bat 查看详情"}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "msg": "启动超时，请检查模拟器状态后重试"}
+    """异步拉起模拟器 + APP。立即返回，进度用 /api/open_app/status 轮询。"""
+    with _OPEN_APP_LOCK:
+        state = str(_OPEN_APP["state"])
+        if state in ("booting", "launching"):
+            started = float(_OPEN_APP["started"])
+            return {"ok": True, "state": state, "msg": str(_OPEN_APP["msg"]),
+                    "elapsed": int(time.time() - started), "reused": True}
+        _OPEN_APP["state"] = "booting"
+        _OPEN_APP["msg"] = "正在检查设备…"
+        _OPEN_APP["started"] = time.time()
+    threading.Thread(target=_open_app_worker, daemon=True).start()
+    return {"ok": True, "state": "booting", "msg": "正在检查设备…",
+            "elapsed": 0, "reused": False}
+
+
+@app.get("/api/open_app/status")
+def api_open_app_status():
+    """返回当前拉起进度：idle / booting / launching / done / error。"""
+    with _OPEN_APP_LOCK:
+        state = str(_OPEN_APP["state"])
+        msg = str(_OPEN_APP["msg"])
+        started = float(_OPEN_APP["started"])
+    return {"ok": state in ("booting", "launching", "idle", "done"),
+            "state": state, "msg": msg,
+            "elapsed": int(time.time() - started) if started else 0}
 
 
 # ---------------- 题库 ----------------
