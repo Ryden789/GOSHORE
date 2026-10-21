@@ -106,6 +106,15 @@ def build(keep: bool = False) -> int:
         "--add-data", f"{ROOT / 'app' / 'argument_materials.json'}{';'}app",
         "--add-data", f"{ROOT / 'app' / 'argument_quiz.json'}{';'}app",
     ]
+    # 内置示例题库（约 7 MB）：让新用户开箱就有题可刷，而不是空库。
+    # 用 tools/make_sample_db.py 生成；不存在就跳过（只影响首次体验）。
+    sample = ROOT / "assets" / "content-sample.db"
+    if sample.exists():
+        cmd += ["--add-data", f"{sample}{';'}assets"]
+        print(f"[i] 内置示例题库：{sample.name}（{sample.stat().st_size / 1024 / 1024:.1f} MB）")
+    else:
+        print("[!] 未找到 assets/content-sample.db，本次打包不含示例题库")
+        print("    生成：python tools/make_sample_db.py")
     for m in HIDDEN_IMPORTS:
         cmd += ["--hidden-import", m]
     for m in EXCLUDES:

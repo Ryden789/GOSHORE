@@ -6,6 +6,7 @@ import json
 import os
 import random
 import re as _re
+import shutil
 import sqlite3
 import threading
 import time
@@ -13,7 +14,12 @@ from datetime import date as _date
 from pathlib import Path
 
 from . import parser
-from .config import (DB_PATH, CONTENT_DB_PATH, USER_DB_PATH, load_settings)
+from .config import (DB_PATH, CONTENT_DB_PATH, USER_DB_PATH, BUNDLE_DIR, load_settings)
+
+# 随 exe / 仓库分发的示例题库（只读资源，跟着打包产物走，不写用户目录）。
+# 全新安装时用它垫底，避免开箱是「题库 0 道」的空壳；用户导入自己的题库后
+# 是往同一个 content.db 里追加，不影响已有数据。
+SAMPLE_DB_PATH = BUNDLE_DIR / "assets" / "content-sample.db"
 
 # ============ Schema 拆分 ============
 # 共享内容表（所有账号只读共享：题库、全文索引、时政库）
@@ -317,6 +323,35 @@ def split_enabled() -> bool:
     看起来像「题库空了」）。真正的残缺形态由 `split_state()` 判为 broken。
     """
     return split_state() == "split"
+
+
+def seed_sample() -> bool:
+    """全新安装时把内置示例题库放到 ``data/content.db``，返回是否真的放了。
+
+    只在「一个库都没有」时动手（既无 content.db、也无 goshor.db、也无
+    `.migrated`）。任何已有数据的情形都不碰——尤其不能在用户迁移过之后
+    又去塞一个示例包，那会把「题库空了」的误会坐实。
+
+    放好之后 `split_state()` 会判为 ``split``（个人的 user.db 缺失=首次运行，
+    由 `_personal_conn` 建空库），后续导入直接追加到同一个 content.db。
+    """
+    try:
+        if CONTENT_DB_PATH.exists() or DB_PATH.exists():
+            return False
+        if Path(str(DB_PATH) + ".migrated").exists():
+            return False
+        if not SAMPLE_DB_PATH.exists():
+            return False
+        CONTENT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # 先写临时名再 replace：中途失败不会留下一个半截的 content.db
+        # （半截库会被判成 split，用户看到的是残缺题库，比没有更糟）。
+        tmp = CONTENT_DB_PATH.with_suffix(".db.seeding")
+        shutil.copyfile(SAMPLE_DB_PATH, tmp)
+        os.replace(tmp, CONTENT_DB_PATH)
+        return True
+    except OSError as e:  # noqa: BLE001  示例包只影响体验，不能拖垮启动
+        print(f"[seed] 放置示例题库失败：{e}")
+        return False
 
 
 def _broken_message() -> str:

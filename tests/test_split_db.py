@@ -136,19 +136,35 @@ def split_env(tmp_path, monkeypatch):
 
 # ---------------- 模式判定 ----------------
 
-def test_split_enabled_requires_both_files(tmp_path, monkeypatch):
+def test_split_state_rules(tmp_path, monkeypatch):
+    """判定依据是**题库文件在不在**，而不是「两个文件都在」。
+
+    这是刻意改过的口径：user.db 缺失＝首次运行（`connect()` 会建空库），
+    不该因此掉回单库——那会新建一个空 goshor.db，用户看到「题库空了」。
+    """
     content = tmp_path / "content.db"
     user = tmp_path / "user.db"
+    legacy = tmp_path / "goshor.db"
     monkeypatch.setattr(db, "CONTENT_DB_PATH", content)
     monkeypatch.setattr(db, "USER_DB_PATH", user)
+    monkeypatch.setattr(db, "DB_PATH", legacy)
 
-    assert db.split_enabled() is False          # 都没有
+    assert db.split_state() == "legacy"          # 全新安装
+    assert db.split_enabled() is False
+
     content.write_bytes(b"")
-    assert db.split_enabled() is False          # 只有一个也不算
+    assert db.split_state() == "split"           # 只有题库 = 首次运行
+    assert db.split_enabled() is True
+
     user.write_bytes(b"")
-    assert db.split_enabled() is True           # 两个都在
+    assert db.split_state() == "split"           # 两个都在
+
     user.unlink()
-    assert db.split_enabled() is False          # 不缓存：删掉立刻失效
+    assert db.split_state() == "split"           # 删掉个人库不掉回单库
+
+    legacy.write_bytes(b"")                      # 两套布局同时在：不猜
+    assert db.split_state() == "broken"
+    assert db.split_enabled() is False
 
 
 # ---------------- split 模式读写 ----------------

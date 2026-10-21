@@ -116,10 +116,15 @@ def _isolate_split_paths(tmp_path, monkeypatch):
 
     拆分模式判定只看 `content.db` / `user.db` 是否存在。本机 `data/` 一旦跑过
     `tools/migrate_split.py`，只 patch `db.DB_PATH` 的老用例就会掉进 split 模式，
-    读写**真实**的 user.db —— 这里统一把两个路径指到 tmp_path（不创建文件，
-    因此 `split_enabled()` 仍是 False）。需要 split 模式的用例自己 patch 路径
-    并建好这两个文件即可（monkeypatch 后写会覆盖这里的值）。
+    读写**真实**的 user.db —— 这里统一把三个路径都指到 tmp_path（不创建文件，
+    因此 `split_state()` 仍是 `legacy`）。
+
+    为什么连 `DB_PATH` 也要 patch：`split_state()` 还会看
+    `goshor.db` 和 `goshor.db.migrated` 是否存在。开发机迁移过之后真实
+    `data/goshor.db.migrated` 常在，只 patch 两个新库路径的话，
+    判定会凭空得到 `broken`，让一批无关用例红掉。
     """
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "goshor.db")
     monkeypatch.setattr(db, "CONTENT_DB_PATH", tmp_path / "content.db")
     monkeypatch.setattr(db, "USER_DB_PATH", tmp_path / "user.db")
 

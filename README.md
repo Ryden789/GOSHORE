@@ -78,7 +78,7 @@
 - **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-v4.1-flash-20261017`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 897 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
+- **测试**：pytest 905 条 + 15 个前端静态校验器（node）+ Playwright 移动端 E2E
 
 ## 快速开始（首次使用顺序）
 
@@ -102,6 +102,10 @@ python run.py
 **3. 准备题库（必需，才能做题）**
 题库**不随仓库分发**。请自备**合法题源**，进入「导入」页导入 PDF / Word / Excel / CSV / MD / JSON 后即可开始练习。
 
+> 想先试试功能：打包好的 exe **自带 240 道示例题**（`assets/content-sample.db`，约 7 MB），打开就有题可刷；
+> 从源码跑可用 `python tools/make_sample_db.py` 生成同一份示例库。导入自己的题源是**追加**，不会覆盖示例。
+
+
 **4. 配置 AI（可选）**
 进入「设置 → 题库与 AI」填入 **DeepSeek API Key**，启用 AI 讲题 / 答疑 / 批改 / 抽题。不配置时相关功能自动降级（词语填空走预置题、批改走对照自评），本地刷题不受影响。Key 使用 Windows **DPAPI 按当前用户加密**落盘（`data/settings.json`），明文不写盘；该文件已在 `.gitignore` 中忽略。多设备同步的 WebDAV 密码与同步口令同样走 DPAPI。
 
@@ -115,7 +119,8 @@ python run.py
 不想装 Python、也不想开浏览器，可以直接用打包好的 `dist\GOSHORE上岸工作台.exe`：
 
 - **双击即用**：原生窗口打开（无地址栏），服务仍在后台跑，手机端 `/m/` 照旧可用。
-- **首次运行自动建库**：exe 旁边会生成 `data\`（题库库文件、设置、WebView 存储、日志），**不携带任何题库和 API Key**，数据完全留在本机。
+- **自带示例题库**：首次运行会把内置的 240 道示例题放进 `data\content.db`，开箱就能刷（导入自己的题源是追加，不覆盖）。
+- **首次运行自动建库**：exe 旁边会生成 `data\`（题库库文件、设置、WebView 存储、日志），**不携带任何 API Key**，数据完全留在本机。
 - **换电脑 / 备份**：只拷 exe 就是全新空库；连同 `data\` 一起拷走，则题库、记录、设置原样带走。
 - **日志位置**：`data\logs\desktop-YYYYMMDD.log`（exe 无控制台，出问题看这里）。
 - **环境要求**：Windows 10/11 64 位 + WebView2 运行时（Win11 自带；Win10 若缺，需装微软的 Evergreen Runtime）。
@@ -201,7 +206,7 @@ GOSHORE/
 │   ├── goshor.db          # 单库模式的老布局（与新布局二选一，见下）
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（897 条）
+├── tests/                 # pytest 用例（905 条）
 ├── tools/                 # 校验器（15 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── migrate_split.py       # 老单库 → content.db + user.db
@@ -236,7 +241,7 @@ python tools/migrate_split.py             # 真迁移（约 15~45 秒）
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（897 条，跑在临时库上，不碰 data/goshor.db）
+# 后端单元 / 接口测试（905 条，跑在临时库上，不碰 data/goshor.db）
 python -m pytest tests -q
 
 # 前端静态校验器（无需浏览器；本机无 node 时自动跳过）
@@ -248,7 +253,7 @@ node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 897 passed**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
+当前基线：**pytest 905 passed**、**15 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
 
 ## 常见问题
 

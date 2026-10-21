@@ -42,6 +42,10 @@ _STORAGE_ERROR: dict[str, str] = {}
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
+        # 全新安装：先把内置示例题库放到位，免得开箱就是「题库 0 道」。
+        # 只在老库/新库都不存在时生效，已有数据的用户完全不受影响。
+        if db.seed_sample():
+            print("[seed] 已放置内置示例题库（可在「导入」里换成自己的题源）")
         db.init_db(db.connect())
         # 首次启动自动构建索引（库为空时）
         conn = db.connect()
