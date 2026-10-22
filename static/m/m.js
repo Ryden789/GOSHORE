@@ -281,7 +281,7 @@ function enterApp(me) {
 
 /* ---------- 路由 ---------- */
 
-const TITLES = {
+const TITLES = { training: "练习中心", "review-center": "复习巩固", knowledge: "知识资料", reports: "学习报告", manage: "题库管理", summary: "学习总览",
   home: "上岸自习室", practice: "刷题", review: "复习", me: "我的",
   run: "做题中", login: "登录", register: "注册", all: "全部功能",
   report: "周报", history: "做题记录", paper: "组卷", logic: "判断专项",
@@ -302,49 +302,8 @@ const TITLES = {
 const AUTH_PAGES = ["login", "register"];
 
 /* 全部功能中枢：5 组（与桌面导航一致）。条目：[路由, 图标, 名称, 说明] */
-const HUB = [
-  { group: "总览", items: [
-    ["home", "⌂", "今日", "学习数据总览"],
-    ["report", "报", "周报", "本周诊断与建议"],
-    ["time", "时", "用时分析", "节奏诊断·会做但超时"],
-    ["history", "历", "做题记录", "逐题历史明细"],
-    ["ai-ask", "问", "AI 答疑", "自由提问·不做题也能问"],
-  ]},
-  { group: "行测精练", items: [
-    ["paper", "✎", "组卷", "随机真题组卷"],
-    ["logic", "判", "判断专项", "考点专项练习"],
-    ["formula", "式", "列式专项", "资料分析列式"],
-    ["wordfill", "词", "词语填空", "文章多空填词"],
-    ["speed", "⚡", "速算", "限时速算轮次"],
-  ]},
-  { group: "综应专区", items: [
-    ["essay", "文", "申论综应", "题目作答与评分"],
-    ["argument", "评", "论证评价", "标注训练+辨析快练"],
-    ["wenxian", "科", "科技文献", "长文小题群"],
-    ["zy-notes", "识", "综应考点", "C类综应知识体系"],
-    ["shizheng", "政", "时政", "时政热点自测"],
-    ["grade", "批", "AI 批改", "AI 智能批改"],
-    ["interview", "面", "面试模拟", "AI 考官三维点评"],
-  ]},
-  { group: "复习巩固", items: [
-    ["review", "◌", "今日复习", "到期复习列表"],
-    ["mastery", "图", "掌握度", "考点掌握图谱"],
-    ["plan", "计", "学习计划", "能力雷达·14天路径"],
-    ["wrong", "✗", "错题本", "错题重做"],
-    ["marks", "★", "收藏", "收藏题目"],
-    ["notes", "✎", "笔记", "我的题目笔记"],
-    ["cards", "▦", "辨析卡", "翻面辨析卡片"],
-    ["xc-notes", "速", "行测速查", "公式·规律·速算技巧"],
-    ["share", "⇄", "分享 PK", "题单分享·好友PK"],
-  ]},
-  { group: "题库管理", items: [
-    ["search", "▤", "搜题", "关键词搜题"],
-    ["mydocs", "☰", "我的题库", "导入的私有题目"],
-    ["doubts", "⌚", "疑点", "存疑题目复核"],
-    ["import", "⇩", "导入", "导入新题"],
-    ["settings", "⚙", "设置", "Key 与数据设置"],
-  ]},
-];
+const HUB = StudyLayout.groups.map(g => ({group:g.title,items:g.items.map(it=>[it.route,it.title.slice(0,1),it.title,it.desc])}));
+HUB.find(g=>g.group==="题库管理").items.push(["mydocs","☰","我的题库","导入的私有题目"]);
 
 /* 别名：同一手机页面承载多个桌面功能 */
 const ALIAS = {
@@ -492,9 +451,10 @@ function route() {
   const isAuth = AUTH_PAGES.includes(name);
   $("#tabbar").style.display = isAuth ? "none" : "";
   const tabName = ALIAS[name] || name;
+  const activeTab = StudyLayout.mobileTabFor(name);
   // UX-01：活动标签同时落 aria-current，读屏可播报「当前页」
   $$("#tabbar a").forEach(a => {
-    const on = a.dataset.tab === tabName;
+    const on = a.dataset.tab === activeTab;
     a.classList.toggle("active", on);
     if (on) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -1287,6 +1247,7 @@ async function renderPlan() {
 }
 
 const ROUTES = {
+  training: renderTrainingCenter, "review-center": renderReviewCenter, knowledge: () => renderMobileCenter("knowledge"), reports: () => renderMobileCenter("reports"), manage: () => renderMobileCenter("manage"), summary: renderLearningSummary,
   home: renderHome, practice: renderPractice, review: renderReview, me: renderMe,
   login: renderLogin, register: renderRegister,
   all: renderAll, report: renderReport,
@@ -1325,7 +1286,7 @@ function todayStr() {
 /* U-2 每日开门状态：null=尚未从服务器确认，true/false */
 let DAILY_DONE = null;
 const DAILY_LOCKED = new Set([
-  "practice", "paper", "logic", "formula", "speed", "wordfill",
+  "training", "practice", "paper", "logic", "formula", "speed", "wordfill",
   "cards", "review", "wrong", "marks", "exam", "shizheng",
 ]);
 
@@ -1358,7 +1319,7 @@ function setupCard(s, cfg) {
   </div>`;
 }
 
-async function renderHome() {
+async function renderLearningSummary() {
   const [s, pl, drafts, cfg] = await Promise.all([
     api("/api/stats"), api("/api/study-plan"), DraftPaper.list(),
     api("/api/settings").catch(() => null)]);   // UX-02：读 AI 配置状态；失败不影响首页
@@ -1459,6 +1420,7 @@ async function renderHome() {
     finally { recBusy = false; }
   };
   maybeBackupGuide(s);
+  return {s,pl};
 }
 
 /* 备份导出：App 内优先调起系统分享，浏览器环境回退为 HTTP 下载 */
@@ -4892,6 +4854,7 @@ async function renderMe() {
     </div>`;
   view.innerHTML = `
     ${accountCard}
+    <section class="card study-me-links"><h3>学习与数据</h3><div class="study-quick-grid"><a href="#/reports"><b>学习报告</b><small>周报、时长与做题记录</small></a><a href="#/summary"><b>学习总览</b><small>称号、连对与今日报告导出</small></a><a href="#/manage"><b>题库管理</b><small>检索、导入、疑点与私有题目</small></a><a href="#/settings"><b>设置与数据</b><small>外观、提醒、同步与备份</small></a><a href="#/all"><b>全部功能</b><small>完整功能目录</small></a><a href="#/plan"><b>学习计划</b><small>每日安排与能力雷达</small></a></div></section>
     ${mode === "lan" ? `
     <div class="card">
       <h3>App 服务器设置</h3>
@@ -6607,3 +6570,47 @@ async function renderShare(code = "") {
 }
 
 boot();
+
+/* ---------- 功能排版：移动端首页和分类中心 ---------- */
+async function renderHome() {
+  const {s,pl} = await renderLearningSummary();
+  const take = sel => view.querySelector(sel);
+  const setup = take("#setupCard"), countdown=take(".countdown"), daily=take(".daily-door:not(#bkGuide)"), backup=take("#bkGuide");
+  const drafts=[...view.querySelectorAll(".draft-resume")];
+  const rec=take("#recGo"), goal=take(".goal-panel"), stats=take(".stat-grid"), rank=take(".rank-badge"), exp=take("#exportToday");
+  const frame=document.createElement("div"); frame.className="study-home";
+  frame.innerHTML=`<div class="study-section-head"><h2>今天先学什么</h2><a href="#/plan">学习计划 →</a></div><div data-slot="countdown"></div><div data-slot="daily"></div><div data-slot="resume"></div>
+    <section class="card study-tasks"><div class="study-section-head"><h3>今日学习安排</h3><a href="#/plan">查看计划</a></div><div class="study-task"><div><b>到期错题复习</b><small>${s.review_due} 道到期题目</small></div><a class="btn btn-sm" href="#/review">开始复习</a></div><div data-slot="rec"></div><div class="study-task"><div><b>辨析卡记忆</b><small>${s.card_due} 张词卡到期</small></div><a class="btn btn-sm" href="#/cards">开始记忆</a></div><div class="study-task"><div><b>学习计划</b><small>${(pl.summary.today||[]).length ? esc(pl.summary.today.map(t=>`${t.module} ${t.n}题`).join(" · ")) : "按能力雷达生成弱项加权路径"}</small></div><a class="btn btn-sm" href="#/plan">查看</a></div></section>
+    <section class="card"><div class="study-section-head"><h3>今日概况</h3><a href="#/reports">报告 →</a></div><div class="study-home-stats"><div><b>${s.today_answers}<small>题</small></b><span>今日作答</span></div><div><b>${Math.round((s.today_focus||0)/60)}<small>分钟</small></b><span>今日专注</span></div></div><p class="study-muted">连续学习 ${s.streak} 天 · 待处理错题 ${s.wrong_count} 道</p></section><div data-slot="goal"></div>
+    <div class="study-quick-grid"><a href="#/xc-notes"><b>行测速查</b><small>公式与解题方法</small></a><a href="#/ai-ask"><b>AI 答疑</b><small>文字与图片提问</small></a></div>
+    <details class="study-fold"><summary>学习成就与完整统计</summary><div data-slot="stats"></div></details><div data-slot="export"></div><div data-slot="setup"></div><div data-slot="backup"></div>`;
+  const put=(key,node)=>{if(node)frame.querySelector(`[data-slot="${key}"]`).append(node);};
+  put("countdown",countdown); if(daily && daily!==backup)put("daily",daily);
+  drafts.forEach(d=>put("resume",d)); put("rec",rec); put("goal",goal); put("stats",rank);put("stats",stats);put("export",exp);put("setup",setup);put("backup",backup);
+  view.replaceChildren(frame);
+}
+
+function renderMobileCenter(kind) {
+  const titles={knowledge:["知识资料","公式、考点和时政，按内容查找。"],reports:["学习报告","回顾做题记录，了解学习节奏。"],manage:["题库管理","检索题目、维护题源与处理疑点。"]};
+  view.innerHTML=StudyLayout.header(...titles[kind])+StudyLayout.cards(kind,true);
+  if(kind==="reports")view.insertAdjacentHTML("beforeend",`<a class="entry" href="#/summary"><span class="et"><b>学习总览与今日报告</b><small>称号、连对、累计统计与报告导出</small></span><span class="go">›</span></a>`);
+  if(kind==="manage")view.insertAdjacentHTML("beforeend",`<div class="study-quick-grid"><a href="#/mydocs"><b>我的题库</b><small>导入的私有题目</small></a><a href="#/settings"><b>设置与数据</b><small>备份、同步与热更新</small></a><a href="#/all"><b>全部功能</b><small>完整目录</small></a></div>`);
+}
+function renderReviewCenter(){
+  view.innerHTML=StudyLayout.header("复习巩固","先复习到期内容，再巩固薄弱考点。")+`<section class="card study-resume"><div><span class="study-eyebrow">今日到期</span><h2>从今日复习开始</h2><p class="study-muted">查看到期题目、重复错误和未标错因。</p></div><a class="btn btn-primary" href="#/review">开始今日复习 →</a></section>`+StudyLayout.cards("review",true);
+}
+async function renderTrainingCenter(tab){
+  if(!["xingce","essay","interview","share"].includes(tab))tab="xingce";
+  if(tab!=="xingce"){
+    view.innerHTML=StudyLayout.header("练习中心","选择训练科目，按自己的节奏开始练习。")+StudyLayout.tabs(tab,true)+StudyLayout.cards(tab,true);return;
+  }
+  await renderPractice();
+  const nodes=[...view.children];
+  const frame=document.createElement("div");
+  frame.innerHTML=StudyLayout.header("练习中心","选择训练科目，按自己的节奏开始练习。")+StudyLayout.tabs(tab,true)+`<div data-slot="draft"></div><div data-slot="free"></div><details class="study-fold"><summary>真题套卷</summary><div data-slot="exam"></div></details><h2 class="sec">专项训练</h2>${StudyLayout.cards("xingce",true,["paper"])}<details class="study-fold"><summary>考点正确率热力墙</summary><div data-slot="heat"></div></details><details class="study-fold"><summary>判断考点与列式题型</summary><div data-slot="topics"></div></details>`;
+  for(const node of nodes){
+    const slot=node.classList.contains("draft-resume")?"draft":node.querySelector("#pGo")?"free":node.querySelector("#examGo")?"exam":node.querySelector(".heat-row")?"heat":"topics";
+    frame.querySelector(`[data-slot="${slot}"]`).append(node);
+  }
+  view.replaceChildren(frame);
+}

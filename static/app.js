@@ -342,7 +342,7 @@ let abortCtl = null;  // 当前导航的在途请求控制器，切页即 abort�
 
 function setActive(name) {
   document.querySelectorAll(".nav a").forEach(a => {
-    const on = a.dataset.route === name;
+    const on = a.dataset.route === StudyLayout.sectionFor(name);
     a.classList.toggle("active", on);
     // UX-01：屏幕阅读器据此播报「当前页」，不只靠颜色区分活动项
     if (on) a.setAttribute("aria-current", "page");
@@ -362,7 +362,7 @@ function syncNavGroup(name) {
   });
 }
 
-const ROUTE_LOADING_LABELS = { home: "今日书房", report: "周报", history: "做题记录", "ai-ask": "AI 答疑", paper: "组卷", logic: "判断专项", formula: "列式专项", wordfill: "词语填空", speed: "速算", cube: "空间折叠", essay: "申论综应", argument: "论证评价", "argument-quiz": "辨析快练", wenxian: "科技文献", "zy-notes": "综应考点", "xc-notes": "行测速查", shizheng: "时政", grade: "AI 批改", review: "今日复习", wrong: "错题本", marks: "收藏", cards: "辨析卡", search: "题库检索", doubts: "疑点工作台", import: "导入题库", settings: "设置", exam: "模考试卷", doc: "题目详情", mastery: "掌握度图谱", plan: "学习计划", interview: "面试模拟" };
+const ROUTE_LOADING_LABELS = { practice: "练习中心", "review-center": "复习巩固", knowledge: "知识资料", reports: "学习报告", manage: "题库管理", overview: "详细学习总览", home: "今日书房", report: "周报", history: "做题记录", "ai-ask": "AI 答疑", paper: "组卷", logic: "判断专项", formula: "列式专项", wordfill: "词语填空", speed: "速算", cube: "空间折叠", essay: "申论综应", argument: "论证评价", "argument-quiz": "辨析快练", wenxian: "科技文献", "zy-notes": "综应考点", "xc-notes": "行测速查", shizheng: "时政", grade: "AI 批改", review: "今日复习", wrong: "错题本", marks: "收藏", cards: "辨析卡", search: "题库检索", doubts: "疑点工作台", import: "导入题库", settings: "设置", exam: "模考试卷", doc: "题目详情", mastery: "掌握度图谱", plan: "学习计划", interview: "面试模拟" };
 function routeLoadingMarkup(name) {
   const label = ROUTE_LOADING_LABELS[name] || "上岸自习室";
   return `<div class="route-skeleton" aria-live="polite" aria-label="正在加载${esc(label)}"><div class="route-skeleton-head"><span class="route-skeleton-title">${esc(label)}</span><span class="route-spinner" aria-hidden="true"></span></div><div class="route-skeleton-line wide"></div><div class="route-skeleton-line"></div><div class="route-skeleton-grid"><i></i><i></i><i></i></div><div class="route-skeleton-block"></div></div>`;
@@ -407,7 +407,13 @@ function route() {
       </div>`;
     });
   };
-  if (name === "doc") dispatch(() => renderDoc(+parts[1], parts[2] || "answer"));
+  if (name === "practice") dispatch(() => renderPracticeCenter(parts[1] || "xingce"));
+  else if (name === "review-center") dispatch(() => renderStudyCenter("review"));
+  else if (name === "knowledge") dispatch(() => renderStudyCenter("knowledge"));
+  else if (name === "reports") dispatch(() => renderStudyCenter("reports"));
+  else if (name === "manage") dispatch(() => renderStudyCenter("manage"));
+  else if (name === "overview") dispatch(renderOverview);
+  else if (name === "doc") dispatch(() => renderDoc(+parts[1], parts[2] || "answer"));
   else if (name === "argument" && parts[1]) dispatch(() => renderArgumentDo(parts[1]));
   else if (name === "argument") dispatch(renderArgument);
   else if (name === "argument-quiz") dispatch(renderArgumentQuiz);
@@ -490,7 +496,7 @@ function diffBadge(diff) {
    首页 Dashboard
 ===================================================== */
 
-async function renderHome() {
+async function renderOverview() {
   const [s, st, pl, drafts, cfg] = await Promise.all([
     api("/api/stats"), api("/api/study-time"), api("/api/study-plan"), DraftPaper.list(),
     api("/api/settings").catch(() => null)]);   // UX-02：读 AI 配置状态；失败不影响首页
@@ -650,6 +656,8 @@ async function renderHome() {
   $("#recGo").onclick = () => (location.hash = "#/paper/adaptive");
   bindDraftCard(view);   // N1：续做卡片「继续 / 放弃」
   bindSetupPanel();      // UX-02：首次使用提示的关闭按钮
+  if (location.hash === "#/overview") view.querySelector(".page-title").textContent = "详细学习总览";
+  return {s, st, pl};
 }
 
 /* =====================================================
@@ -7032,3 +7040,77 @@ hydrateReminderPref().catch(() => {}).then(() => ReminderWeb.start());
 Theme.init();   // N5：把主题落到 <html>（<head> 内联脚本已先跑一次，这里是兜底 + 订阅系统切换）
 FontSize.init();   // N4：把字号/行高偏好落到 <html>（<head> 内联脚本已先跑一次）
 route();
+
+/* ---------- 功能排版：首页聚焦行动，完整旧总览保留在学习报告 ---------- */
+async function renderHome() {
+  const [{s, st, pl}, recent] = await Promise.all([renderOverview(), api("/api/history?limit=3").catch(() => ({items:[]}))]);
+  const keep = sel => view.querySelector(sel);
+  const setup = keep(".setup-panel"), countdown = keep(".countdown");
+  const drafts = [...view.querySelectorAll(".draft-resume")];
+  const goal = keep(".goal-panel"), rec = keep("#recGo");
+  const plan = (pl.summary.today || []);
+  const task = (title, desc, href, action) => `<div class="study-task"><div><b>${esc(title)}</b><small>${esc(desc)}</small></div><a class="btn btn-sm" href="${href}">${action}</a></div>`;
+  const frame = document.createElement("div");
+  frame.className = "study-home";
+  frame.innerHTML = `${StudyLayout.header("今日书房", "先完成今天的学习，再看长期的进步。")}
+    <div data-slot="countdown"></div><div data-slot="resume"></div>
+    <div class="study-home-columns"><section class="panel study-tasks"><div class="study-section-head"><h2>今日学习安排</h2><a href="#/plan">查看计划 →</a></div>
+      ${task("到期错题复习", `${s.review_due} 道到期题目 · 先巩固再练习`, "#/review", "开始复习")}
+      <div class="study-task"><div><b>智能组卷练习</b><small>按掌握度推荐 15 题 · 薄弱考点优先</small></div><span data-slot="rec"></span></div>
+      ${task("辨析卡复习", `${s.card_due} 张词卡到期 · 翻面、默写与测验`, "#/cards", "开始记忆")}
+      ${task("今日学习计划", plan.length ? plan.map(t=>`${t.module} ${t.n}题`).join(" · ") : "按能力雷达生成弱项加权路径", "#/plan", plan.length ? "查看计划" : "生成计划")}
+      <a class="study-more" href="#/practice">更多训练：行测、综应、面试与分享 PK →</a>
+    </section><aside><section class="panel"><div class="study-section-head"><h2>今日概况</h2><a href="#/reports">完整报告 →</a></div>
+      <div class="study-home-stats"><div><b>${s.today_answers}<small>题</small></b><span>今日作答 · 对 ${s.today_correct}</span></div><div><b>${st.today_minutes}<small>分钟</small></b><span>今日学习时长</span></div></div>
+      <p class="study-muted">连续学习 ${s.streak} 天 · 待处理错题 ${s.wrong_count} 道</p></section>
+      <div data-slot="goal"></div><section class="panel"><h2>常用工具</h2><div class="study-quick-grid"><a href="#/xc-notes"><b>行测速查</b><small>公式与解题方法</small></a><a href="#/ai-ask"><b>AI 答疑</b><small>文字与图片提问</small></a></div></section>
+    </aside></div><section class="panel"><div class="study-section-head"><h2>最近学习</h2><a href="#/history">全部记录 →</a></div>${recent.items.length ? recent.items.map(it=>`<a class="study-recent-row" href="#/doc/${Number(it.doc_id)}"><span><b>${esc(it.title)}</b><small>${esc(it.module || "")} · ${it.correct ? "答对" : "答错"}</small></span><span>回顾解析 →</span></a>`).join("") : `<p class="study-muted">还没有作答记录，完成练习后可在这里回顾。</p>`}<a class="study-more" href="#/overview">详细学习总览：趋势、模块正确率与高频错题 →</a></section><div data-slot="setup"></div>`;
+  const slot = key => frame.querySelector(`[data-slot="${key}"]`);
+  if (setup) slot("setup").append(setup);
+  if (countdown) slot("countdown").append(countdown);
+  drafts.forEach(d=>slot("resume").append(d));
+  if (goal) slot("goal").append(goal);
+  if (rec) { rec.className = "btn btn-sm"; rec.textContent = "开始练习"; slot("rec").append(rec); }
+  if (!drafts.length) slot("resume").innerHTML = `<section class="panel study-resume"><div><span class="study-eyebrow">开始今天的学习</span><h2>从一次专注练习开始</h2><p class="study-muted">自由选择模块与考点，或按今日安排练习。</p></div><a class="btn btn-primary" href="#/practice">进入练习中心 →</a></section>`;
+  view.replaceChildren(frame);
+}
+
+function renderStudyCenter(kind) {
+  const titles = {review:["复习巩固","先复习到期内容，再巩固薄弱考点。"],knowledge:["知识资料","公式、考点与时政，按内容查找。"],reports:["学习报告","从学习记录与趋势中，找到下一步方向。"],manage:["题库管理","检索题目、导入题源与处理疑点。"]};
+  const [title,desc] = titles[kind];
+  view.innerHTML = StudyLayout.header(title,desc) + (kind === "reports" ? `<section class="panel study-resume"><div><h2>详细学习总览</h2><p class="study-muted">完整保留原首页的统计、趋势图、错因分布与高频错题。</p></div><a class="btn btn-primary" href="#/overview">查看全部数据 →</a></section>` : "") + StudyLayout.cards(kind);
+  if (kind === "manage") view.insertAdjacentHTML("beforeend", `<section class="panel study-center-note"><h2>同步与备份</h2><p class="study-muted">备份恢复、WebDAV 同步、外观、提醒与数据清理统一在设置中。</p><a class="btn" href="#/settings">设置与数据 →</a></section>`);
+}
+
+async function renderPracticeCenter(tab) {
+  if (!["xingce","essay","interview","share"].includes(tab)) tab = "xingce";
+  if (tab !== "xingce") {
+    view.innerHTML = StudyLayout.header("练习中心", "选择训练科目，按自己的节奏开始练习。") + StudyLayout.tabs(tab) + StudyLayout.cards(tab);
+    return;
+  }
+  // 复用原组卷渲染与绑定，再移动原节点；不复制事件、不改变任何训练参数。
+  await renderPaper();
+  const children = [...view.children];
+  const free = view.querySelector("#gen")?.closest(".panel");
+  const paperBody = view.querySelector("#paperBody");
+  const panels = children.filter(el => el.classList.contains("panel") && el !== free);
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = StudyLayout.header("练习中心", "选择训练科目，按自己的节奏开始练习。") + StudyLayout.tabs(tab) + `<div class="study-practice-columns"><div data-slot="free"></div><section class="panel study-exams"><h2>真题套卷与模考</h2><p class="study-muted">按年份选择真题，或按考试类型组卷。</p><div data-slot="exams"></div></section></div><div class="study-section-head"><h2>专项训练</h2><a href="#/knowledge">查看知识资料 →</a></div>${StudyLayout.cards("xingce", false, ["paper"])}<details class="study-fold" id="studyTraps"><summary>疑点陷阱训练</summary><div data-slot="traps"></div></details>`;
+  if (free) { free.classList.add("study-free-paper"); wrapper.querySelector('[data-slot="free"]').append(free); }
+  for (const panel of panels) {
+    if (panel.querySelector("#trapStart")) { wrapper.querySelector('[data-slot="traps"]').append(panel); continue; }
+    const details = document.createElement("details");
+    details.className = "study-exam-choice";
+    const summary = document.createElement("summary");
+    summary.textContent = panel.querySelector(".cfg-label")?.textContent || "整卷训练";
+    details.append(summary,panel);
+    wrapper.querySelector('[data-slot="exams"]').append(details);
+  }
+  const trapCard = document.createElement("button");
+  trapCard.type = "button"; trapCard.className = "study-feature";
+  trapCard.innerHTML = '<span class="study-feature-icon" aria-hidden="true">疑</span><b>疑点陷阱训练</b><small>已确认疑点 · 识别命题陷阱</small>';
+  trapCard.onclick = () => { const fold=wrapper.querySelector("#studyTraps"); fold.open=true; fold.scrollIntoView({block:"nearest"}); };
+  wrapper.querySelector(".study-feature-grid").append(trapCard);
+  view.replaceChildren(wrapper);
+  if (paperBody) view.append(paperBody);
+}

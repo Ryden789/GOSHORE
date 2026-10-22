@@ -110,10 +110,10 @@ has(M_SRC, "if (DAILY_DONE === false && DAILY_LOCKED.has(name)) {\n    dailyDoor
 has(M_SRC, 'location.hash = "#/home";',
     "B1 拦截后跳回首页的行为不得改动");
 has(M_SRC, 'const DAILY_LOCKED = new Set([\n' +
-           '  "practice", "paper", "logic", "formula", "speed", "wordfill",\n' +
+           '  "training", "practice", "paper", "logic", "formula", "speed", "wordfill",\n' +
            '  "cards", "review", "wrong", "marks", "exam", "shizheng",\n' +
            ']);',
-    "B2 受限路由集合不得改动");
+    "B2 保留原受限路由并覆盖新增训练中心");
 has(DOOR_SRC, 'const r = await api("/api/paper", { n: 1 });',
     "B3 抽题接口与参数不得改动");
 has(DOOR_SRC, 'runPaper(r.ids, { title: "每日一题", daily: true });',

@@ -93,6 +93,7 @@ const SHARED_SCRIPTS = [
   "static/shared/sanitize.js",
   "static/shared/settle.js",
   "static/shared/core.js",
+  "static/shared/layout.js",
 ];
 
 function loadScript(rel) {
