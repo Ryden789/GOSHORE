@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <files-path name="users" path="users/" />
+    <!-- AI 答疑拍照：相机写到 cache/camera，经 FileProvider 授权给相机 App -->
+    <cache-path name="camera" path="camera/" />
 </paths>

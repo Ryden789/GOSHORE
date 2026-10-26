@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
     private int lastPct = -1;
 
     private ValueCallback<Uri[]> filePathCallback;
+    private Uri pendingCameraUri;
     private static final int REQ_FILE_CHOOSER = 71001;
     private static final int REQ_NOTIFY_PERM = 71002;
 
@@ -373,14 +374,53 @@ public class MainActivity extends Activity {
                     filePathCallback.onReceiveValue(null);
                 }
                 filePathCallback = cb;
-                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.setType("application/zip");
+                pendingCameraUri = null;
+
+                boolean imageRequest = params.isCaptureEnabled();
+                String[] accepts = params.getAcceptTypes();
+                if (accepts != null) {
+                    for (String t : accepts) {
+                        if (t != null && (t.startsWith("image/") || t.equals("*/*"))) {
+                            imageRequest = true;
+                            break;
+                        }
+                    }
+                }
+
+                Intent intent;
+                String title;
+                if (imageRequest) {
+                    if (params.isCaptureEnabled()) {
+                        // AI 答疑的拍照入口：直接唤起相机，EXTRA_OUTPUT 走 FileProvider。
+                        File dir = new File(getCacheDir(), "camera");
+                        //noinspection ResultOfMethodCallIgnored
+                        dir.mkdirs();
+                        File photo = new File(dir, "photo_" + System.currentTimeMillis() + ".jpg");
+                        pendingCameraUri = FileProvider.getUriForFile(
+                                MainActivity.this,
+                                getPackageName() + ".fileprovider", photo);
+                        intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                        intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingCameraUri);
+                        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                        title = "拍照";
+                    } else {
+                        intent = new Intent(Intent.ACTION_GET_CONTENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("image/*");
+                        title = "选择图片";
+                    }
+                } else {
+                    intent = new Intent(Intent.ACTION_GET_CONTENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("application/zip");
+                    title = "选择备份 zip";
+                }
                 try {
-                    startActivityForResult(Intent.createChooser(intent, "选择备份 zip"),
+                    startActivityForResult(Intent.createChooser(intent, title),
                             REQ_FILE_CHOOSER);
                 } catch (Exception e) {
                     filePathCallback = null;
+                    pendingCameraUri = null;
                     return false;
                 }
                 return true;
@@ -667,9 +707,16 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_FILE_CHOOSER) {
             Uri[] results = null;
-            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-                results = new Uri[]{data.getData()};
+            if (resultCode == RESULT_OK) {
+                Uri picked = data != null ? data.getData() : null;
+                if (picked != null) {
+                    results = new Uri[]{picked};
+                } else if (pendingCameraUri != null) {
+                    // ACTION_IMAGE_CAPTURE 把照片写进 EXTRA_OUTPUT，data 可能为 null。
+                    results = new Uri[]{pendingCameraUri};
+                }
             }
+            pendingCameraUri = null;
             if (filePathCallback != null) {
                 filePathCallback.onReceiveValue(results);
                 filePathCallback = null;

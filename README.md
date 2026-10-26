@@ -4,7 +4,7 @@
 
 - 纯本地运行，学习记录不上传第三方（多设备同步为**端到端加密**的可选功能，见下）
 - 桌面端 `http://127.0.0.1:8765`；手机访问需显式 `--lan` 开启，并用启动日志里的**访问令牌**登录
-- Android 源码保留，APK 需本地 Chaquopy/Android 工具链构建；Release **不附带** APK，仓库内提供 `dist/goshor-20261030.apk` 供直接侧载
+- Android 源码保留；公开示例 APK 为 `dist/goshor-sample-20261026.apk`（约 32 MB，release 签名，仅 arm64 / 示例题库），Release **不附带** APK
 
 ## 功能特性
 
@@ -79,7 +79,7 @@
 - **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-flash`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 1005 条 + 16 个前端静态校验器（node）+ Playwright 移动端 E2E
+- **测试**：pytest 1007 条 + 16 个前端静态校验器（node）+ Playwright 移动端 E2E
 
 ## 快速开始（首次使用顺序）
 
@@ -184,11 +184,14 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 
 ### 安卓 APP（源码保留，需自行构建）
 
-- **APK 不在 Release 分发**：仓库保留 Android 壳源码，构建依赖本机 Chaquopy / Android SDK
-  工具链（未纳入仓库）。`dist/goshor-20261030.apk` 是 2026-10-21 晚间重建的当前版本（299.95 MB，
-  SHA256 `3eebd224…4980f5`，versionCode 3 / versionName 1.2），已含行测/申论/国考 AI 框架、
-  手机直接拍照答疑、模型名 400 修复、P3 共享层、P4 校验与安全加固；旧版本 APK 已清理，
-  仅保留这一份。APK 仍是单库形态（`goshor.db`），与桌面端的 `content.db + user.db` 分离不同。
+- **公开示例 APK**：`dist/goshor-sample-20261026.apk`（31,895,201 B，SHA256
+  `9AB6056D…15550`，versionCode 4 / versionName 1.3，release v2/v3 签名，仅 arm64）。
+  它只带 `assets/content-sample.db`（438 篇，其中 240 道精选题）与 8.3 MB payload，
+  安装即用，不再内置 23,491 篇全量题库；桌面 Release 仍不附带 APK。
+- **完整本地包**：不对外分发。构建时 `python scripts/build_mobile_assets.py`
+  生成完整资产，再用默认 `GOSHORE_ASSETS` 构建；旧 300 MB debug 包已归档到
+  `.tools/apk-archive/`，不放在 `dist/`。公开包构建与签名命令见
+  [`docs/03-开发/2026-10-26-公开APK与拍照修复.md`](docs/03-开发/2026-10-26-公开APK与拍照修复.md)。
 - **演示页一键打开**：`docs/05-宣传/软件介绍PPT.html` 第 12 页的「安装并打开安卓 APP」会自动探测本地服务端口 → 没有现成设备就先拉起 **MuMu 模拟器**（没装则退回 Android SDK 的 AVD）→ `adb` 装 APK 并启动 `MainActivity`，全过程约 25 秒，进度实时显示在页面上。若两者都没有，会明确提示「装 MuMu 或插上开着 USB 调试的手机」。
 - **需要最新安卓版**：在 `android/` 下按 build.gradle 注释准备工具链后执行构建；或直接用手机浏览器访问 `--lan` 的 `/m/`（功能对齐移动端网页）。
 - **命令行等价物**：`tools\open_app.bat`，或已注册的 `goshor://open` 协议。
@@ -242,7 +245,7 @@ GOSHORE/
 │   ├── goshor.db          # 单库模式的老布局（与新布局二选一，见下）
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（1005 条）
+├── tests/                 # pytest 用例（1007 条）
 ├── tools/                 # 校验器（16 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── migrate_split.py       # 老单库 → content.db + user.db
@@ -280,7 +283,7 @@ python tools/migrate_split.py             # 真迁移（约 15~45 秒）
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（1005 条，跑在临时库上，不碰 data/*.db）
+# 后端单元 / 接口测试（1007 条，跑在临时库上，不碰 data/*.db）
 python -m pytest tests -q
 
 # AI 离线质量评测（不联网、不花 token；低于 95 分退出码 1）
@@ -300,7 +303,7 @@ node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 1005 passed**、**AI 评测 33 条全过（100.00 分）**、**16 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
+当前基线：**pytest 1007 passed**、**AI 评测 33 条全过（100.00 分）**、**16 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
 
 ## 常见问题
 

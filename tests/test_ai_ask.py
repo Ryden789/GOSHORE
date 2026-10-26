@@ -132,3 +132,26 @@ def test_mobile_server_validates_and_forwards_vision():
     )
     assert "ai.normalize_ask_messages" in src
     assert "use_vision=use_vision" in src
+
+
+def test_android_webview_camera_uses_capture_intent():
+    root = Path(__file__).resolve().parent.parent
+    java = (root / "android" / "app" / "src" / "main" / "java" / "com" / "goshor" /
+            "app" / "MainActivity.java").read_text(encoding="utf-8")
+    paths = (root / "android" / "app" / "src" / "main" / "res" / "xml" /
+             "file_paths.xml").read_text(encoding="utf-8")
+    assert "params.isCaptureEnabled()" in java
+    assert "MediaStore.ACTION_IMAGE_CAPTURE" in java
+    assert "FileProvider.getUriForFile" in java
+    assert "pendingCameraUri" in java
+    assert 'cache-path name="camera"' in paths
+
+
+def test_sample_apk_build_switches_to_sample_assets_and_arm64():
+    root = Path(__file__).resolve().parent.parent
+    script = (root / "scripts" / "build_mobile_assets.py").read_text(encoding="utf-8")
+    gradle = (root / "android" / "app" / "build.gradle").read_text(encoding="utf-8")
+    assert '"--sample" in sys.argv' in script
+    assert "mobile_assets_sample" in script
+    assert "GOSHORE_ASSETS" in gradle
+    assert 'abiFilters "arm64-v8a"' in gradle

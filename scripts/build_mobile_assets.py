@@ -174,9 +174,13 @@ def pack_update(src: str = SRC, prev_db: str = "", dist: str = DIST,
     return zip_path
 
 
-def build_all() -> None:
-    """完整构建：payload.zip（题库+图片）+ 手机前端 → mobile_assets。"""
-    assets = os.path.join(PREP, "mobile_assets")
+def build_all(src: str = SRC, assets_dir: str = "") -> None:
+    """完整构建：payload.zip（题库+图片）+ 手机前端 → mobile_assets。
+
+    src 可指定示例库（P0-3 公开版只带 240 道示例题），assets_dir 可隔离
+    示例资产，避免覆盖本地完整版产物。
+    """
+    assets = assets_dir or os.path.join(PREP, "mobile_assets")
     os.makedirs(assets, exist_ok=True)
 
     # 版本号（默认 1；若此前出过更新包则沿用已记录的版本）
@@ -193,12 +197,12 @@ def build_all() -> None:
     # 1) 每次从源库重建：删 FTS + 个人表，VACUUM；手机端共享库只读
     dst_db = os.path.join(PREP, "goshor.db")
     print("复制数据库…")
-    docs = _strip_and_vacuum(SRC, dst_db, version, date)
+    docs = _strip_and_vacuum(src, dst_db, version, date)
     print("共享库: %.1f MB（%d 题，v%d）"
           % (os.path.getsize(dst_db) / 1024 / 1024, docs, version))
 
     # 2) 收集引用图片（JSON 里 src 以 " 结尾，排除反斜杠）
-    paths = _img_refs(SRC)
+    paths = _img_refs(src)
 
     found = total_sz = 0
     for p in paths:
@@ -266,4 +270,9 @@ if __name__ == "__main__":
             print(e)
             sys.exit(1)
     else:
-        build_all()
+        if "--sample" in sys.argv:
+            sample_src = os.path.join(BASE_DIR, "assets", "content-sample.db")
+            sample_assets = os.path.join(PREP, "mobile_assets_sample")
+            build_all(sample_src, sample_assets)
+        else:
+            build_all()
