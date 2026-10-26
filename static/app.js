@@ -6414,14 +6414,15 @@ async function renderAiAsk() {
             b.innerHTML = md(full);
             b.classList.add("cursor-blink");
           } else if (ev.type === "error") {
-            full += `\n\n**⚠ ${ev.text}**`;
+            full += `\n\n**⚠ ${aiErrorHint(ev.text)}**`;
             b.innerHTML = md(full);
           }
         }
       }
     } catch (e) {
-      full += `\n\n**⚠ 请求失败：${esc(e.message)}**`;
-      b.innerHTML = md(full);
+      full += `\n\n**⚠ ${aiErrorHint(e.message)}**`;
+      b.innerHTML = md(full) +
+        `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
     }
     b.classList.remove("cursor-blink");
     list.scrollTop = list.scrollHeight;

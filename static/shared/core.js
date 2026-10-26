@@ -814,4 +814,20 @@ async function hydrateReminderPref() {
   } catch (e) { /* 未登录 / 离线：沿用本地缓存 */ }
 }
 
+/* AI 失败恢复：把原始 HTTP 错误翻译成用户能行动的提示。 */
+function aiErrorHint(raw) {
+  const s = String(raw || "");
+  if (/401|unauthorized|invalid.*(api.?key|key)|api.?key/i.test(s))
+    return "API Key 无效或未配置，请到「设置 → AI」检查。";
+  if (/402|insufficient|quota|余额|balance/i.test(s))
+    return "DeepSeek 账户额度不足，请充值或更换 Key。";
+  if (/429|rate.?limit|too many|频繁/i.test(s))
+    return "请求过于频繁，请等几十秒再试。";
+  if (/timeout|超时|failed to fetch|networkerror|网络/i.test(s))
+    return "网络连接失败，请检查网络后重试。";
+  if (/400/.test(s))
+    return "请求被拒绝：可能是模型名或参数不兼容，请到设置重选模型。";
+  return "AI 服务暂时不可用，请稍后重试；若持续失败，请检查 Key 与模型设置。";
+}
+
 /* shared-core:end */
