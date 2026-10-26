@@ -150,10 +150,10 @@ const Streak = {
   get n() { return this._read().n; },
 };
 
-/* 统一记录做题结果：对 → 连对+音效；错 → 连对清零 */
+/* 统一记录做题结果：对 → 连对+音效；错 → 连对清零；null（题库缺答案）→ 不奖惩 */
 function noteResult(correct) {
-  if (correct) { Streak.hit(); Snd.pop(); }
-  else Streak.reset();
+  if (correct === true) { Streak.hit(); Snd.pop(); }
+  else if (correct === false) Streak.reset();
 }
 
 /* 轻量撒花（纯 DOM/CSS） */
@@ -795,7 +795,7 @@ async function renderTimeAnalysis() {
     <div class="card">${d.top_slow.map((t, i) => `
       <button type="button" class="ta-item" data-id="${t.doc_id}">
         <span class="ta-main"><b>${i + 1}. ${esc(t.title)}${t.slow ? " 🐢" : ""}</b>
-          <span class="muted">${esc([t.module].filter(Boolean).join(" · "))} · ${t.correct ? "答对" : "答错"}</span></span>
+          <span class="muted">${esc([t.module].filter(Boolean).join(" · "))} · ${t.correct === null ? "待补" : t.correct ? "答对" : "答错"}</span></span>
         <span class="ta-ms">${fmt(t.ms / 1000)}</span>
       </button>`).join("")}</div>`;
   const ids = d.top_slow.map(t => t.doc_id);
@@ -1323,13 +1323,15 @@ async function renderLearningSummary() {
   const [s, pl, drafts, cfg] = await Promise.all([
     api("/api/stats"), api("/api/study-plan"), DraftPaper.list(),
     api("/api/settings").catch(() => null)]);   // UX-02：读 AI 配置状态；失败不影响首页
-  const rate = s.today_answers ? Math.round(s.today_correct / s.today_answers * 100) : 0;
-  const totalRate = s.answers_total ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
-  const rank = gameRank(s.answers_total);
+  const todayGraded = s.today_graded ?? s.today_answers;
+  const rate = todayGraded ? Math.round(s.today_correct / todayGraded * 100) : 0;
+  const totalGraded = s.answers_graded ?? s.answers_total;
+  const totalRate = totalGraded ? Math.round(s.answers_correct / totalGraded * 100) : 0;
+  const rank = gameRank(totalGraded);
   let nextAt = 0;
-  for (const [k] of RANKS) if (k > s.answers_total) { nextAt = k; break; }
+  for (const [k] of RANKS) if (k > totalGraded) { nextAt = k; break; }
   const rankPct = nextAt
-    ? Math.min(100, Math.round(s.answers_total / nextAt * 100)) : 100;
+    ? Math.min(100, Math.round(totalGraded / nextAt * 100)) : 100;
   DAILY_DONE = s.today_answers > 0 || Pref.get("dskip", "") === todayStr();
   // N2：首页也同步一次今日计划完成度（保证提醒判断不过期）
   if (pl && pl.summary) syncPlanState(pl.today, pl.summary.done, pl.summary.total);
@@ -1348,7 +1350,7 @@ async function renderLearningSummary() {
       </div>
       ${nextAt ? `
       <div class="rank-track"><span style="width:${rankPct}%"></span></div>
-      <div class="muted" style="font-size:calc(12px * var(--fs))">距「${gameRank(nextAt)}」还差 ${nextAt - s.answers_total} 题</div>
+      <div class="muted" style="font-size:calc(12px * var(--fs))">距「${gameRank(nextAt)}」还差 ${nextAt - totalGraded} 题</div>
       ` : `<div class="muted" style="font-size:calc(12px * var(--fs));margin-top:6px">已登顶称号榜</div>`}
     </div>
 
@@ -1475,10 +1477,12 @@ function maybeBackupGuide(s) {
 
 /* U-9 拼今日报告并通过原生桥保存为 txt */
 function buildTodayReport(s) {
-  const totalRate = s.answers_total
-    ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
-  const todayRate = s.today_answers
-    ? Math.round(s.today_correct / s.today_answers * 100) : 0;
+  const totalGraded = s.answers_graded ?? s.answers_total;
+  const todayGraded = s.today_graded ?? s.today_answers;
+  const totalRate = totalGraded
+    ? Math.round(s.answers_correct / totalGraded * 100) : 0;
+  const todayRate = todayGraded
+    ? Math.round(s.today_correct / todayGraded * 100) : 0;
   const focusMin = Math.round((s.today_focus || 0) / 60);
   const L = [];
   L.push(`╔════════════════════════════════╗`);
@@ -1494,7 +1498,7 @@ function buildTodayReport(s) {
   L.push(`📈 累计成绩`);
   L.push(`  总作答 ${s.answers_total} 题 · 总正确率 ${totalRate}%`);
   L.push(`  连续学习 ${s.streak} 天`);
-  L.push(`  当前称号：${gameRank(s.answers_total)}`);
+  L.push(`  当前称号：${gameRank(totalGraded)}`);
   L.push(``);
   L.push(`⚔️ 错题前线`);
   L.push(`  待消灭 ${s.wrong_count} 题 · 累计歼灭 ${s.annihilated || 0} 题`);
@@ -2053,10 +2057,11 @@ async function runPaper(ids, opt = {}) {
 
   /** 已判题的解析框（正常作答与草稿还原共用，避免两处文案漂移） */
   function renderAna(doc, d, a) {
-    const headMark = a.correct
+    const headMark = a.correct === true
       ? (a.guessed ? "⚑ 蒙对了 · 按未掌握安排复习" : "✓ 回答正确")
-      : "✗ 正确答案 " +
-        esc(((d.options || []).find(o => o.correct) || {}).label || "");
+      : a.correct === false
+        ? "✗ 正确答案 " + esc(((d.options || []).find(o => o.correct) || {}).label || "")
+        : "⏳ 题库答案待补 · 本题不计分";
     const box = $("#anaBox");
     if (!box) return;
     box.innerHTML = `
@@ -2071,14 +2076,16 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
   async function judge(el, doc, d) {
     if (answers[cur]) return;
     const sel = el.dataset.label;
-    const correct = !!(d.options || []).find(o => o.label === sel && o.correct);
+    const correctObj = (d.options || []).find(o => o.correct);
+    // 三态：题库缺正确选项时 correct=null，保留作答但不判错。
+    const correct = correctObj ? sel === correctObj.label : null;
     answers[cur] = { sel, correct, ms: Date.now() - qStart, guessed: guessedNow };
     $$(".opt").forEach(o => {
       o.classList.add("disabled");
       const opt = (d.options || []).find(x => x.label === o.dataset.label);
       if (opt && opt.correct) o.classList.add("correct");
     });
-    if (!correct) el.classList.add("wrong");
+    if (correct === false) el.classList.add("wrong");
     api("/api/answer", {
       doc_id: doc.id, selected: sel, correct, ms: answers[cur].ms,
       guessed: guessedNow,
@@ -2123,17 +2130,19 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
 
   function renderSummary() {
     const skippedN = answers.filter(a => a && a.skip).length;
-    const judgedN = docs.length - skippedN;
-    const ok = answers.filter(a => a && a.correct).length;
+    const done = answers.filter(a => a && !a.skip);
+    const gradedN = done.filter(a => a.correct !== null).length;
+    const ungradedN = done.length - gradedN;
+    const ok = done.filter(a => a.correct === true).length;
     const used = Math.round((Date.now() - t0) / 1000);
-    const wrongIdx = answers.map((a, i) => a && !a.correct && !a.skip ? i : -1).filter(i => i >= 0);
+    const wrongIdx = answers.map((a, i) => a && a.correct === false && !a.skip ? i : -1).filter(i => i >= 0);
     const blankIdx = answers.map((a, i) => (!a || !a.sel) && !(a && a.skip) ? i : -1).filter(i => i >= 0);
     view.innerHTML = `
       <div class="card result-card run-result">
         <div class="muted">${esc(opt.title || "本次练习")}</div>
-        <div class="sum-num" style="color:${judgedN && ok / judgedN >= .6 ? "var(--green)" : "var(--cinnabar)"}">
-          ${ok} / ${judgedN}</div>
-        <div class="muted">正确率 ${judgedN ? Math.round(ok / judgedN * 100) : 0}% · 用时 ${Math.floor(used / 60)}分${used % 60}秒</div>
+        <div class="sum-num" style="color:${gradedN && ok / gradedN >= .6 ? "var(--green)" : "var(--cinnabar)"}">
+          ${ok} / ${gradedN}</div>
+        <div class="muted">已判分正确率 ${gradedN ? Math.round(ok / gradedN * 100) : 0}% · 用时 ${Math.floor(used / 60)}分${used % 60}秒</div>
         <div class="run-result-stats">
           <span><b>${docs.length}</b> 总题数</span>
           <span><b>${ok}</b> 答对</span>
@@ -2141,6 +2150,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
           ${exam ? `<span><b>${blankIdx.length}</b> 未答</span>` : `<span><b>${skippedN}</b> 跳过</span>`}
         </div>
         ${skippedN ? `<div class="muted" style="margin-top:6px">⏭ 已跳过 ${skippedN} 题（不计入正确率）</div>` : ""}
+        ${ungradedN ? `<div class="muted" style="margin-top:6px;color:var(--amber)">⏳ ${ungradedN} 题题库答案待补（保留作答，不计对错与错题本）</div>` : ""}
         ${exam && blankIdx.length ? `<div class="muted" style="margin-top:6px">○ 未作答 ${blankIdx.length} 题（按错计分）</div>` : ""}
       </div>
       ${wrongIdx.length ? `<h2 class="sec">错题回顾（${wrongIdx.length}）</h2>` +
@@ -2170,7 +2180,8 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
     // 3.3 分享/PK：记录本卷结果，供「分享这组题」与 onFinish 回调使用
     LAST_PAPER = {
       ids: docs.map(d => d.id), title: opt.title || "本次练习",
-      total: answers.length, ok, ms: Date.now() - t0,
+      // 跳过与待补不计；未答仍按错计，保持与原分享口径一致。
+      total: docs.length - skippedN - ungradedN, ok, ms: Date.now() - t0,
     };
     if (opt.onFinish) {
       try { opt.onFinish({ ...LAST_PAPER }); }

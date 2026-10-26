@@ -683,7 +683,9 @@ def api_doc_by_qid(qid: str):
 class AnswerIn(BaseModel):
     doc_id: int
     selected: str = ""
-    correct: bool = False
+    # 三态：true/false 正常判分；null（或省略）= 题库缺正确选项，不计分。
+    # 默认 None 而不是 False，避免旧客户端漏传时把“不知道”误判成错。
+    correct: bool | None = None
     ms: int = 0
     guessed: bool = False
 

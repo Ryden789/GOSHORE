@@ -86,7 +86,9 @@ def test_setup_notice_exists(request, src_fixture, fn_name):
     assert "setup_hide" in src, f"{fn_name} 未用本地偏好记录「已关闭」"
 
 
-@pytest.mark.parametrize("src_fixture,fn_name", [("app_src", "renderHome"), ("m_src", "renderHome")])
+@pytest.mark.parametrize("src_fixture,fn_name", [
+    ("app_src", "renderOverview"), ("m_src", "renderLearningSummary"),
+])
 def test_home_renders_setup_notice(request, src_fixture, fn_name):
     body = fn_src(request.getfixturevalue(src_fixture), fn_name)
     assert 'api("/api/settings")' in body, "首页未读取 AI 配置状态"
@@ -102,7 +104,7 @@ def test_no_new_backend_endpoint_for_setup():
 # ---------- UX-03 每日开门题引导 ----------
 
 EXPECTED_LOCKED = {
-    "practice", "paper", "logic", "formula", "speed", "wordfill",
+    "training", "practice", "paper", "logic", "formula", "speed", "wordfill",
     "cards", "review", "wrong", "marks", "exam", "shizheng",
 }
 

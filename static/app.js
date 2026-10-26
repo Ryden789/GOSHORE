@@ -500,7 +500,8 @@ async function renderOverview() {
   const [s, st, pl, drafts, cfg] = await Promise.all([
     api("/api/stats"), api("/api/study-time"), api("/api/study-plan"), DraftPaper.list(),
     api("/api/settings").catch(() => null)]);   // UX-02：读 AI 配置状态；失败不影响首页
-  const rate = s.answers_total ? Math.round(s.answers_correct / s.answers_total * 100) : 0;
+  const graded = s.answers_graded ?? s.answers_total;
+  const rate = graded ? Math.round(s.answers_correct / graded * 100) : 0;
   const lt = new Date();
   const dateStr = `${lt.getFullYear()} 年 ${lt.getMonth() + 1} 月 ${lt.getDate()} 日`;
   const maxDaily = Math.max(1, ...s.daily.map(d => d.count));
@@ -564,9 +565,9 @@ async function renderOverview() {
     </div>
 
     <div class="stat-row rise rise-2">
-      <div class="stat-card"><div class="v">${s.today_answers}<small>题</small></div><div class="k">今日作答 · 对 ${s.today_correct}</div></div>
+      <div class="stat-card"><div class="v">${s.today_answers}<small>题</small></div><div class="k">今日作答 · 对 ${s.today_correct}${(s.today_answers - (s.today_graded ?? s.today_answers)) > 0 ? ` · 待补 ${s.today_answers - s.today_graded}` : ""}</div></div>
       <div class="stat-card" style="--accent:var(--indigo)"><div class="v">${s.streak}<small>天</small></div><div class="k">连续学习</div></div>
-      <div class="stat-card" style="--accent:var(--bamboo)"><div class="v">${rate}<small>%</small></div><div class="k">总正确率 · ${s.answers_total} 次作答</div></div>
+      <div class="stat-card" style="--accent:var(--bamboo)"><div class="v">${rate}<small>%</small></div><div class="k">总正确率 · ${graded} 次判分${s.answers_total > graded ? ` / ${s.answers_total} 次作答` : ""}</div></div>
       <a class="stat-card link" data-go="wrong" href="#/wrong" style="--accent:var(--cinnabar)"><div class="v">${s.wrong_count}<small>道</small></div><div class="k">待消灭错题</div></a>
       <a class="stat-card link" data-go="review" href="#/review" style="--accent:var(--amber)"><div class="v">${s.review_due + s.card_due}<small>项</small></div><div class="k">今日待复习（题 ${s.review_due} + 卡 ${s.card_due}）</div></a>
     </div>
@@ -888,18 +889,20 @@ async function renderDoc(id, tabName) {
           o.classList.add("disabled");
           const lb = o.dataset.label;
           if (correctObj && lb === correctObj.label) o.classList.add("correct");
-          if (lb === sel && !correct) o.classList.add("wrong");
+          if (lb === sel && correct === false) o.classList.add("wrong");
         });
         const ms = Date.now() - startedAt;
         const online = navigator.onLine;
         const isImgQ = /<img|\/img\?path=/.test((d.stem || "") + JSON.stringify(d.options || []));
         $("#answerBar").innerHTML = `
-          ${correct ? '<span class="badge ok">回答正确</span>' : '<span class="badge no">回答错误</span>'}
+          ${correct === true ? '<span class="badge ok">回答正确</span>'
+            : correct === false ? '<span class="badge no">回答错误</span>'
+            : '<span class="badge" style="background:var(--amber-soft);color:var(--amber)">答案待补 · 本题不计分</span>'}
           <span style="color:var(--ink-3);font-size:calc(13px * var(--fs));font-family:var(--mono)">用时 ${(ms / 1000).toFixed(1)}s</span>
           <button class="btn btn-sm" id="showDraft">📄 看底稿解析</button>
           <button class="btn btn-sm btn-primary" id="askAi"${!online ? ' disabled title="当前离线，可看底稿解析"' : ''}>让 AI 讲这道题</button>
           <button class="btn btn-sm" id="variantBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式题（AI 无法读取图形）"' : ''}>🧬 变式题</button>
-          ${correct ? "" : `<button class="btn btn-sm btn-primary" id="anniBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式（AI 无法读取图形）"' : ""}>⚔ 变式歼灭</button>`}
+          ${correct === true ? "" : correct === false ? `<button class="btn btn-sm btn-primary" id="anniBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式（AI 无法读取图形）"' : ""}>⚔ 变式歼灭</button>` : ""}
           <button class="btn btn-sm" id="exportBtn" title="打印/导出本题">⬇ 导出</button>
           <button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>
           ${nextBtnHtml}`;
@@ -961,7 +964,8 @@ async function renderDoc(id, tabName) {
           bar.parentElement.appendChild(panel);
         };
         bindMark();
-        api("/api/answer", { doc_id: id, selected: sel, correct: !!correct, ms });
+        // correct 必须原样透传三态：null 代表题库缺答案，后端不得当 false 落库。
+        api("/api/answer", { doc_id: id, selected: sel, correct, ms });
       };
     });
 
@@ -2621,7 +2625,7 @@ async function runPaper(ids, opt = {}) {
     return `<div class="paper-dots">
       ${docs.map((_, i) => {
         const a = answers[i];
-        const cls = i === cur ? "cur" : a ? (a.correct ? "ok" : "no") : "";
+        const cls = i === cur ? "cur" : a ? (a.correct === true ? "ok" : a.correct === false ? "no" : "pend") : "";
         return `<span class="paper-dot ${cls}" data-i="${i}">${i + 1}</span>`;
       }).join("")}
     </div>`;
@@ -2721,7 +2725,7 @@ async function runPaper(ids, opt = {}) {
                 <span class="ol">${o.label}</span><span>${esc(o.text)}</span>
               </div>`;
             }
-            return `<div class="option ${a ? "disabled" : ""} ${a && o.correct ? "correct" : ""} ${a && a.sel === o.label && !a.correct ? "wrong" : ""}" data-label="${o.label}">
+            return `<div class="option ${a ? "disabled" : ""} ${a && o.correct ? "correct" : ""} ${a && a.sel === o.label && a.correct === false ? "wrong" : ""}" data-label="${o.label}">
               <span class="ol">${o.label}</span><span>${esc(o.text)}</span>
             </div>`;
           }).join("")}
@@ -2752,7 +2756,7 @@ async function runPaper(ids, opt = {}) {
       }
       if (answers[i]) return;
       const correctObj = (d.options || []).find(o => o.correct);
-      const correct = correctObj ? sel === correctObj.label : false;
+      const correct = correctObj ? sel === correctObj.label : null;
       answers[i] = { sel, correct, ms: Date.now() - startedAt };
       await api("/api/answer", { doc_id: doc.id, selected: sel, correct, ms: answers[i].ms });
       show(i); // 重绘着色
@@ -2836,35 +2840,42 @@ async function runPaper(ids, opt = {}) {
 
   function renderSummary(auto = false) {
     const done = answers.filter(Boolean);
-    const ok = done.filter(a => a.correct).length;
+    const graded = done.filter(a => a.correct !== null);
+    const ok = graded.filter(a => a.correct).length;
     const unDone = answers.length - done.length;
+    const ungraded = done.length - graded.length;
     const totalMs = Date.now() - t0;
-    const wrongIdx = answers.map((a, i) => a && !a.correct ? i : -1).filter(i => i >= 0);
+    const wrongIdx = answers.map((a, i) => a && a.correct === false ? i : -1).filter(i => i >= 0);
     // C类职测：按模块分值加权计分（未答按错计）
     const weights = opt.weights || null;
     const fullScore = opt.fullScore || 0;
     let gotScore = 0;
+    let effFullScore = fullScore;
     if (weights) {
       docs.forEach((doc, i) => {
-        if (answers[i] && answers[i].correct) gotScore += weights[doc.id] || 0;
+        // 缺答案题不计分：从满分与模块满分里同时扣除，避免“没答案”压低得分。
+        if (answers[i] && answers[i].correct === null) effFullScore -= weights[doc.id] || 0;
+        if (answers[i] && answers[i].correct === true) gotScore += weights[doc.id] || 0;
       });
       gotScore = Math.round(gotScore * 10) / 10;
+      effFullScore = Math.round(effFullScore * 10) / 10;
     }
     // F5.5 模块顺序报告（含用时，供节奏分析）
     const modMap = {};
     docs.forEach((doc, i) => {
       const m = doc.module || "未分类";
-      if (!modMap[m]) modMap[m] = { m, total: 0, ok: 0, ms: 0, score: 0, got: 0 };
+      if (!modMap[m]) modMap[m] = { m, total: 0, graded: 0, ok: 0, ms: 0, score: 0, got: 0 };
       modMap[m].total++;
-      if (weights) modMap[m].score += weights[doc.id] || 0;
-      if (answers[i]?.correct) {
+      if (weights && !(answers[i] && answers[i].correct === null)) modMap[m].score += weights[doc.id] || 0;
+      if (answers[i] && answers[i].correct !== null) modMap[m].graded++;
+      if (answers[i]?.correct === true) {
         modMap[m].ok++;
         if (weights) modMap[m].got += weights[doc.id] || 0;
       }
       if (answers[i]) modMap[m].ms += answers[i].ms || 0;
     });
     const modRows = Object.values(modMap).sort((a,b)=>b.total-a.total).map(x=>
-      `<div class="bar-row"><span class="name">${esc(x.m)}</span><span class="track"><span class="fill" style="display:block;width:${x.total?x.ok/x.total*100:0}%"></span></span><span class="pct">${x.ok}/${x.total}${weights ? ` · ${Math.round(x.got*10)/10}/${Math.round(x.score*10)/10}分` : ""}</span></div>`).join("");
+      `<div class="bar-row"><span class="name">${esc(x.m)}</span><span class="track"><span class="fill" style="display:block;width:${x.graded?x.ok/x.graded*100:0}%"></span></span><span class="pct">${x.ok}/${x.graded}${weights ? ` · ${Math.round(x.got*10)/10}/${Math.round(x.score*10)/10}分` : ""}</span></div>`).join("");
     // 节奏报告：C类90分钟基准（常识5→言语15→数量分析13→判断27→综合15→留15分钟检查/涂卡）
     const OPT_MIN = weights
       ? { "常识判断": 5, "言语理解": 15, "数量关系": 4, "资料分析": 9, "判断推理": 27, "综合分析": 15 }
@@ -2894,16 +2905,17 @@ async function runPaper(ids, opt = {}) {
       <div class="panel exam-result" style="text-align:center">
         <h3>本卷判分${auto?" · 到时自动交卷":""}</h3>
         <div class="summary-grid">
-          ${weights ? `<div class="stat-card" style="--accent:var(--cinnabar)"><div class="v">${gotScore}<small>/${fullScore}分</small></div><div class="k">C类职测得分</div></div>` : ""}
-          <div class="stat-card"><div class="v">${ok}/${done.length}</div><div class="k">已答 · 答对</div></div>
-          <div class="stat-card" style="--accent:var(--indigo)"><div class="v">${done.length ? Math.round(ok / done.length * 100) : 0}%</div><div class="k">已答正确率</div></div>
-          <div class="stat-card" style="--accent:var(--bamboo)"><div class="v">${Math.round(ok / answers.length * 100)}%</div><div class="k">全卷得分率（未答按错计）</div></div>
+          ${weights ? `<div class="stat-card" style="--accent:var(--cinnabar)"><div class="v">${gotScore}<small>/${effFullScore}分</small></div><div class="k">C类职测得分${effFullScore !== fullScore ? "（待补题已扣除）" : ""}</div></div>` : ""}
+          <div class="stat-card"><div class="v">${ok}/${graded.length}</div><div class="k">已判分 · 答对</div></div>
+          <div class="stat-card" style="--accent:var(--indigo)"><div class="v">${graded.length ? Math.round(ok / graded.length * 100) : 0}%</div><div class="k">已判分正确率</div></div>
+          <div class="stat-card" style="--accent:var(--bamboo)"><div class="v">${Math.round(ok / Math.max(1, answers.length - ungraded) * 100)}%</div><div class="k">全卷得分率（未答按错计）</div></div>
           <div class="stat-card" style="--accent:var(--amber)"><div class="v">${Math.round(totalMs / 6000) / 10}<small>分</small></div><div class="k">总用时（含停留）</div></div>
         </div>
         ${unDone ? `<p style="color:var(--cinnabar);font-weight:600">⚠ 未作答 ${unDone} 题——实战中没做与做错同样不得分</p>` : ""}
+        ${ungraded ? `<p style="color:var(--amber);font-weight:600">⏳ ${ungraded} 题题库答案待补，已保留作答但不计对错、不计入正确率与错题本</p>` : ""}
         <div class="mod-bars" style="text-align:left;margin-top:14px">${modRows}</div>
         ${paceHtml}
-        ${wrongIdx.length ? `<p style="color:var(--ink-2)">答错 ${wrongIdx.length} 道：${wrongIdx.map(i => `第 ${i + 1} 题`).join("、")}，已自动收入错题本</p>` : (unDone ? "" : `<p style="color:var(--bamboo)">全对，漂亮。</p>`)}
+        ${wrongIdx.length ? `<p style="color:var(--ink-2)">答错 ${wrongIdx.length} 道：${wrongIdx.map(i => `第 ${i + 1} 题`).join("、")}，已自动收入错题本</p>` : (unDone ? "" : ungraded ? `<p style="color:var(--bamboo)">已判分题目全对；待补题未计入。</p>` : `<p style="color:var(--bamboo)">全对，漂亮。</p>`)}
         <button class="btn btn-primary" id="rePaper">再组一卷</button>
         <button class="btn" id="backHome">回到今日</button>
       </div>
@@ -2911,7 +2923,7 @@ async function runPaper(ids, opt = {}) {
         ${docs.map((doc, i) => `
           <a class="doc-item exam-review-item" data-i="${i}" href="#/doc/${doc.id}/ai">
             <div class="doc-main">
-              <div class="doc-title">${answers[i] ? (answers[i].correct ? "✔" : "✘") : "○"} ${esc(doc.title)}</div>
+              <div class="doc-title">${answers[i] ? (answers[i].correct === true ? "✔" : answers[i].correct === false ? "✘" : "⏳") : "○"} ${esc(doc.title)}</div>
               <div class="doc-sub">${esc([doc.kaodian, doc.region + " " + doc.year].filter(Boolean).join(" · "))}</div>
             </div>
             <span class="doc-open-hint">查看解析 <span aria-hidden="true">→</span></span>
@@ -2936,7 +2948,8 @@ async function runPaper(ids, opt = {}) {
     // 3.3 分享/PK：记录本卷结果，供「分享这组题」与 onFinish 回调使用
     LAST_PAPER = {
       ids: docs.map(d => d.id), title: opt.title || "本次练习",
-      total: answers.length, ok, ms: totalMs,
+      // 未答仍按错计；只把“答案待补”的题从分母剔除。
+      total: answers.length - ungraded, ok, ms: totalMs,
     };
     if (opt.onFinish) {
       try { opt.onFinish({ ...LAST_PAPER }); }
@@ -5113,7 +5126,7 @@ async function renderHistory() {
   body.innerHTML = r.items.length ? r.items.map(it => `
     <div class="panel rise hist-item" data-id="${it.doc_id}" style="cursor:pointer;transition:transform .15s">
       <div style="display:flex;align-items:flex-start;gap:12px">
-        <span style="font-size:calc(20px * var(--fs));line-height:1">${it.correct ? '<span style="color:var(--bamboo)">✓</span>' : '<span style="color:var(--cinnabar)">✗</span>'}</span>
+        <span style="font-size:calc(20px * var(--fs));line-height:1">${it.correct === true ? '<span style="color:var(--bamboo)">✓</span>' : it.correct === false ? '<span style="color:var(--cinnabar)">✗</span>' : '<span style="color:var(--amber)">⏳</span>'}</span>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;margin-bottom:4px">${esc(it.title)}</div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:calc(12.5px * var(--fs));color:var(--ink-3)">
@@ -6024,7 +6037,7 @@ async function renderTimeAnalysis() {
           <a class="doc-item" data-id="${t.doc_id}" href="#/doc/${t.doc_id}">
             <div class="doc-main">
               <div class="doc-title">${i + 1}. ${esc(t.title)} ${t.slow ? "🐢" : ""}</div>
-              <div class="doc-sub">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))} · ${t.correct ? "答对" : "答错"}</div>
+              <div class="doc-sub">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))} · ${t.correct === null ? "待补" : t.correct ? "答对" : "答错"}</div>
             </div>
             <div class="doc-side"><span style="font-family:var(--mono);font-weight:700">${fmt(t.ms / 1000)}</span></div>
           </a>`).join("")}
@@ -6159,8 +6172,8 @@ async function renderReport() {
       const [stats, time] = await Promise.all([
         api("/api/stats"), api("/api/study-time"),
       ]);
-      const pct = stats.answers_total
-        ? Math.round(stats.answers_correct / stats.answers_total * 100) : 0;
+      const graded = stats.answers_graded ?? stats.answers_total;
+      const pct = graded ? Math.round(stats.answers_correct / graded * 100) : 0;
       const lines = [
         "上岸自习室 · 学习报告",
         `生成时间：${new Date().toLocaleString("zh-CN")}`,
@@ -6171,7 +6184,7 @@ async function renderReport() {
         `  申论批改：${d.grades.cur === null ? "—" : d.grades.cur + "%"}（本周 ${d.grades.n} 次）`,
         "",
         "【累计】",
-        `  累计作答：${stats.answers_total} 题 · 正确率 ${pct}%`,
+        `  累计作答：${stats.answers_total} 题（已判分 ${graded}） · 正确率 ${pct}%`,
         `  今日作答：${stats.today_answers} 题 · 对 ${stats.today_correct}`,
         `  连续学习：${stats.streak} 天`,
         `  待消灭错题：${stats.wrong_count} 题`,

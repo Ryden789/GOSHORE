@@ -214,18 +214,17 @@ def test_mobile_server_imports_and_registers_route():
 def test_desktop_route_and_nav_entry():
     js = _text(APP_JS)
     assert 'name === "xc-notes"' in js and "renderXcNotes" in js
-    html = _text(INDEX)
-    assert 'href="#/xc-notes"' in html, "桌面侧边栏没有入口"
-    # 入口要落在「复习巩固」分组里
-    group = html[html.index('data-group="fuxi"'):html.index('data-group="manage"')]
-    assert 'href="#/xc-notes"' in group, "入口应放在「复习巩固」分组"
+    layout = (ROOT / "static" / "shared" / "layout.js").read_text(encoding="utf-8")
+    assert '"route": "xc-notes"' in layout, "桌面侧边栏没有入口"
+    assert '"title": "行测速查"' in layout
 
 
 def test_mobile_route_title_and_hub_entry():
     js = _text(M_JS)
     assert '"xc-notes": renderXcNotes' in js, "移动端 ROUTES 未登记"
     assert '"xc-notes": "行测速查"' in js, "移动端缺页面标题（顶栏会显示路由名）"
-    assert '["xc-notes", "速", "行测速查"' in js, "移动端「全部功能」里没有入口"
+    layout = (ROOT / "static" / "shared" / "layout.js").read_text(encoding="utf-8")
+    assert '"route": "xc-notes"' in layout, "移动端「全部功能」里没有入口"
 
 
 def test_desktop_page_has_search_and_toc():

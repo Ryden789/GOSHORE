@@ -166,6 +166,8 @@ for (const [label, settle] of Object.entries(IMPLS)) {
   {
     const docs = dataAnalysisGroup();
     docs[0].data.options = [];                       // 没有任何选项
+    // 第 3 题有选项、但题库缺 correct 标记：同样必须判为未判分
+    docs[2].data.options = docs[2].data.options.map(({ label, text }) => ({ label, text }));
     const answers = cardOnly(["B", null, null, null, null]);
     answers[1] = { sel: "" };                        // 涂了空
     answers[2] = { sel: "A" };                       // 有选项但都不 correct
@@ -173,8 +175,10 @@ for (const [label, settle] of Object.entries(IMPLS)) {
     r.edge = st;
     eq(st.items.length, 2, `${label}·边界：空串不计入，应只落库 2 条`);
     eq(st.blankIdx, [1, 3, 4], `${label}·边界：空串与 undefined 都应计入未答`);
-    eq(st.items[0].correct, false, `${label}·边界：无选项的题应判为错而不是崩`);
-    eq(st.items[1].correct, false, `${label}·边界：无 correct 标记的题应判为错`);
+    eq(st.items[0].correct, null, `${label}·边界：无选项的题应判为未判分（null）而不是崩`);
+    eq(st.items[1].correct, null, `${label}·边界：无 correct 标记的题应判为未判分（null）`);
+    eq(st.ungradedIdx, [0, 2], `${label}·边界：缺答案题应进入 ungradedIdx`);
+    eq(st.judgedN, 0, `${label}·边界：缺答案题不计入 judgedN`);
     eq(st.ok, 0, `${label}·边界：不应有答对`);
   }
 

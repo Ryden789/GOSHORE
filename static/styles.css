@@ -612,6 +612,7 @@ input, select, textarea { font-family: var(--sans); }
 .paper-dot.cur { border-color: var(--cinnabar); color: var(--cinnabar); font-weight: 700; }
 .paper-dot.ok { background: var(--bamboo-soft); border-color: var(--bamboo); color: var(--bamboo); }
 .paper-dot.no { background: var(--cinnabar-soft); border-color: var(--cinnabar); color: var(--cinnabar); }
+.paper-dot.pend { background: var(--amber-soft); border-color: var(--amber); color: var(--amber); }
 
 /* ===== 标准化答题卡（考场模式 · 功能 2.4） ===== */
 .option.sel { border-color: var(--indigo); background: var(--indigo-tint); }

@@ -3,7 +3,9 @@
  * 考场模式不逐题判分：题目区的选择与答题卡「涂卡录入」都只是**录入答案**，
  * 交卷时按答题卡录入的答案一次性统一判分（资料分析材料读一次、答案最后一起涂）。
  * 入参 docs=[{id,data:{options:[{label,correct}]}}]，answers=[{sel,ms}|null]；
- * 返回 { items, ok, wrongIdx, blankIdx, judgedN }，并把 correct 写回 answers[i]。
+ * 返回 { items, ok, wrongIdx, blankIdx, ungradedIdx, judgedN }，并把 correct 写回
+ * answers[i]。correct 为三态：true/false/null；null 表示题库缺正确选项，
+ * 本题**不计分**，不能算错（否则正确率、错题本、掌握度都会被污染）。
  *
  * 原先 static/app.js 与 static/m/m.js 各有一份逐字节相同的 settleExam()；
  * 现在只在 /shared/settle.js 维护一份，两个页面在各自 app.js / m.js 之前加载。
@@ -12,17 +14,22 @@
  */
 
 function settleExam(docs, answers) {
-  const items = [], wrongIdx = [], blankIdx = [];
+  const items = [], wrongIdx = [], blankIdx = [], ungradedIdx = [];
   let ok = 0;
   docs.forEach((doc, i) => {
     const a = answers[i];
     if (!a || !a.sel) { blankIdx.push(i); return; }
     const correctObj = (doc.data.options || []).find(o => o.correct);
-    a.correct = correctObj ? a.sel === correctObj.label : false;
+    a.correct = correctObj ? a.sel === correctObj.label : null;
     items.push({ doc_id: doc.id, selected: a.sel, correct: a.correct, ms: a.ms || 0 });
-    if (a.correct) ok++; else wrongIdx.push(i);
+    if (a.correct === true) ok++;
+    else if (a.correct === false) wrongIdx.push(i);
+    else ungradedIdx.push(i);
   });
-  return { items, ok, wrongIdx, blankIdx, judgedN: items.length };
+  return {
+    items, ok, wrongIdx, blankIdx, ungradedIdx,
+    judgedN: items.length - ungradedIdx.length,
+  };
 }
 
 /* shared-settle:end */

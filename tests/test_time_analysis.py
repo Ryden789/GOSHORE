@@ -305,8 +305,9 @@ def test_route_and_nav_wired_both_ends():
     m = M_JS.read_text(encoding="utf-8")
     assert 'name === "time"' in a and "renderTimeAnalysis" in a
     assert "time: renderTimeAnalysis" in m
-    assert re.search(r'#/time\s*"?\s*data-route="time"', INDEX.read_text(encoding="utf-8"))
-    assert '["time", "时"' in m
+    layout = (ROOT / "static" / "shared" / "layout.js").read_text(encoding="utf-8")
+    assert '"route": "time"' in layout and '"title": "用时分析"' in layout
+    assert '["time", "时"' in m or '"route": "time"' in layout
 
 
 def test_cache_version_bumped():

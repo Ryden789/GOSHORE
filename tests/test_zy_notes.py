@@ -198,15 +198,17 @@ def test_mobile_server_imports_and_registers_route():
 def test_desktop_route_and_nav_entry():
     js = _text(APP_JS)
     assert 'name === "zy-notes"' in js and "renderZyNotes" in js
-    html = _text(INDEX)
-    assert 'href="#/zy-notes"' in html, "桌面侧边栏没有入口"
+    layout = (ROOT / "static" / "shared" / "layout.js").read_text(encoding="utf-8")
+    assert '"route": "zy-notes"' in layout, "桌面侧边栏没有入口"
+    assert '"title": "综应考点"' in layout
 
 
 def test_mobile_route_title_and_hub_entry():
     js = _text(M_JS)
     assert '"zy-notes": renderZyNotes' in js, "移动端 ROUTES 未登记"
     assert '"zy-notes": "综应考点"' in js, "移动端缺页面标题（顶栏会显示路由名）"
-    assert '["zy-notes", "识", "综应考点"' in js, "移动端「全部功能」里没有入口"
+    layout = (ROOT / "static" / "shared" / "layout.js").read_text(encoding="utf-8")
+    assert '"route": "zy-notes"' in layout, "移动端「全部功能」里没有入口"
 
 
 def test_both_frontends_have_search_and_expand():

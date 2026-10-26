@@ -403,11 +403,13 @@ def test_frontend_note_routes_wired():
     # 桌面：新增 #/notes 路由与导航
     assert 'name === "notes"' in app_src
     assert "async function renderNotes(" in app_src
-    assert 'href="#/notes"' in INDEX.read_text(encoding="utf-8")
-    # 移动：ROUTES 与 HUB 都有 notes
+    # 新版导航由 shared/layout.js 统一渲染，不再写死在 index.html
+    layout = (ROOT / "static" / "shared" / "layout.js").read_text(encoding="utf-8")
+    assert '"route": "notes"' in layout and '"title": "笔记"' in layout
+    # 移动：ROUTES 有 notes，HUB 由同一份 StudyLayout 生成
     assert "notes: renderNotes" in m_src
     assert "async function renderNotes(" in m_src
-    assert '["notes", "✎"' in m_src
+    assert '"route": "notes"' in layout
 
 
 def test_frontend_swipe_hooks_present():

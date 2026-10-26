@@ -263,9 +263,12 @@ def test_both_frontends_define_countdown_banner(request, src_fixture):
 def test_render_home_renders_countdown(request, src_fixture):
     """首页必须真的渲染横幅，且用的是 stats 带回来的 exam_date / days_left。"""
     from jsutil import fn_src
-    body = fn_src(request.getfixturevalue(src_fixture), "renderHome")
+    # 新版 renderHome 只做首页布局；桌面真实统计在 renderOverview，
+    # 移动端在 renderLearningSummary，倒计时必须仍由真实数据渲染。
+    fn = "renderOverview" if src_fixture == "app_src" else "renderLearningSummary"
+    body = fn_src(request.getfixturevalue(src_fixture), fn)
     assert "countdownBanner(s.exam_date, s.days_left)" in body, \
-        "renderHome 未用 stats 的 exam_date / days_left 渲染倒计时"
+        f"{fn} 未用 stats 的 exam_date / days_left 渲染倒计时"
 
 
 @pytest.mark.parametrize("src_fixture", ["app_src", "m_src"])

@@ -362,7 +362,8 @@ def test_home_and_plan_sync_plan_state(request, src_fixture):
     """首页/计划页都要把今日计划完成度同步给提醒（planOnly 靠它判断）。"""
     from jsutil import fn_src
     src = request.getfixturevalue(src_fixture)
-    for fn in ("renderHome", "renderPlan"):
+    home_fn = "renderOverview" if src_fixture == "app_src" else "renderLearningSummary"
+    for fn in (home_fn, "renderPlan"):
         body = fn_src(src, fn)
         assert "syncPlanState(" in body, f"{fn} 未同步今日计划完成度"
 
@@ -391,7 +392,7 @@ def test_legacy_remind_time_key_removed(request, src_fixture):
 def test_home_banner_reads_settings_not_localstorage(app_src):
     """首页提醒条要按设置里的开关/时间渲染，而不是本地随便一个键。"""
     from jsutil import fn_src
-    body = fn_src(app_src, "renderHome")
+    body = fn_src(app_src, "renderOverview")
     assert "reminderPref()" in body, "首页提醒条未读取提醒偏好"
     assert "rp.on" in body and "rp.time" in body, "首页提醒条未判断开关与时间"
 

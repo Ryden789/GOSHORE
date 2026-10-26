@@ -56,7 +56,8 @@ def test_door_business_rules_unchanged():
     m = re.search(r"const DAILY_LOCKED = new Set\(\[(.*?)\]\);", src, re.S)
     assert m, "找不到 DAILY_LOCKED"
     locked = re.findall(r'"([a-z-]+)"', m.group(1))
-    assert locked == ["practice", "paper", "logic", "formula", "speed", "wordfill",
+    # UI 改版新增 training 练习中心，同样必须先过每日一题
+    assert locked == ["training", "practice", "paper", "logic", "formula", "speed", "wordfill",
                       "cards", "review", "wrong", "marks", "exam", "shizheng"]
     door = fn_src(src, "dailyDoorPrompt")
     assert 'const r = await api("/api/paper", { n: 1 });' in door

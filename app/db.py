@@ -1602,8 +1602,15 @@ def facets() -> dict:
     return out
 
 
-def add_answer(doc_id: int, selected: str, correct: bool, ms: int,
+def add_answer(doc_id: int, selected: str, correct: bool | None, ms: int,
                guessed: bool = False) -> dict:
+    """写入一次作答。
+
+    correct 为三态：True/False 正常判分；None 表示题库缺正确选项，作答记录
+    保留但不参与判分、错题本、掌握度与复习排期。SQLite 里以 NULL 落库，
+    现有 SUM(correct) / correct=0/1 查询天然把它排除在“对/错”之外。
+    """
+    graded = correct is not None
     conn = connect()
     prev = conn.execute(
         """SELECT MAX(CASE WHEN correct=0 THEN id END) lw,
@@ -1613,17 +1620,19 @@ def add_answer(doc_id: int, selected: str, correct: bool, ms: int,
     conn.execute(
         """INSERT INTO answers(doc_id,selected,correct,ms,created_at,guessed)
            VALUES(?,?,?,?,?,?)""",
-        (doc_id, selected, int(correct), ms, time.time(), int(guessed)),
+        (doc_id, selected, int(correct) if graded else None,
+         ms, time.time(), int(guessed)),
     )
-    # F-4 此前最后一次是错的，本次答对 → 错题歼灭
-    annihilated = bool(correct and (prev["lw"] or 0) > (prev["lr"] or 0))
+    # F-4 此前最后一次是错的，本次答对 → 错题歼灭；未判分不算“答对”
+    annihilated = bool(graded and correct and (prev["lw"] or 0) > (prev["lr"] or 0))
     conn.commit()
     conn.close()
-    # 蒙对也按"未掌握"处理：回第 1 档复习
-    _schedule_review(doc_id, bool(correct) and not bool(guessed))
-    # 自适应推题：更新该题掌握度（蒙对按答错处理，与复习档位口径一致）
-    update_mastery(doc_id, bool(correct) and not bool(guessed))
-    return {"annihilated": annihilated}
+    if graded:
+        # 蒙对也按"未掌握"处理：回第 1 档复习
+        _schedule_review(doc_id, bool(correct) and not bool(guessed))
+        # 自适应推题：更新该题掌握度（蒙对按答错处理，与复习档位口径一致）
+        update_mastery(doc_id, bool(correct) and not bool(guessed))
+    return {"annihilated": annihilated, "graded": graded}
 
 
 def _schedule_review(doc_id: int, correct: bool) -> None:
@@ -2364,7 +2373,8 @@ def _kaodian_mastery_all(module: str = "") -> list[dict]:
     stat: dict[tuple, dict] = {}
     for r in conn.execute(
         f"""SELECT d.module, d.kaodian,
-                   COUNT(*) n, SUM(CASE WHEN a.correct=1 THEN 1 ELSE 0 END) ok,
+                   SUM(CASE WHEN a.correct IS NOT NULL THEN 1 ELSE 0 END) n,
+                   SUM(CASE WHEN a.correct=1 THEN 1 ELSE 0 END) ok,
                    MAX(a.created_at) last_at
             FROM answers a JOIN documents d ON d.id=a.doc_id
             WHERE d.kind='真题' AND d.kaodian!='' {mod_where}
@@ -2700,8 +2710,11 @@ def stats_overview(goal_questions: int = 0, goal_minutes: int = 0) -> dict:
 
     ans_total = conn.execute("SELECT COUNT(*) c FROM answers").fetchone()["c"]
     ans_correct = conn.execute("SELECT COUNT(*) c FROM answers WHERE correct=1").fetchone()["c"]
+    ans_graded = conn.execute(
+        "SELECT COUNT(*) c FROM answers WHERE correct IS NOT NULL").fetchone()["c"]
     today_ans = conn.execute(
-        "SELECT COUNT(*) c, SUM(correct=1) ok FROM answers WHERE created_at>=?",
+        "SELECT COUNT(*) c, SUM(correct IS NOT NULL) graded, SUM(correct=1) ok "
+        "FROM answers WHERE created_at>=?",
         (day_start,)).fetchone()
     today_guessed = conn.execute(
         "SELECT COUNT(*) c FROM answers WHERE created_at>=? AND guessed=1",
@@ -2799,7 +2812,7 @@ def stats_overview(goal_questions: int = 0, goal_minutes: int = 0) -> dict:
     # 模块正确率
     mod_stats = []
     for r in conn.execute(
-        """SELECT d.module, COUNT(*) n, SUM(a.correct) ok
+        """SELECT d.module, SUM(a.correct IS NOT NULL) n, SUM(a.correct=1) ok
            FROM answers a JOIN documents d ON d.id=a.doc_id
            WHERE d.module!='' GROUP BY d.module HAVING n>=3 ORDER BY n DESC"""
     ):
@@ -2845,8 +2858,10 @@ def stats_overview(goal_questions: int = 0, goal_minutes: int = 0) -> dict:
     return {
         "doc_counts": doc_counts,
         "answers_total": ans_total,
+        "answers_graded": ans_graded,
         "answers_correct": ans_correct,
         "today_answers": today_ans["c"] or 0,
+        "today_graded": today_ans["graded"] or 0,
         "today_correct": today_ans["ok"] or 0,
         "today_guessed": today_guessed or 0,
         "today_focus": today_focus,
@@ -2892,7 +2907,8 @@ def answer_history(limit: int = 100, offset: int = 0) -> dict:
             "year": r["year"],
             "exam": r["exam"],
             "selected": r["selected"],
-            "correct": bool(r["correct"]),
+            # 保留三态：NULL = 题库缺答案，前端显示“待补”而不是“答错”
+            "correct": None if r["correct"] is None else bool(r["correct"]),
             "ms": r["ms"],
             "created_at": r["created_at"],
         })
@@ -2919,16 +2935,18 @@ def _period_module_stats(conn, start: float, end: float) -> tuple[list[dict], se
     mods: dict[str, dict] = {}
     days = set()
     for r in rows:
-        m = mods.setdefault(r["module"], {"n": 0, "ok": 0, "ms": 0})
+        m = mods.setdefault(r["module"], {"n": 0, "graded": 0, "ok": 0, "ms": 0})
         m["n"] += 1
-        m["ok"] += r["correct"] or 0
+        if r["correct"] is not None:
+            m["graded"] += 1
+            m["ok"] += 1 if r["correct"] else 0
         m["ms"] += r["ms"] or 0
         days.add(time.strftime("%Y-%m-%d", time.localtime(r["created_at"])))
     out = []
     for m, d in mods.items():
         out.append({
             "module": m, "n": d["n"], "ok": d["ok"],
-            "rate": round(d["ok"] / d["n"] * 100),
+            "rate": round(d["ok"] / d["graded"] * 100) if d["graded"] else 0,
             "avg_s": round(d["ms"] / d["n"] / 1000, 1),
             "min": round(d["ms"] / 60000, 1),
         })
@@ -2965,11 +2983,12 @@ def weekly_report() -> dict:
     # 薄弱考点 top5（本周样本≥2，正确率升序）
     weak = []
     rows = conn.execute(
-        """SELECT d.module, d.kaodian, COUNT(*) n, SUM(a.correct) ok
+        """SELECT d.module, d.kaodian,
+                  SUM(a.correct IS NOT NULL) n, SUM(a.correct) ok
            FROM answers a JOIN documents d ON d.id=a.doc_id
            WHERE a.created_at>=? AND d.kaodian!=''
            GROUP BY d.kaodian HAVING n>=2
-           ORDER BY SUM(a.correct)*1.0/COUNT(*) LIMIT 5""",
+           ORDER BY SUM(a.correct)*1.0/SUM(a.correct IS NOT NULL) LIMIT 5""",
         (week_start,)).fetchall()
     for r in rows:
         weak.append({"module": r["module"], "kaodian": r["kaodian"],
@@ -4071,7 +4090,7 @@ def ability_radar() -> list[dict]:
     """
     conn = connect()
     rows = conn.execute(
-        """SELECT d.module m, COUNT(*) n,
+        """SELECT d.module m, SUM(a.correct IS NOT NULL) n,
                   SUM(CASE WHEN a.correct=1 THEN 1 ELSE 0 END) ok
            FROM answers a JOIN documents d ON d.id=a.doc_id
            WHERE d.module!='' GROUP BY d.module""").fetchall()
