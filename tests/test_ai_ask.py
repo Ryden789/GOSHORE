@@ -155,3 +155,13 @@ def test_sample_apk_build_switches_to_sample_assets_and_arm64():
     assert "mobile_assets_sample" in script
     assert "GOSHORE_ASSETS" in gradle
     assert 'abiFilters "arm64-v8a"' in gradle
+
+def test_ai_errors_are_actionable_in_both_frontends():
+    root = Path(__file__).resolve().parent.parent
+    core = (root / "static" / "shared" / "core.js").read_text(encoding="utf-8")
+    desk = (root / "static" / "app.js").read_text(encoding="utf-8")
+    mob = (root / "static" / "m" / "m.js").read_text(encoding="utf-8")
+    assert "function aiErrorHint(" in core
+    assert "API Key 无效或未配置" in core
+    assert "aiErrorHint(e.message)" in desk and "aiErrorHint(e.message)" in mob
+    assert 'href="#/settings"' in desk and 'href="#/settings"' in mob

@@ -220,6 +220,42 @@ def _mobile_backup_export(include_key: bool) -> dict:
             "size": out.stat().st_size, "accounts": len(meta["accounts"])}
 
 
+def _mobile_backup_status() -> dict:
+    """备份诊断：各账号个人库体积、作答数、最近一次导出时间。"""
+    import datetime
+    total_bytes = answers = notes = 0
+    integrity = "ok"
+    for p in _users_data_dbs():
+        total_bytes += p.stat().st_size
+        try:
+            c = sqlite3.connect(str(p), timeout=10)
+            try:
+                answers += c.execute("SELECT COUNT(*) FROM answers").fetchone()[0]
+                try:
+                    notes += c.execute("SELECT COUNT(*) FROM doc_notes").fetchone()[0]
+                except sqlite3.Error:
+                    pass
+            finally:
+                c.close()
+        except sqlite3.Error:
+            integrity = "error"
+    exports = sorted((_USERS_DIR / "exports").glob("goshore_backup_*.zip"),
+                     key=lambda p: p.stat().st_mtime)
+    last = ""
+    if exports:
+        last = datetime.datetime.fromtimestamp(
+            exports[-1].stat().st_mtime).isoformat(timespec="seconds")
+    return {
+        "ok": integrity == "ok",
+        "integrity": integrity,
+        "user_bytes": total_bytes,
+        "answers": answers,
+        "notes": notes,
+        "accounts": len(accounts.profiles()),
+        "last_backup_at": last,
+    }
+
+
 def _mobile_backup_import(data_b64: str) -> dict:
     """恢复备份：整包格式（manifest.json/accounts.db）优先；兼容旧版单账号包。"""
     import base64, io, zipfile
@@ -1185,6 +1221,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(_mobile_update_check())
             elif path == "/api/backup/download":
                 self._serve_backup(q("name"))
+            elif path == "/api/backup/status":
+                self._json(_mobile_backup_status())
             elif path == "/img":
                 self._serve_img(q("path"))
             else:

@@ -1296,24 +1296,26 @@ function setupCard(s, cfg) {
   if (Pref.get("setup_hide", "") === todayStr()) return "";
   const docs = Object.values(s.doc_counts || {}).reduce((a, b) => a + b, 0);
   const aiReady = !!(cfg && cfg.deepseek_api_key);
-  const items = [];
-  if (docs === 0) items.push({
-    icon: "📚", title: "题库还没有内容",
-    desc: "本应用不自带题库：准备你自己的题源后到「导入」页导入即可练习。",
-    href: "#/import", label: "去导入",
-  });
-  if (!aiReady) items.push({
-    icon: "🔑", title: "AI 未配置（可选）",
-    desc: "AI 答疑 / 批改需要 DeepSeek Key；不配置也能正常刷题、复习。",
-    href: "#/settings", label: "去配置",
-  });
-  if (!items.length) return "";
+  const graded = s.answers_graded ?? s.answers_total ?? 0;
+  if (docs > 0 && graded > 0 && aiReady) return "";
+  const canPractice = docs > 0;
+  const steps = [
+    { n: 1, done: docs > 0, title: "题库",
+      desc: docs > 0 ? `已就绪（${docs} 篇）` : "示例库已垫底，也可以导入自己的题源。",
+      href: docs > 0 ? "#/search" : "#/import", label: docs > 0 ? "查看题库" : "去导入" },
+    { n: 2, done: graded > 0, title: "第一组练习",
+      desc: graded > 0 ? `已判分 ${graded} 次，继续保持。` : "先做 10 题，不用先配 AI。",
+      href: canPractice ? "#/paper" : "#/import", label: graded > 0 ? "继续练习" : canPractice ? "开始练习" : "先导入" },
+    { n: 3, done: aiReady, title: "复盘与 AI（可选）",
+      desc: aiReady ? "AI 已配置，可以去看学习报告。" : "AI 答疑/批改需要 DeepSeek Key；不配置也能刷题。",
+      href: aiReady ? "#/reports" : "#/settings", label: aiReady ? "看报告" : "去配置" },
+  ];
   return `<div class="card setup-card" id="setupCard">
-    <div class="setup-head"><b>开始之前</b>
+    <div class="setup-head"><b>开始使用 · 3 步</b>
       <button class="setup-x" id="setupX" type="button" aria-label="关闭提示">✕</button></div>
-    ${items.map(it => `<div class="setup-item">
-      <span class="setup-ico" aria-hidden="true">${it.icon}</span>
-      <div class="setup-tx"><b>${esc(it.title)}</b><p>${esc(it.desc)}</p></div>
+    ${steps.map(it => `<div class="setup-item">
+      <span class="setup-ico" aria-hidden="true">${it.done ? "✓" : it.n}</span>
+      <div class="setup-tx"><b>${esc(it.title)}${it.done ? " · 已完成" : ""}</b><p>${esc(it.desc)}</p></div>
       <a class="btn btn-sm btn-primary" href="${it.href}">${esc(it.label)}</a>
     </div>`).join("")}
   </div>`;
@@ -3878,6 +3880,7 @@ async function renderSettings() {
       <button class="btn btn-block" id="bkImport">选择备份文件恢复</button>
       <input type="file" id="bkFile" accept=".zip,application/zip" hidden/>
       <div class="set-status" id="bkStatus"></div>
+      <div class="muted" id="bkDiag">检查备份状态…</div>
       <div class="muted">备份含本机全部账号与做题数据，可发微信/存网盘；恢复后账号密码原样可用</div>
     </div>
     <div class="card" id="sec-m-sync">
@@ -4230,6 +4233,14 @@ async function renderSettings() {
     el.classList.add("ok");
     route();  // 用恢复后的数据重渲染
   };
+
+  const bkDiag = $("#bkDiag");
+  api("/api/backup/status").then(r => {
+    if (!r || !r.ok) { bkDiag.textContent = "备份自检失败，请先导出并检查数据文件"; return; }
+    const mb = (r.user_bytes / 1024 / 1024).toFixed(1);
+    const when = r.last_backup_at ? r.last_backup_at.replace("T", " ").slice(0, 16) : "还没有导出过";
+    bkDiag.textContent = `个人库 ${mb} MB · ${r.answers} 条作答 · ${r.notes} 条笔记 · 上次导出：${when}`;
+  }).catch(() => { bkDiag.textContent = "备份自检失败，请稍后重试"; });
 
   /* ---- 题库更新：检查 GitHub Releases ---- */
   $("#updCheck").onclick = async () => {
@@ -6034,14 +6045,15 @@ async function renderAiAsk() {
             full += ev.text;
             b.innerHTML = md(full);
           } else if (ev.type === "error") {
-            full += `\n\n⚠ ${ev.text}`;
+            full += `\n\n⚠ ${aiErrorHint(ev.text)}`;
             b.innerHTML = md(full);
           }
         }
       }
     } catch (e) {
-      full += `\n\n⚠ 请求失败：${esc(e.message)}`;
-      b.innerHTML = md(full);
+      full += `\n\n⚠ ${aiErrorHint(e.message)}`;
+      b.innerHTML = md(full) +
+        `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
     }
     list.scrollTop = list.scrollHeight;
     const savedContent = imgs.length ? `[图片] ${ask}` : ask;

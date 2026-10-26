@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import access, ai, db, essay_rubric, exam_bank, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision, sync_webdav
-from .config import (STATIC_DIR, DATA_DIR, DB_PATH, SETTINGS_PATH, BASE_DIR, REMINDER_KEYS,
+from .config import (STATIC_DIR, DATA_DIR, DB_PATH, CONTENT_DB_PATH, SETTINGS_PATH, BASE_DIR, REMINDER_KEYS,
                      GOAL_KEYS, load_settings, reminder_patch, goal_patch,
                      save_settings, SYNC_KEYS, sync_patch, SYNC_REMOTE_DEFAULT)
 # 可打印导出页（G5）：与手机端 goshor_server.py 共用同一份拼装逻辑。
@@ -1999,6 +1999,16 @@ def _replace_db_file(src) -> None:
         src_conn.close()
 
 
+def _sha256_file(path) -> str:
+    """分块计算文件 SHA256，避免把几百 MB 的库整个读进内存。"""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fp:
+        for chunk in iter(lambda: fp.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _prune_content_tables_from_user_db() -> None:
     """split 模式下把「旧整库备份」带进 user.db 的题库表清掉。
 
@@ -2031,6 +2041,47 @@ def _prune_content_tables_from_user_db() -> None:
         pass
     finally:
         conn.close()
+
+
+@app.get("/api/backup/status")
+def api_backup_status():
+    """备份诊断：当前数据量、上次导出时间与个人库完整性。
+
+    只读接口，不生成备份、不修改任何数据。前端用它告诉用户
+    「现在有多少数据可备份、上次备份是什么时候」。
+    """
+    import sqlite3
+
+    s = load_settings()
+    user_path = Path(_user_db_path())
+    content_path = Path(CONTENT_DB_PATH) if db.split_enabled() else None
+    answers = notes = 0
+    integrity = "ok"
+    try:
+        conn = sqlite3.connect(user_path, timeout=10)
+        try:
+            answers = conn.execute("SELECT COUNT(*) FROM answers").fetchone()[0]
+            try:
+                notes = conn.execute("SELECT COUNT(*) FROM doc_notes").fetchone()[0]
+            except sqlite3.Error:
+                notes = 0
+            check = conn.execute("PRAGMA quick_check(1)").fetchone()
+            integrity = "ok" if check and check[0] == "ok" else "error"
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        integrity = "error"
+    return {
+        "ok": integrity == "ok",
+        "integrity": integrity,
+        "split": bool(db.split_enabled()),
+        "data_dir": str(DATA_DIR),
+        "content_bytes": content_path.stat().st_size if content_path and content_path.exists() else 0,
+        "user_bytes": user_path.stat().st_size if user_path.exists() else 0,
+        "answers": answers,
+        "notes": notes,
+        "last_backup_at": str(s.get("last_backup_at") or ""),
+    }
 
 
 @app.get("/api/backup/export")
@@ -2069,6 +2120,15 @@ def api_backup_export():
                              compresslevel=1) as z:
             if snap.exists():
                 z.write(snap, "goshor.db")
+                # 清单让导入端能发现「传输损坏/半截包」，旧版无清单包仍兼容。
+                z.writestr("manifest.json", json.dumps({
+                    "format": 1,
+                    "app": "goshore",
+                    "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "db_bytes": snap.stat().st_size,
+                    "db_sha256": _sha256_file(snap),
+                    "split": bool(db.split_enabled()),
+                }, ensure_ascii=False, indent=2))
             if SETTINGS_PATH.exists():
                 z.write(SETTINGS_PATH, "settings.json")
             eq = DATA_DIR / "essay_questions.json"
@@ -2079,6 +2139,10 @@ def api_backup_export():
         raise
 
     name = f"goshore_backup_{datetime.datetime.now():%Y%m%d_%H%M}.zip"
+    try:
+        save_settings({"last_backup_at": datetime.datetime.now().isoformat(timespec="seconds")})
+    except Exception:
+        pass
     return FileResponse(
         zpath, media_type="application/zip", filename=name,
         background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True))
@@ -2113,6 +2177,24 @@ async def api_backup_import(file: UploadFile):
                     chk.close()
                 except Exception:
                     return {"ok": False, "error": "goshor.db 校验失败"}
+                verified = False
+                if "manifest.json" in names:
+                    try:
+                        manifest = json.loads(z.read("manifest.json").decode("utf-8"))
+                    except Exception:
+                        return {"ok": False, "error": "备份清单损坏"}
+                    try:
+                        fmt = int(manifest.get("format") or 1)
+                    except (TypeError, ValueError):
+                        return {"ok": False, "error": "备份清单格式不支持"}
+                    if fmt > 1:
+                        return {"ok": False,
+                                "error": "备份包来自更新版本，请先升级 GOSHORE"}
+                    expected = str(manifest.get("db_sha256") or "")
+                    if expected and _sha256_file(tmp_db) != expected:
+                        return {"ok": False,
+                                "error": "备份包校验失败：数据库与清单不一致，文件可能损坏"}
+                    verified = bool(expected)
                 _replace_db_file(tmp_db)
                 ok_files.append("goshor.db")
                 if db.split_enabled():
@@ -2126,7 +2208,8 @@ async def api_backup_import(file: UploadFile):
                     shutil.copy2(Path(td) / "essay_questions.json",
                                  DATA_DIR / "essay_questions.json")
                     ok_files.append("essay_questions.json")
-        return {"ok": True, "restored": ok_files, "note": "请重启服务使恢复生效"}
+        return {"ok": True, "restored": ok_files, "verified": verified,
+                "note": "请重启服务使恢复生效"}
     except zipfile.BadZipFile:
         return {"ok": False, "error": "不是合法的 zip 备份包"}
 

@@ -268,27 +268,31 @@ function setupPanel(s, cfg) {
   if (Pref.get("setup_hide", "") === localDay()) return "";
   const docs = Object.values(s.doc_counts || {}).reduce((a, b) => a + b, 0);
   const aiReady = !!(cfg && cfg.deepseek_api_key);
-  const items = [];
-  if (docs === 0) items.push({
-    icon: "📚", title: "题库还没有内容",
-    desc: "本应用不自带题库：请准备你自己的题源（真题 / 考点 / 材料），到「导入」页导入后即可开始练习。",
-    href: "#/import", label: "去导入题库",
-  });
-  if (!aiReady) items.push({
-    icon: "🔑", title: "AI 能力未配置（可选）",
-    desc: "AI 答疑 / 批改 / 命题需要 DeepSeek API Key；不配置也能正常刷题、复习、看统计。",
-    href: "#/settings", label: "去配置 Key",
-  });
-  if (!items.length) return "";
+  const graded = s.answers_graded ?? s.answers_total ?? 0;
+  // 首次使用只给 3 步，不铺功能清单：题库 → 第一组练习 → 复盘/AI。
+  // 三步都完成就自动消失；AI 是可选步骤，不配置也能刷题、复习。
+  if (docs > 0 && graded > 0 && aiReady) return "";
+  const canPractice = docs > 0;
+  const steps = [
+    { n: 1, done: docs > 0, title: "题库",
+      desc: docs > 0 ? `已就绪（${docs} 篇）` : "本应用不自带全量题库；示例库已垫底，也可以导入自己的题源。",
+      href: docs > 0 ? "#/search" : "#/import", label: docs > 0 ? "查看题库" : "去导入题库" },
+    { n: 2, done: graded > 0, title: "第一组练习",
+      desc: graded > 0 ? `已判分 ${graded} 次，继续保持。` : "先做 10 题，不用先配 AI；做完就能看解析、错题和报告。",
+      href: canPractice ? "#/paper" : "#/import", label: graded > 0 ? "继续练习" : canPractice ? "开始练习" : "先导入题库" },
+    { n: 3, done: aiReady, title: "复盘与 AI（可选）",
+      desc: aiReady ? "AI 已配置，可以去学习报告看薄弱点。" : "AI 答疑/批改需要 DeepSeek Key；不配置也能正常刷题、复习。",
+      href: aiReady ? "#/reports" : "#/settings", label: aiReady ? "看学习报告" : "配置 Key" },
+  ];
   return `<div class="panel setup-panel rise" id="setupPanel">
     <div class="setup-head">
-      <h3>开始之前</h3>
+      <h3>开始使用 · 3 步</h3>
       <button class="setup-x" id="setupX" type="button" aria-label="关闭提示" title="关闭提示">✕</button>
     </div>
-    <div class="setup-list">${items.map(it => `
+    <div class="setup-list">${steps.map(it => `
       <div class="setup-item">
-        <span class="setup-ico" aria-hidden="true">${it.icon}</span>
-        <div class="setup-tx"><b>${esc(it.title)}</b><p>${esc(it.desc)}</p></div>
+        <span class="setup-ico" aria-hidden="true">${it.done ? "✓" : it.n}</span>
+        <div class="setup-tx"><b>${esc(it.title)}${it.done ? " · 已完成" : ""}</b><p>${esc(it.desc)}</p></div>
         <a class="btn btn-sm btn-primary" href="${it.href}">${esc(it.label)}</a>
       </div>`).join("")}</div>
   </div>`;
@@ -6434,14 +6438,15 @@ async function renderAiAsk() {
             b.innerHTML = md(full);
             b.classList.add("cursor-blink");
           } else if (ev.type === "error") {
-            full += `\n\n**⚠ ${ev.text}**`;
+            full += `\n\n**⚠ ${aiErrorHint(ev.text)}**`;
             b.innerHTML = md(full);
           }
         }
       }
     } catch (e) {
-      full += `\n\n**⚠ 请求失败：${esc(e.message)}**`;
-      b.innerHTML = md(full);
+      full += `\n\n**⚠ ${aiErrorHint(e.message)}**`;
+      b.innerHTML = md(full) +
+        `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
     }
     b.classList.remove("cursor-blink");
     list.scrollTop = list.scrollHeight;
