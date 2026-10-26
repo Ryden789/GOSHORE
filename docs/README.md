@@ -66,5 +66,5 @@
 ## 当前基线（只作索引，不替代交接文档）
 
 - pytest **1007 passed**；16 个静态校验器 EXIT=0；Playwright E2E **79/79**；AI 离线评测 **33/33，100.00**（2026-10-26 实测）。
-- 最新 Release：[`v2026.10.26`](https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.26)，附件为桌面 exe 与 `content-sample.db`，不含 APK。
+- 最新 Release：[`v2026.10.27`](https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.27)，附件为桌面 exe、`content-sample.db` 与示例 APK `goshor-sample-20261026.apk`。
 - 代码规模与语言占比：以[`软件介绍报告.md`](05-宣传/软件介绍报告.md)第 5.3 节为准；本索引不重复行数，避免口径漂移。

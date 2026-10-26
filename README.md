@@ -4,7 +4,7 @@
 
 - 纯本地运行，学习记录不上传第三方（多设备同步为**端到端加密**的可选功能，见下）
 - 桌面端 `http://127.0.0.1:8765`；手机访问需显式 `--lan` 开启，并用启动日志里的**访问令牌**登录
-- Android 源码保留；公开示例 APK 为 `dist/goshor-sample-20261026.apk`（约 32 MB，release 签名，仅 arm64 / 示例题库），Release **不附带** APK
+- Android 源码保留；公开示例 APK `goshor-sample-20261026.apk`（约 32 MB，release 签名，仅 arm64 / 示例题库）已随 [v2026.10.27 Release](https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.27) 分发
 
 ## 功能特性
 
@@ -138,7 +138,7 @@ HttpOnly Cookie（30 天），之后直接访问 `http://<电脑IP>:8765/m/` 即
 不想装 Python、也不想开浏览器，可以直接下载 Release 里的 `GOSHORE-desktop.exe`（70.4 MB），
 或使用本机打包的 `dist\GOSHORE上岸工作台.exe`：
 
-> 下载页：<https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.26>
+> 下载页：<https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.27>
 > 早期提交与历史版本：[Release 历史与推送顺序](docs/03-开发/2026-10-21-Release%20历史与推送顺序.md)
 > 同时附带 `content-sample.db`，可手动放进数据目录作为题库（默认 `%LOCALAPPDATA%\GOSHORE\data\`；若 exe 旁边已有 `data\`，则是该便携目录）。
 
@@ -184,10 +184,11 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 
 ### 安卓 APP（源码保留，需自行构建）
 
-- **公开示例 APK**：`dist/goshor-sample-20261026.apk`（31,895,201 B，SHA256
+- **公开示例 APK**：`goshor-sample-20261026.apk`（31,895,201 B，SHA256
   `9AB6056D…15550`，versionCode 4 / versionName 1.3，release v2/v3 签名，仅 arm64）。
   它只带 `assets/content-sample.db`（438 篇，其中 240 道精选题）与 8.3 MB payload，
-  安装即用，不再内置 23,491 篇全量题库；桌面 Release 仍不附带 APK。
+  安装即用，不再内置 23,491 篇全量题库；已随 [v2026.10.27 Release](https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.27) 分发，
+  本地副本仍为 `dist/goshor-sample-20261026.apk`。
 - **完整本地包**：不对外分发。构建时 `python scripts/build_mobile_assets.py`
   生成完整资产，再用默认 `GOSHORE_ASSETS` 构建；旧 300 MB debug 包已归档到
   `.tools/apk-archive/`，不放在 `dist/`。公开包构建与签名命令见
