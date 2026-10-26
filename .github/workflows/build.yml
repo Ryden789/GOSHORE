@@ -77,26 +77,11 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: 移动端 E2E（仓库示例库，79 项断言）
         run: |
-          # 与 pytest 作业同样的理由：日志下载要仓库写权限，注解在公开仓库可直接读。
-          set +e
-          python scripts/e2e_mobile.py > /tmp/e2e.log 2>&1
-          rc=$?
-          set -e
-          cat /tmp/e2e.log
-          if [ "$rc" -ne 0 ]; then
-          python - <<'PY'
-          from pathlib import Path
-          p = Path("/tmp/e2e.log")
-          text = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
-          lines = [l.rstrip() for l in text.splitlines() if l.strip()]
-          picked = [l for l in lines if l.startswith("[FAIL]")]
-          if not picked:
-              picked = lines[-25:]
-          for l in picked[:10]:
-              print("::error::" + l[:900])
-          PY
-          fi
-          exit "$rc"
+          # 失败自动重试一次：这套 E2E 在 CI 上偶发 20s 超时（340a285 这种纯文档提交
+          # 也红过）。重试逻辑在 scripts/ci_e2e_retry.py（本机没有 bash，放 Python 里
+          # 才能本地自检）；两次都挂仍然红，并把 [FAIL] 行提升为注解——作业日志下载
+          # 需要仓库写权限，注解在公开仓库的提交页直接可读。
+          python scripts/ci_e2e_retry.py
       - name: AI 输出 golden 评测
         run: python scripts/eval_ai.py --min-score 95
       - name: 示例库内容规则（严重问题即失败）
