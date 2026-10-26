@@ -3869,6 +3869,7 @@ async function renderSettings() {
       <button class="btn btn-block" id="bkImport">选择备份文件恢复</button>
       <input type="file" id="bkFile" accept=".zip,application/zip" hidden/>
       <div class="set-status" id="bkStatus"></div>
+      <div class="muted" id="bkDiag">检查备份状态…</div>
       <div class="muted">备份含本机全部账号与做题数据，可发微信/存网盘；恢复后账号密码原样可用</div>
     </div>
     <div class="card" id="sec-m-sync">
@@ -4221,6 +4222,14 @@ async function renderSettings() {
     el.classList.add("ok");
     route();  // 用恢复后的数据重渲染
   };
+
+  const bkDiag = $("#bkDiag");
+  api("/api/backup/status").then(r => {
+    if (!r || !r.ok) { bkDiag.textContent = "备份自检失败，请先导出并检查数据文件"; return; }
+    const mb = (r.user_bytes / 1024 / 1024).toFixed(1);
+    const when = r.last_backup_at ? r.last_backup_at.replace("T", " ").slice(0, 16) : "还没有导出过";
+    bkDiag.textContent = `个人库 ${mb} MB · ${r.answers} 条作答 · ${r.notes} 条笔记 · 上次导出：${when}`;
+  }).catch(() => { bkDiag.textContent = "备份自检失败，请稍后重试"; });
 
   /* ---- 题库更新：检查 GitHub Releases ---- */
   $("#updCheck").onclick = async () => {
