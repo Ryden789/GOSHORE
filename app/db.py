@@ -187,6 +187,25 @@ CREATE TABLE IF NOT EXISTS essay_grades (
     created_at REAL
 );
 
+-- 申论/综应「薄弱采分点」复习队列（错因归因 + 艾宾浩斯排期）。
+-- 为什么不复用 review_plan / wrong_reasons：那两张表的 doc_id 是指向 documents
+-- （行测题库）的整数主键，而申论得分点没有对应的 documents 行，硬塞会把
+-- due_reviews() 的 JOIN documents 打空、也会污染行测错题本。这里按
+-- (category, point_name) 去重，语义上等价于「同一考点反复错」。
+CREATE TABLE IF NOT EXISTS essay_weak_points (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,
+    point_name TEXT NOT NULL,
+    miss_count INTEGER DEFAULT 0,
+    last_status TEXT DEFAULT '',
+    last_grade_id INTEGER DEFAULT 0,
+    source TEXT DEFAULT '',
+    stage INTEGER DEFAULT 1,
+    due_at REAL DEFAULT 0,
+    updated_at REAL,
+    UNIQUE(category, point_name)
+);
+
 CREATE TABLE IF NOT EXISTS formula_rounds (
     id INTEGER PRIMARY KEY,
     config TEXT,
@@ -4030,6 +4049,152 @@ def get_essay_grade(gid: int) -> dict | None:
     row = conn.execute("SELECT * FROM essay_grades WHERE id=?", (gid,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# ---------------- L3：申论失分点 → 薄弱点复习队列 ----------------
+
+# 同一考点累计失分到这个次数，标记为「反复错」（前端可据此强调）。
+ESSAY_WEAK_REPEAT_MIN = 2
+
+# 缺失/部分命中 → 归因到哪一类问题（设计文档 4.3 的映射表）。
+_ESSAY_WEAK_REASON = {
+    "sl_guina": "要点遗漏",
+    "zy_wenxian": "要点遗漏",
+    "sl_fenxi": "结构缺失",
+    "sl_duice": "对策不可操作",
+    "sl_yingyongwen": "格式失分",
+    "sl_dazuowen": "立意偏差/论证单薄",
+    "zy_zuowen": "立意偏差/论证单薄",
+}
+
+
+def essay_weak_reason(category: str) -> str:
+    """题型 → 失分归因（未登记的题型归到「要点遗漏」）。"""
+    return _ESSAY_WEAK_REASON.get(category or "", "要点遗漏")
+
+
+def _ensure_essay_weak(conn: sqlite3.Connection) -> None:
+    """老库惰性建表（新库由 SCHEMA 直接建好）。"""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS essay_weak_points (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            point_name TEXT NOT NULL,
+            miss_count INTEGER DEFAULT 0,
+            last_status TEXT DEFAULT '',
+            last_grade_id INTEGER DEFAULT 0,
+            source TEXT DEFAULT '',
+            stage INTEGER DEFAULT 1,
+            due_at REAL DEFAULT 0,
+            updated_at REAL,
+            UNIQUE(category, point_name))""")
+
+
+def record_essay_weak_points(gid: int, category: str, points, now: float | None = None) -> list[dict]:
+    """把一次批改的失分点写进薄弱点复习队列（命中项忽略）。
+
+    只收「缺失 / 部分命中」两种状态；去重键 `(category, point_name)`，
+    同一考点再次失分时 miss_count 累加、档位回到第 1 档（艾宾浩斯从头再来）。
+    `source` 记为 `essay_grade:{gid}`，便于从复习项反查原始批改。
+    返回本次写入/更新的行，`repeat=True` 表示已属「反复错」。
+    """
+    if not points:
+        return []
+    now = time.time() if now is None else float(now)
+    day = 86400.0
+    due_at = now + EBBINGHAUS_DAYS[0] * day
+    conn = connect()
+    _ensure_essay_weak(conn)
+    out: list[dict] = []
+    for p in points:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or "").strip()
+        status = str(p.get("status") or "").strip()
+        if not name or status not in ("缺失", "部分命中"):
+            continue
+        prev = conn.execute(
+            "SELECT id, miss_count FROM essay_weak_points"
+            " WHERE category=? AND point_name=?",
+            (category, name)).fetchone()
+        if prev:
+            wid = int(prev["id"])
+            miss = int(prev["miss_count"] or 0) + 1
+            conn.execute(
+                "UPDATE essay_weak_points SET miss_count=?, last_status=?,"
+                " last_grade_id=?, source=?, stage=1, due_at=?, updated_at=?"
+                " WHERE id=?",
+                (miss, status, int(gid), f"essay_grade:{gid}", due_at, now, wid))
+        else:
+            miss = 1
+            cur = conn.execute(
+                "INSERT INTO essay_weak_points"
+                "(category,point_name,miss_count,last_status,last_grade_id,"
+                " source,stage,due_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (category, name, miss, status, int(gid),
+                 f"essay_grade:{gid}", 1, due_at, now))
+            wid = int(cur.lastrowid or 0)
+        out.append({
+            "id": wid,
+            "category": category,
+            "point_name": name,
+            "reason": essay_weak_reason(category),
+            "status": status,
+            "miss_count": miss,
+            "repeat": miss >= ESSAY_WEAK_REPEAT_MIN,
+            "source": f"essay_grade:{gid}",
+            "stage": 1,
+            "due_at": due_at,
+        })
+    conn.commit()
+    conn.close()
+    return out
+
+
+def list_essay_weak_points(category: str = "", due_only: bool = False,
+                           limit: int = 100) -> list[dict]:
+    """复习队列：按失分次数降序（同次数按最近失分时间降序）。"""
+    conn = connect()
+    _ensure_essay_weak(conn)
+    sql = ("SELECT id, category, point_name, miss_count, last_status,"
+           " last_grade_id, source, stage, due_at, updated_at"
+           " FROM essay_weak_points WHERE 1=1")
+    args: list = []
+    if category:
+        sql += " AND category=?"
+        args.append(category)
+    if due_only:
+        sql += " AND due_at <= ?"
+        args.append(time.time())
+    sql += " ORDER BY miss_count DESC, updated_at DESC LIMIT ?"
+    args.append(max(1, min(500, int(limit))))
+    rows = conn.execute(sql, args).fetchall()
+    conn.close()
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["reason"] = essay_weak_reason(d.get("category") or "")
+        d["repeat"] = int(d.get("miss_count") or 0) >= ESSAY_WEAK_REPEAT_MIN
+        items.append(d)
+    return items
+
+
+def essay_weak_summary() -> dict:
+    """薄弱点概览：总数 / 今日到期数 / 反复错数。"""
+    conn = connect()
+    _ensure_essay_weak(conn)
+    now = time.time()
+    row = conn.execute(
+        "SELECT COUNT(*) total,"
+        " SUM(CASE WHEN due_at<=? THEN 1 ELSE 0 END) due,"
+        " SUM(CASE WHEN miss_count>=? THEN 1 ELSE 0 END) repeated"
+        " FROM essay_weak_points", (now, ESSAY_WEAK_REPEAT_MIN)).fetchone()
+    conn.close()
+    return {
+        "total": int(row["total"] or 0),
+        "due": int(row["due"] or 0),
+        "repeated": int(row["repeated"] or 0),
+    }
 
 
 # ---------------- 时政抓取去重（功能 2.2） ----------------

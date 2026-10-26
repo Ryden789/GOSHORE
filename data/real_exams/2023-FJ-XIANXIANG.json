@@ -1,0 +1,47 @@
+{
+  "exam_id": "2023-FJ-XIANXIANG",
+  "exam_full_name": "2023年福建省公务员考试申论县乡卷（2023多省联考）",
+  "year": 2023,
+  "sheet_type": "县乡卷",
+  "total_questions": 4,
+  "overall_theme": "基层治理与乡村产业振兴——曾林社区\"村改居\"近邻治理、L县山核桃产业转型升级",
+  "keywords": ["曾林社区", "村改居", "近邻", "聚邻", "惠邻", "党建+邻里中心", "红色网格", "山核桃", "天目", "天生记", "退果还林", "脱蒲中心"],
+  "questions": [
+    {
+      "q_no": 1,
+      "category": "sl_guina",
+      "full_score": 15,
+      "question_text": "请根据\"给定资料1\"，谈谈曾林社区是如何做好\"村改居\"后半篇文章的。（15分）要求：全面、准确、有条理。不超过300字。",
+      "material_digest": "材料1讲曾林社区以\"近邻\"\"聚邻\"\"惠邻\"三邻工作法推进\"党建+\"邻里中心建设：近邻（一心多点便民服务圈、居家养老照料中心8个功能区、本土文化标识与人才驿站）、聚邻（红色网格穿透式组织体系、二级网格党群服务站、社工与线上线下议事平台）、惠邻（卫生健康服务站资源人员双下沉、服务活动常态化）。",
+      "points": [
+        {"name": "近邻·空间服务：去形式化机关化办公化、一心多点便民服务圈、政务一体机与预约热线", "full": 3, "evidence": "材料1｜近邻·\"一心多点\"便民服务圈（政务一体机、便民联络卡、预约热线）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md）"},
+        {"name": "近邻·养老服务：居家养老照料中心、8个功能区、引进第三方运营", "full": 2, "evidence": "材料1｜居家养老服务照料中心（社区食堂、儿童之家、亲子阅读室）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md）"},
+        {"name": "近邻·文化人才：本土文化标识、乡村记忆馆、产学研基地、人才驿站", "full": 2, "evidence": "材料1｜文化标识与乡村记忆馆、大学生反哺基地、茶产学研基地、人才驿站", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md）"},
+        {"name": "聚邻·网格组织：红色网格化管理、穿透式组织体系、党员联系群众", "full": 2, "evidence": "材料1｜\"社区党组织—网格党小组—党员楼栋长—党员中心户\"组织体系", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md）"},
+        {"name": "聚邻·服务前移：二级网格党群服务站、驻点办公、日巡查、上门办", "full": 2, "evidence": "材料1｜二级网格党群服务站驻点办公、日巡查、上门办", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，原分值 3/2/2/2/1.5/1.5/1/1 合计 14 分，按 15 分总分校准：聚邻服务前移 1.5→2、惠邻健康服务 1→1.5）"},
+        {"name": "聚邻·队伍平台：老带新帮带与人才储备库、引入社工组织、线上线下议事", "full": 1.5, "evidence": "材料1｜老带新帮带、致和社工、意见箱与微监督小程序", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md）"},
+        {"name": "惠邻·健康服务：卫生健康服务站、资源人员双下沉、就医取药医保一体化", "full": 1.5, "evidence": "材料1｜共建卫生健康服务站、资源人员双下沉", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，原分值 1 分，按 15 分总分校准为 1.5）"},
+        {"name": "惠邻·活动常态：主题与日常服务活动量化、景观墙绘制", "full": 1, "evidence": "材料1｜主题活动20余场、日常活动60余场、4000余人次", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md）"}
+      ]
+    },
+    {
+      "q_no": 2,
+      "category": "sl_guina",
+      "full_score": 20,
+      "question_text": "请根据\"给定资料1\"，概括L县山核桃产业发展过程中存在的问题及解决措施。（20分）要求：全面、准确、有条理。不超过400字。",
+      "material_digest": "材料2讲L县山核桃产业：问题为生产主体多且家庭作坊质量参差、缺品牌企业多为代加工、种植无序扩张致植被破坏水土流失、成本上涨与分散经营致投入产出比下降、加工储存薄弱；措施为发布\"天目\"区域公用品牌并委托协会定标准、引进\"天生记\"总部、退果还林与自然落果、林地流转适度规模经营、建脱蒲中心一条龙服务。",
+      "points": [
+        {"name": "问题①：生产主体多、家庭作坊、质量参差不齐、以次充好", "full": 2, "evidence": "材料2｜山核桃生产环节（家庭作坊、部门监管收效甚微）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"},
+        {"name": "问题②：缺品牌企业、多数代加工、利润薄品牌价值小", "full": 2, "evidence": "材料2｜品牌与加工环节（代加工为主）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"},
+        {"name": "问题③：种植无序扩张、过度用农药化肥、植被破坏水土流失、品质下降", "full": 2, "evidence": "材料2｜种植环节（无序扩张、生态破坏）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"},
+        {"name": "问题④：种植成本上涨、分散经营、投入产出比下降", "full": 2, "evidence": "材料2｜经营环节（成本上涨、分散经营）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"},
+        {"name": "问题⑤：加工储存环节薄弱（脱蒲汁液乱排、晒干存储不当）", "full": 2, "evidence": "材料2｜加工储存环节（脱蒲、晒干存储）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"},
+        {"name": "措施①：发布\"天目\"区域公用品牌、委托协会制定最高标准、授权使用并抽查、不合格撤销公布", "full": 2, "evidence": "材料2｜\"天目\"品牌与标准（炒制/手剥/山核桃仁三个标准）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"},
+        {"name": "措施②：引进\"天生记\"总部落户、带动本地企业规范经营与现代化生产", "full": 2, "evidence": "材料2｜\"天生记\"总部落户龙水镇", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"},
+        {"name": "措施③：退果还林由村集体看管、推广自然落果、减少农药化肥", "full": 2, "evidence": "材料2｜生态修复行动（退果还林2万亩、自然落果）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"},
+        {"name": "措施④：推进林地流转、适度规模经营、机械化数字化科学种植", "full": 2, "evidence": "材料2｜林地流转与适度规模经营", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"},
+        {"name": "措施⑤：建设脱蒲中心、市场化运营、数字化仓储、脱蒲晒干存储销售一条龙", "full": 2, "evidence": "材料2｜政府建设脱蒲中心（数字化管理仓储精准控温控湿）", "source": "机构答案拆解（Shenlun.skill real-exams/2023-fujian-xianxiang.md，问题项与措施项合计 22 分，按 20 分总分等比校准为每项 2 分）"}
+      ]
+    }
+  ]
+}

@@ -106,6 +106,14 @@ def build(keep: bool = False) -> int:
         "--add-data", f"{ROOT / 'app' / 'argument_materials.json'}{';'}app",
         "--add-data", f"{ROOT / 'app' / 'argument_quiz.json'}{';'}app",
     ]
+    # 申论真题采分点库：只读数据，几十 KB。不打进去的话冻结版没有 DATA_DIR/real_exams，
+    # exam_bank 只能空转，用户永远是「AI 自拟」路径（钉不住子项，分数仍会漂）。
+    bank = ROOT / "data" / "real_exams"
+    if bank.exists():
+        cmd += ["--add-data", f"{bank}{';'}data/real_exams"]
+        print(f"[i] 内置申论真题库：{len(list(bank.glob('*.json')))} 个 json")
+    else:
+        print("[!] 未找到 data/real_exams，本次打包不含真题采分点库")
     # 内置示例题库（约 7 MB）：让新用户开箱就有题可刷，而不是空库。
     # 用 tools/make_sample_db.py 生成；不存在就跳过（只影响首次体验）。
     sample = ROOT / "assets" / "content-sample.db"

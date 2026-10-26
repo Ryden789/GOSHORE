@@ -162,6 +162,10 @@ def _eval_essay(case: dict) -> list[dict]:
            f"和 {sum(d['score'] for d in dims):g} vs 总分 {p['score']:g}"),
         _ck("rewrite 已填写", bool((p.get("rewrite") or {}).get("revised"))),
     ]
+    # 目标 G2：每条得分点都要能指出材料出处，否则「失分点→错因」没有依据
+    if p["points"]:
+        ev_rate = sum(1 for pt in p["points"] if (pt.get("evidence") or "").strip()) / len(p["points"])
+        checks.append(_ck("evidence 非空率 ≥95%", ev_rate >= 0.95, f"实际 {ev_rate:.0%}"))
     if exp.get("score") is not None:
         checks.append(_ck("总分与标注一致", abs(p["score"] - float(exp["score"])) <= 0.5,
                           f"期望 {exp['score']}，实际 {p['score']}"))

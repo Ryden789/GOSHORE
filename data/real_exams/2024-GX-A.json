@@ -1,0 +1,64 @@
+{
+  "exam_id": "2024-GX-A",
+  "exam_full_name": "2024年广西公务员考试申论A卷（2024多省联考）",
+  "year": 2024,
+  "sheet_type": "A卷",
+  "total_questions": 4,
+  "overall_theme": "城乡融合发展中的传统与现代、数字化治理、慈善事业",
+  "keywords": ["传统", "现代", "城乡融合", "社会文明", "背篓", "菜农", "C市", "地铁", "数字化", "Q市", "慈善", "Z市", "汇报提纲", "慈善信托", "第三次分配"],
+  "questions": [
+    {
+      "q_no": 1,
+      "category": "sl_guina",
+      "full_score": 15,
+      "question_text": "根据\"给定资料1\"，概括C市在推进城乡融合发展方面的主要做法。（15分）\n要求：（1）全面准确，条理清晰；（2）不超过200字。",
+      "material_digest": "材料1为C市推进城乡融合的举措：交通互联互通（城际公交、高速免费通行）、水源共享（跨区域供水工程）、人才双向交流（干部挂职锻炼）、产业协同发展（新能源项目共建、企业生态圈打造）、公共服务均等化。",
+      "points": [
+        {"name": "交通基础设施互联互通", "full": 4, "evidence": "材料1｜城乡融合·交通（城际公交、高速免费通行）", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "人才双向交流机制", "full": 4, "evidence": "材料1｜城乡融合·人才（干部挂职锻炼、双向交流）", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "产业协同发展", "full": 4, "evidence": "材料1｜城乡融合·产业（新能源项目共建、企业生态圈）", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "公共服务资源共享", "full": 3, "evidence": "材料1｜城乡融合·公共服务（跨区域供水、服务均等化）", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"}
+      ]
+    },
+    {
+      "q_no": 2,
+      "category": "sl_fenxi",
+      "full_score": 20,
+      "question_text": "请根据\"给定资料2\"，分析Q市数字化服务能力提升的原因。（20分）\n要求：（1）分析全面，条理清晰；（2）不超过300字。",
+      "material_digest": "材料2为Q市以一体化智能化公共数据平台为抓手：数据汇聚共享（52346类数据、76个市级部门）、能力组件体系（303项上架组件）、\"快办\"平台（2866个政务服务事项）、市—区县—镇街三级数字化治理中心、7万余网格智治平台、交通信号配时、医疗影像互认、智慧养老、数字文旅等场景。",
+      "points": [
+        {"name": "数据底座夯实：汇聚海量数据资源，构建统一数据仓", "full": 6, "evidence": "材料2｜Q市一体化智能化公共数据平台（52346类数据、76个市级部门）", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "平台能力开放：能力组件体系支撑多场景应用", "full": 5, "evidence": "材料2｜能力组件体系（303项上架组件）、\"快办\"平台", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "三级治理架构：市—区县—镇街分工明确、协同高效", "full": 5, "evidence": "材料2｜三级数字化治理中心、7万余网格智治平台", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "场景驱动落地：以\"一件事\"思维谋划应用场景、解决实际问题", "full": 4, "evidence": "材料2｜交通信号配时、医疗影像互认、智慧养老、数字文旅等场景", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"}
+      ]
+    },
+    {
+      "q_no": 3,
+      "category": "sl_yingyongwen",
+      "full_score": 25,
+      "question_text": "市相关领导计划近期召开专题会议，听取Z市《慈善事业高质量发展规划》落实情况，假如你是慈善总会工作人员，请根据\"给定资料3\"，拟写一份汇报提纲。（25分）\n要求：（1）紧扣资料，内容全面；（2）准确简明，条理清晰；（3）不超过400字。",
+      "material_digest": "材料3为Z市落实慈善事业高质量发展规划的成效：出台《规划》、设立慈善共富服务专区；突破慈善信托体制障碍形成\"穿透开票\"等改革成果；\"爱心小书房\"\"暖厨计划\"\"学子自强计划\"等品牌项目累计撬动慈善资金近亿元；成立慈善文化研究院、发布\"慈善一日捐\"扫码捐赠标识、首批16个慈善基地形成矩阵效应。",
+      "points": [
+        {"name": "制度建设：出台《规划》、设立服务专区、突破信托障碍", "full": 8, "evidence": "材料3｜Z市《慈善事业高质量发展规划》落实（慈善共富服务专区、穿透开票）", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "项目落地：品牌慈善项目的量化数据与典型案例", "full": 8, "evidence": "材料3｜爱心小书房、暖厨计划、学子自强计划（撬动慈善资金近亿元）", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "文化营造：研究院成立、扫码捐赠、慈善基地矩阵", "full": 5, "evidence": "材料3｜慈善文化研究院、\"慈善一日捐\"扫码标识、首批16个慈善基地", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "格式规范：汇报提纲文体格式正确、条理清晰", "full": 4, "evidence": "题干要求\"拟写一份汇报提纲\"（文体格式分）", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"}
+      ]
+    },
+    {
+      "q_no": 4,
+      "category": "sl_dazuowen",
+      "full_score": 40,
+      "question_text": "\"文明之所以文明，就是因为它既容纳了现代的行为方式，也包容了传统的生活习惯。\"请结合给定资料，以\"现代与传统\"为话题，自选角度，自拟题目，写一篇议论文。（40分）\n要求：（1）立意明确，观点深刻；（2）内容充实，论证有力；（3）参考给定资料，但不拘泥于给定资料；（4）1000-1200字。",
+      "material_digest": "材料4以C市地铁为菜农设\"背篓专列\"为核心正面案例（石船镇菜农背背篓乘首班地铁进城卖菜，地铁增设专人引导、设置专门车厢），引用乘客语录点题；同时以部分地区盲目城镇化导致\"千村一面\"、南橘北枳为反面案例，强调保留乡村特色。",
+      "points": [
+        {"name": "立意准确：明确\"传统与现代的辩证关系\"，不偏执一端，不简单对立", "full": 12, "evidence": "材料4｜背篓专列点题句\"既容纳现代的行为方式，也包容传统的生活习惯\"", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "结构清晰：分论点各自独立、逻辑递进、篇幅均衡", "full": 8, "evidence": "题干要求\"立意明确，观点深刻\"", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "论证充分：每个分论点有材料案例支撑（必须引用C市背篓专列）且适当拓展", "full": 8, "evidence": "材料4｜背篓专列、千村一面反例", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "语言表达：标题点题、语言规范流畅、无语病", "full": 6, "evidence": "题干要求\"内容充实，论证有力\"", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"},
+        {"name": "结合材料：紧扣给定资料4，不脱离材料空谈", "full": 6, "evidence": "题干要求\"参考给定资料，但不拘泥于给定资料\"", "source": "机构答案拆解（Shenlun.skill real-exams/2024-guangxi-A.md）"}
+      ]
+    }
+  ]
+}

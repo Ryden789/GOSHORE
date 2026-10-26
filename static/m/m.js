@@ -2322,6 +2322,17 @@ async function drawDue(box, tok) {
         <div><b>${dash.due}</b><span>待复习</span></div><div><b>${dash.repeat}</b><span>重复错误</span></div><div><b>${dash.untagged}</b><span>未标错因</span></div><div><b>${dash.wrong_total}</b><span>当前错题</span></div>
       </div>
       <button class="btn btn-block" id="dashWrong">打开错题本</button>
+      ${(() => {
+        const ew = dash.essay_weak;
+        const s = (ew && ew.summary) || null;
+        if (!s || !s.total) return "";
+        return `<div style="margin-top:10px;border-top:1px solid var(--line,#eee);padding-top:8px">
+          <h4 style="margin:0 0 6px">申论失分点（${s.total} 条 · 今日到期 ${s.due}）</h4>
+          ${(ew.items || []).slice(0, 5).map(it =>
+            `<div class="meta">${esc(it.point_name)} · ${esc(it.reason || "")} · 缺 ${it.miss_count} 次${it.repeat ? " · 反复错" : ""}</div>`
+          ).join("")}
+        </div>`;
+      })()}
     </div>
     ${items.length ? `<button class="btn btn-primary btn-block" id="rvAll">全部重练（${items.length}）</button>` : `<div class="empty">今日没有到期复习<br>做完新题错题会自动进入复习计划</div>`}
     ${items.map(it => `
@@ -5467,12 +5478,21 @@ function mGradeRing(score, total) {
   </svg>`;
 }
 
-function mGradeResultHtml(d, total) {
+const M_GRADE_ORIGIN = {
+  exam_bank: "真题库（固定子项）",
+  ai_generated: "AI 自拟",
+  user: "你提供的参考答案",
+};
+
+function mGradeResultHtml(d, total, origin, exam) {
   const score = Number(d.score || 0);
   const pts = d.points || [], dims = d.dims || [];
   const hit = pts.filter(p => p.status === "命中").length;
   const part = pts.filter(p => p.status === "部分命中").length;
   const miss = pts.filter(p => p.status === "缺失").length;
+  const originTxt = M_GRADE_ORIGIN[origin] || "";
+  const examTxt = exam && exam.exam_full_name
+    ? `（${exam.exam_full_name}${exam.q_no ? ` 第 ${exam.q_no} 题` : ""}）` : "";
 
   const card = `<div class="gr-score">
     ${mGradeRing(score, total)}
@@ -5481,6 +5501,7 @@ function mGradeResultHtml(d, total) {
       ${d.level ? `<div class="gr-level">${esc(d.level)}</div>` : ""}
       ${d.summary ? `<div class="gr-summary">${esc(d.summary)}</div>` : ""}
       ${pts.length ? `<div class="gr-trend-legend">要点 ${pts.length} 个：命中 ${hit} · 部分 ${part} · 缺失 ${miss}</div>` : ""}
+      ${originTxt ? `<div style="color:var(--ink-3);font-size:calc(12px * var(--fs));margin-top:4px">采分点来源：${originTxt}${esc(examTxt)}</div>` : ""}
     </div>
   </div>`;
 
@@ -5806,7 +5827,7 @@ async function renderGrade() {
           else if (ev.type === "result") {
             lastData = ev.data;
             box.classList.remove("md-body");
-            box.innerHTML = mGradeResultHtml(ev.data, ev.total);
+            box.innerHTML = mGradeResultHtml(ev.data, ev.total, ev.reference_origin, ev.reference_exam);
           }
           else if (ev.type === "fallback") { full = ev.text; box.innerHTML = md(full); }
           else if (ev.type === "delta") { full += ev.text; box.innerHTML = md(full); }

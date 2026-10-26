@@ -8,6 +8,18 @@
 第三方依赖（FastAPI、uvicorn、httpx、pydantic、pywebview、pandas 等）各自遵循其
 原许可证，详见对应依赖包内的 LICENSE。
 
+## 第三方方法论与真题采分点
+
+申论评分口径与真题采分点整理自 [coffe-d/Shenlun.skill](https://github.com/coffe-d/Shenlun.skill)
+（MIT License，Copyright (c) 2026 coffe-d）。
+
+- 只借鉴**评分口径与题型方法论**（采分点覆盖法、三档折算、字数 85%–95%、答题句式等），
+  未搬运其整篇讲义原文；方法论文本的许可副本见
+  `docs/03-开发/third-party/shenlun-skill-LICENSE`。
+- `data/real_exams/*.json` 里的采分点是**按机构答案拆解的要点清单**，字段 `source`
+  逐条标注来源，不是官方评分标准；如权利人认为有不妥，请通过仓库 Issue 联系删除。
+- 与上游一致，这些内容同样**不在本仓库 MIT 许可范围内**。
+
 ## 题库内容
 
 **MIT 许可只覆盖代码，不覆盖任何题目、解析、教材、讲义等学习内容。**

@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import access, ai, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision, sync_webdav
+from . import access, ai, db, essay_rubric, exam_bank, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision, sync_webdav
 from .config import (STATIC_DIR, DATA_DIR, DB_PATH, SETTINGS_PATH, BASE_DIR, REMINDER_KEYS,
                      GOAL_KEYS, load_settings, reminder_patch, goal_patch,
                      save_settings, SYNC_KEYS, sync_patch, SYNC_REMOTE_DEFAULT)
@@ -1050,7 +1050,17 @@ def api_wrong_book_restore(b: DocIdIn):
 
 @app.get("/api/review/dashboard")
 def api_review_dashboard():
-    return db.review_dashboard()
+    data = db.review_dashboard()
+    # 申论失分点单独挂一块：它不在 documents/review_plan 体系里（见 db.essay_weak_points）。
+    # 查不到就当没有，不能因为一张新表把行测驾驶舱也带崩。
+    try:
+        data["essay_weak"] = {
+            "summary": db.essay_weak_summary(),
+            "items": db.list_essay_weak_points(limit=8),
+        }
+    except Exception:
+        data["essay_weak"] = None
+    return data
 
 
 @app.get("/api/marks")
@@ -2449,6 +2459,32 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
+def resolve_grade_reference(b: "EssayGradeIn") -> tuple[str, str, dict | None]:
+    """决定本次批改用哪份「参考答案」，返回 `(reference, origin, hit)`。
+
+    优先级（设计文档 4.2）：
+      1. 考生自己贴/题库带出的参考答案 → origin="user"，最高优先，永不覆盖；
+      2. 命中本地真题库且**高置信** → origin="exam_bank"，用固定的子项级采分点；
+      3. 都没有 → origin="ai_generated"，由模型自拟要点。
+
+    中等置信（关键词重叠 1–2 个）刻意**不用**：认错卷子时给一份别题的子项清单，
+    比让模型自拟更糟（模型会照单判定，分数反而更偏）。
+    """
+    user_ref = (b.reference or "").strip()
+    if user_ref:
+        return user_ref, "user", None
+    try:
+        hit = exam_bank.match(b.question, b.material, b.category)
+    except exam_bank.ExamBankError:
+        # 题库文件不合规只影响「有没有参考答案」，不该让整次批改失败
+        hit = None
+    if hit and hit.get("confidence") == "high":
+        ref = exam_bank.build_reference(hit["exam_id"], hit["q_no"])
+        if ref.strip():
+            return ref, "exam_bank", hit
+    return "", "ai_generated", hit
+
+
 @app.post("/api/essay/grade")
 async def api_essay_grade(b: EssayGradeIn):
     """批改 2.0：结构化 JSON（要点命中表 + 四维评分 + 改写示范），解析失败降级为纯文本。"""
@@ -2459,8 +2495,15 @@ async def api_essay_grade(b: EssayGradeIn):
         raise HTTPException(400, "题目与作答均不能为空")
     total = b.total_score if 10 <= b.total_score <= 100 else r["default_score"]
 
+    reference, ref_origin, hit = resolve_grade_reference(b)
+    if ref_origin == "exam_bank" and hit:
+        # 真题库的分值是这道题的权威口径（同一套卷 15/20/25/40 分都有）。
+        # 不覆盖 total 的话，子项之和与「满分 X 分」互相打架，模型会按 total
+        # 重新分摊分值，等于把固定清单又改回浮动清单。
+        total = max(1, int(round(float(hit.get("full_score") or total))))
+
     messages = essay_rubric.build_grade_messages(
-        b.category, total, b.question, b.material, b.answer, b.reference)
+        b.category, total, b.question, b.material, b.answer, reference)
 
     buffer: list[str] = []
 
@@ -2484,16 +2527,40 @@ async def api_essay_grade(b: EssayGradeIn):
                 points_json=json.dumps(parsed["points"], ensure_ascii=False),
                 dims_json=json.dumps(parsed["dims"], ensure_ascii=False),
                 rewrite_json=json.dumps(parsed["rewrite"], ensure_ascii=False))
-            yield _sse({"type": "result", "data": parsed, "total": total})
+            # L3：失分点入复习队列。批改记录已落库，这一步失败不能吞掉结果，
+            # 否则用户白等一次模型调用。
+            try:
+                db.record_essay_weak_points(gid, b.category, parsed.get("points"))
+            except Exception:
+                pass
+            ev = {"type": "result", "data": parsed, "total": total,
+                  "reference_origin": ref_origin}
+            if ref_origin == "exam_bank" and hit:
+                ev["reference_exam"] = {
+                    "exam_id": hit["exam_id"],
+                    "exam_full_name": hit.get("exam_full_name", ""),
+                    "q_no": hit["q_no"],
+                }
+            yield _sse(ev)
             yield _sse({"type": "saved", "text": str(gid)})
         elif raw:
             gid = db.save_essay_grade(b.category, b.question, b.answer, total, raw)
-            yield _sse({"type": "fallback", "text": raw})
+            yield _sse({"type": "fallback", "text": raw,
+                        "reference_origin": ref_origin})
             yield _sse({"type": "saved", "text": str(gid)})
         else:
             yield _sse({"type": "error", "text": "批改未返回内容，请重试"})
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+@app.get("/api/essay/weak")
+def api_essay_weak(category: str = "", due_only: bool = False, limit: int = 100):
+    """L3：申论薄弱采分点复习队列（按失分次数排序）。"""
+    return {
+        "items": db.list_essay_weak_points(category, due_only, limit),
+        "summary": db.essay_weak_summary(),
+    }
 
 
 @app.get("/api/essay/trend")

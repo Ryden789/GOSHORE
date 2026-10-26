@@ -4877,6 +4877,20 @@ async function renderReview() {
         <div><h4>薄弱模块</h4>${(dash.by_module || []).slice(0, 5).map(x => `<div class="review-bar-row"><span>${esc(x.name)}</span><i><em style="width:${dash.wrong_total ? Math.round(x.count / dash.wrong_total * 100) : 0}%"></em></i><small>${x.count}</small></div>`).join("") || `<div class="muted">暂无数据</div>`}</div>
         <div><h4>错因分布</h4>${(dash.by_reason || []).slice(0, 5).map(x => `<div class="review-bar-row"><span>${esc(x.name)}</span><i><em style="width:${dash.wrong_total ? Math.round(x.count / dash.wrong_total * 100) : 0}%"></em></i><small>${x.count}</small></div>`).join("") || `<div class="muted">暂无数据</div>`}</div>
       </div>
+      ${(() => {
+        const ew = dash.essay_weak;
+        const s = (ew && ew.summary) || null;
+        if (!s || !s.total) return "";
+        const top = (ew.items || []).slice(0, 6);
+        return `<div style="margin-top:14px;border-top:1px solid var(--line,#e7e0d5);padding-top:10px">
+          <h4 style="margin:0 0 4px">申论失分点 <small class="muted">共 ${s.total} 条 · 今日到期 ${s.due} · 反复错 ${s.repeated}</small></h4>
+          ${top.map(it => `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px dashed var(--line,#eee)">
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.point_name)}</span>
+            <small class="muted" style="white-space:nowrap">${esc(it.reason || "")} · 缺 ${it.miss_count} 次${it.repeat ? " · 反复错" : ""}</small>
+          </div>`).join("")}
+          <div class="muted" style="margin-top:6px;font-size:calc(12px * var(--fs))">来源：AI 批改的失分点自动入队（按遗忘曲线排期）</div>
+        </div>`;
+      })()}
     </div>`;
 
   const startBtn = $("#startReview");
@@ -5173,12 +5187,21 @@ function gradeRing(score, total) {
   </svg>`;
 }
 
-function gradeResultHtml(d, total) {
+const GRADE_ORIGIN = {
+  exam_bank: "真题库（固定子项）",
+  ai_generated: "AI 自拟",
+  user: "你提供的参考答案",
+};
+
+function gradeResultHtml(d, total, origin, exam) {
   const score = Number(d.score || 0);
   const pts = d.points || [], dims = d.dims || [];
   const hit = pts.filter(p => p.status === "命中").length;
   const part = pts.filter(p => p.status === "部分命中").length;
   const miss = pts.filter(p => p.status === "缺失").length;
+  const originTxt = GRADE_ORIGIN[origin] || "";
+  const examTxt = exam && exam.exam_full_name
+    ? `（${exam.exam_full_name}${exam.q_no ? ` 第 ${exam.q_no} 题` : ""}）` : "";
 
   const card = `<div class="gr-score">
     ${gradeRing(score, total)}
@@ -5187,6 +5210,7 @@ function gradeResultHtml(d, total) {
       ${d.level ? `<div class="gr-level">${esc(d.level)}</div>` : ""}
       ${d.summary ? `<div class="gr-summary">${esc(d.summary)}</div>` : ""}
       ${pts.length ? `<div class="gr-trend-legend">要点 ${pts.length} 个：命中 ${hit} · 部分命中 ${part} · 缺失 ${miss}</div>` : ""}
+      ${originTxt ? `<div style="color:var(--ink-3);font-size:calc(12px * var(--fs));margin-top:4px">采分点来源：${originTxt}${esc(examTxt)}</div>` : ""}
     </div>
   </div>`;
 
@@ -5447,7 +5471,7 @@ async function renderGrade() {
             lastData = ev.data;
             box.classList.remove("cursor-blink");
             box.classList.remove("sz-content");
-            box.innerHTML = gradeResultHtml(ev.data, ev.total);
+            box.innerHTML = gradeResultHtml(ev.data, ev.total, ev.reference_origin, ev.reference_exam);
           }
           else if (ev.type === "fallback") { full = ev.text; box.innerHTML = md(full); }
           else if (ev.type === "delta") { full += ev.text; box.innerHTML = md(full); }

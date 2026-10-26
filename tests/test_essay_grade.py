@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -250,3 +251,168 @@ def test_rubrics_endpoint(client):
     items = r.json()["items"]
     assert len(items) == len(essay_rubric.RUBRICS)
     assert {"key", "name", "hint", "default_score"} <= set(items[0])
+
+
+# ---------------- L2：真题库采分点接入 ----------------
+
+SC_Q1 = ("请根据\"给定资料1\"，归纳概括A省推进农业高质量发展的举措。（15分）"
+         "要求：全面准确，条理清晰，语言简洁。不超过200字。")
+SC_MATERIAL = "A省棉花全产业链、北斗导航机械化、葡萄酒产业、骆驼产业链、塔河水资源管理"
+
+
+def test_resolve_reference_user_wins(monkeypatch):
+    from app.main import EssayGradeIn, resolve_grade_reference
+
+    b = EssayGradeIn(category="sl_guina", question=SC_Q1,
+                     material=SC_MATERIAL, answer="我的作答", reference="我自己带的要点")
+    ref, origin, hit = resolve_grade_reference(b)
+    assert ref == "我自己带的要点" and origin == "user" and hit is None
+
+
+def test_resolve_reference_exam_bank_high_confidence():
+    from app.main import EssayGradeIn, resolve_grade_reference
+
+    b = EssayGradeIn(category="sl_guina", question=SC_Q1,
+                     material=SC_MATERIAL, answer="我的作答")
+    ref, origin, hit = resolve_grade_reference(b)
+    assert origin == "exam_bank" and hit and hit["exam_id"] == "2023-SC-SHI"
+    assert "棉花全产业链" in ref and "—— 3分" in ref
+
+
+def test_resolve_reference_ai_generated_when_unmatched():
+    from app.main import EssayGradeIn, resolve_grade_reference
+
+    b = EssayGradeIn(category="sl_fenxi", question="谈谈你对乡村振兴的理解",
+                     material="材料讲乡村旅游", answer="我的作答")
+    ref, origin, _hit = resolve_grade_reference(b)
+    assert ref == "" and origin == "ai_generated"
+
+
+def test_grade_endpoint_uses_bank_points_and_reports_origin(client, monkeypatch):
+    """命中真题库：prompt 里带子项清单、满分按题库校准、result 带 reference_origin。"""
+    from app import ai
+
+    seen: list[list[dict]] = []
+
+    async def fake(messages, temperature=0.2):
+        seen.append(messages)
+        yield "delta", json.dumps(SAMPLE, ensure_ascii=False)
+
+    monkeypatch.setattr(ai, "stream_chat_with_temp", fake)
+    r = client.post("/api/essay/grade", json={
+        "category": "sl_guina", "question": SC_Q1, "material": SC_MATERIAL,
+        "answer": "我的作答", "total_score": 20})       # 故意传错满分：题库 15 分应覆盖
+    assert r.status_code == 200
+    assert '"reference_origin": "exam_bank"' in r.text
+    assert '"q_no": 1' in r.text and '"total": 15' in r.text
+    user = seen[0][1]["content"]
+    assert "子项级采分点" in user and "棉花全产业链" in user
+    assert "满分 15 分" in user
+    saved = db.list_essay_grades()[0]
+    assert saved["total_score"] == 15
+
+
+def test_grade_endpoint_marks_ai_generated(client, monkeypatch):
+    _patch_stream(monkeypatch, json.dumps(SAMPLE, ensure_ascii=False))
+    r = client.post("/api/essay/grade", json={
+        "category": "zy_wenxian", "question": "写摘要", "material": "材料",
+        "answer": "我的作答", "total_score": 20})
+    assert '"reference_origin": "ai_generated"' in r.text
+    assert db.list_essay_grades()[0]["total_score"] == 20
+
+
+# ---------------- L3：失分点进复习队列 ----------------
+
+def test_record_weak_points_dedupes_and_marks_repeat(temp_db):
+    p = essay_rubric.parse_grade_json(json.dumps(SAMPLE, ensure_ascii=False))
+    rows = db.record_essay_weak_points(1, "zy_wenxian", p["points"])
+    assert {r["point_name"] for r in rows} == {"技术标准统一", "隐私保护"}
+    assert all(r["repeat"] is False for r in rows)
+    assert all(r["reason"] == "要点遗漏" for r in rows)
+    assert rows[0]["source"] == "essay_grade:1"
+    # 刚失分的点排到 1 天后（艾宾浩斯第 1 档），今天不算到期
+    assert db.essay_weak_summary()["due"] == 0
+
+    again = db.record_essay_weak_points(2, "zy_wenxian", p["points"])
+    assert len(again) == 2                       # 去重键 (category, point_name)
+    assert all(r["miss_count"] == 2 and r["repeat"] for r in again)
+    items = db.list_essay_weak_points("zy_wenxian")
+    assert len(items) == 2 and items[0]["last_grade_id"] == 2
+    assert db.essay_weak_summary() == {"total": 2, "due": 0, "repeated": 2}
+
+    # 把排期推到过去 = 今日到期
+    db.record_essay_weak_points(3, "zy_wenxian", p["points"], now=time.time() - 3 * 86400)
+    assert db.essay_weak_summary()["due"] == 2
+    assert len(db.list_essay_weak_points(due_only=True)) == 2
+
+
+def test_weak_points_skip_hit_and_bad_input(temp_db):
+    assert db.record_essay_weak_points(1, "sl_guina", []) == []
+    rows = db.record_essay_weak_points(1, "sl_guina", [
+        {"name": "已命中", "status": "命中"},
+        {"name": "", "status": "缺失"},
+        "不是字典",
+        {"name": "漏点", "status": "缺失"},
+    ])
+    assert [r["point_name"] for r in rows] == ["漏点"]
+    assert db.essay_weak_reason("sl_duice") == "对策不可操作"
+    assert db.essay_weak_reason("未登记") == "要点遗漏"
+
+
+def test_weak_endpoint(client, monkeypatch):
+    _patch_stream(monkeypatch, json.dumps(SAMPLE, ensure_ascii=False))
+    client.post("/api/essay/grade", json={
+        "category": "zy_wenxian", "question": "写摘要", "material": "材料",
+        "answer": "我的作答", "total_score": 20})
+    r = client.get("/api/essay/weak")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["items"]) == 2
+    assert body["summary"]["total"] == 2 and body["summary"]["due"] == 0
+    r2 = client.get("/api/essay/weak?category=sl_guina")
+    assert r2.json()["items"] == []
+    # 复习驾驶舱要能看到这块（L3 验收），且不影响行测那部分字段
+    dash = client.get("/api/review/dashboard").json()
+    assert dash["essay_weak"]["summary"]["total"] == 2
+    assert {it["point_name"] for it in dash["essay_weak"]["items"]} == {"隐私保护", "技术标准统一"}
+    assert all(it["source"].startswith("essay_grade:") for it in dash["essay_weak"]["items"])
+    assert "wrong_total" in dash and "by_reason" in dash
+
+
+# ---------------- L4：双视角骨架（默认不接线，先把纯函数测住） ----------------
+
+def test_build_dual_messages_two_schools():
+    pair = essay_rubric.build_dual_messages(
+        "sl_guina", 15, "概括C市做法", "材料……", "作答……")
+    assert set(pair) == {"xiaoma", "bailu"}
+    for key, msgs in pair.items():
+        assert msgs[0]["role"] == "system" and msgs[-1]["role"] == "user"
+        school = essay_rubric.DUAL_SCHOOLS[key]["name"]
+        assert school in msgs[0]["content"]
+        assert "13." in msgs[0]["content"]
+    # 两组共用同一份题面与 rubric，只有第 13 条口径不同
+    assert pair["xiaoma"][1]["content"] == pair["bailu"][1]["content"]
+    assert pair["xiaoma"][0]["content"] != pair["bailu"][0]["content"]
+
+
+def test_build_dual_diff_reports_gap_and_verdict():
+    a = essay_rubric.parse_grade_json(json.dumps(SAMPLE, ensure_ascii=False))
+    b = essay_rubric.parse_grade_json(json.dumps(SAMPLE, ensure_ascii=False))
+    b["points"] = [dict(p) for p in b["points"]]
+    b["points"][0]["name"] = "数据共享"          # 白鹭版换了概括词
+    b["score"] = 14
+    diff = essay_rubric.build_dual_diff(a, b)
+    assert set(diff) == set(essay_rubric.DUAL_DIFF_KEYS)
+    assert diff["points_gap"]["only_xiaoma"] == ["成本上升"]
+    assert diff["points_gap"]["only_bailu"] == ["数据共享"]
+    assert "14" in diff["verdict"] and "白鹭" in diff["verdict"]
+    assert diff["classification"]
+    assert diff["risks"]["xiaoma"] and diff["risks"]["bailu"]
+
+    same = essay_rubric.build_dual_diff(a, essay_rubric.parse_grade_json(
+        json.dumps(SAMPLE, ensure_ascii=False)))
+    assert same["points_gap"]["only_xiaoma"] == [] and same["points_gap"]["only_bailu"] == []
+    assert "两版一致" in same["verdict"] or "一致" in same["verdict"]
+    assert "无差异" in same["scenarios"]
+
+
