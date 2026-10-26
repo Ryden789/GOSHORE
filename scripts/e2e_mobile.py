@@ -22,6 +22,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SRV_DIR = REPO / "android" / "app" / "src" / "main" / "python"
 SRC_DB = REPO / ".tools" / "mobile_prep" / "goshor.db"
+if not SRC_DB.exists():
+    # CI/新克隆没有 .tools 构建产物时，用仓库内示例库跑同一套回归
+    SRC_DB = REPO / "assets" / "content-sample.db"
 TMP = REPO / "scripts" / "_e2e_tmp"
 WEB_DIR = REPO / "static"
 
@@ -288,7 +291,8 @@ def check_browser():
         pg.goto(BASE + "/#/home", wait_until="domcontentloaded", timeout=20000)
         try:
             # 冷启动首次 /api/stats 需要建索引连接，给足余量（机器慢时不误判）
-            pg.wait_for_selector(".stat-grid", timeout=45000)
+            # 新版首页是 study-home；完整统计折叠在 details 内，不能等 .stat-grid 可见
+            pg.wait_for_selector(".study-home", timeout=45000)
         except Exception as e:
             detail = f"异常：{e}"
             if js_errors:
@@ -414,7 +418,7 @@ def check_browser():
             pg.evaluate("location.hash = '#/all'")
             pg.wait_for_timeout(300)
             pg.evaluate("location.hash = '#/home'")
-            pg.wait_for_selector(".stat-grid", timeout=15000)
+            pg.wait_for_selector(".study-home", timeout=15000)
             pg.wait_for_timeout(500)
             left = pg.locator(".countdown").count()
             record(left == 0, "N3 倒计时：清除日期后横幅消失",
@@ -1390,7 +1394,7 @@ def check_browser():
                 if pa.evaluate("location.hash") != f"#/doc/{did}":
                     problems.append(f"Enter 应进入 #/doc/{did}，实际 {pa.evaluate('location.hash')}")
                 pa.wait_for_timeout(300)
-            pa.evaluate("location.hash = '#/home'")
+            pa.evaluate("location.hash = '#/overview'")
             pa.wait_for_selector(".stat-card.link", timeout=20000)
             cards = pa.eval_on_selector_all(
                 ".stat-card.link",
@@ -1420,8 +1424,7 @@ def check_browser():
             if tag != "BUTTON:button":
                 problems.append(f"搜题结果应为 <button type=button>，实际 {tag}")
             else:
-                pb.locator("#srList .sr-item").first.focus()
-                pb.keyboard.press("Enter")
+                pb.locator("#srList .sr-item").first.press("Enter")
                 try:
                     pb.wait_for_function(
                         "document.getElementById('mTitle').textContent === '做题中'",
