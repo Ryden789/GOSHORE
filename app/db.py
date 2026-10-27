@@ -5167,16 +5167,27 @@ def cards_progress() -> dict:
 
 def save_shared_set(code: str, title: str, ids: list[int],
                     author: str = "", note: str = "") -> None:
+    """写入题单分享码。
+
+    `ids_json`（整数 id）**原样保留**，另存一份 `ids_qid_json`：分享码可能已经
+    被别的设备用过，直接改语义会让旧码失效；读的时候 qid 优先、整数 id 兜底。
+    """
+    clean = _as_int_list(ids)
     conn = connect()
-    conn.execute(
-        """INSERT INTO shared_sets(code,title,ids_json,author,note,created_at)
-           VALUES(?,?,?,?,?,?)
-           ON CONFLICT(code) DO UPDATE SET
-             title=excluded.title, ids_json=excluded.ids_json,
-             author=excluded.author, note=excluded.note""",
-        (code, title, json.dumps(ids), author, note, time.time()))
-    conn.commit()
-    conn.close()
+    try:
+        qids = _qids_for_ids(conn, clean)
+        conn.execute(
+            """INSERT INTO shared_sets(code,title,ids_json,ids_qid_json,author,note,created_at)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(code) DO UPDATE SET
+                 title=excluded.title, ids_json=excluded.ids_json,
+                 ids_qid_json=excluded.ids_qid_json,
+                 author=excluded.author, note=excluded.note""",
+            (code, title, json.dumps(clean), json.dumps(qids), author, note,
+             time.time()))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def list_shared_sets(limit: int = 50) -> list[dict]:
@@ -5198,17 +5209,27 @@ def list_shared_sets(limit: int = 50) -> list[dict]:
 
 
 def get_shared_set(code: str) -> dict | None:
+    """按分享码取题单。`ids` 优先用稳定题号解析，旧码按整数 id 兜底。
+
+    `ids_json` 里的整数 id 换题库后可能指向别的题，而 qid 不会。部分失联时
+    保留原 ids 并置 `invalid`，由界面提示「部分题目已不在题库中」。
+    """
     conn = connect()
-    r = conn.execute("SELECT * FROM shared_sets WHERE code=?", (code,)).fetchone()
-    conn.close()
-    if not r:
-        return None
-    d = dict(r)
     try:
-        d["ids"] = json.loads(d.pop("ids_json") or "[]")
-    except (json.JSONDecodeError, TypeError):
-        d["ids"] = []
-        d.pop("ids_json", None)
+        r = conn.execute("SELECT * FROM shared_sets WHERE code=?", (code,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        try:
+            raw = json.loads(d.pop("ids_json", "") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            raw = []
+        d["ids"] = _as_int_list(raw)
+        ids, qids, invalid = _resolve_draft_ids(
+            conn, d["ids"], d.pop("ids_qid_json", ""))
+    finally:
+        conn.close()
+    d["ids"], d["qids"], d["invalid"] = ids, qids, invalid
     return d
 
 
@@ -5280,6 +5301,41 @@ def _as_int_list(v) -> list[int]:
     return out
 
 
+def _qids_for_ids(conn: sqlite3.Connection, ids: list[int]) -> list[str]:
+    """`[doc_id] → 对齐的 [qid]`；查不到的题留空串，**保持下标对齐**。
+
+    下标对齐是硬要求：草稿的 `state["answers"]` 是按位置存的，一旦中间某题
+    解析失败就整段前移，会出现「第 3 题显示第 4 题的作答」。
+    """
+    if not ids:
+        return []
+    ph = ",".join("?" * len(ids))
+    found = {int(r["id"]): (r["qid"] or "") for r in conn.execute(
+        f"SELECT id,qid FROM documents WHERE id IN ({ph})", tuple(ids))}
+    return [found.get(int(i), "") for i in ids]
+
+
+def _ids_for_qids(conn: sqlite3.Connection,
+                  qids: list[str]) -> tuple[list[int], list[str]]:
+    """`[qid] → (对齐的 [doc_id], 查不到的 [qid])`；查不到的位置填 0。
+
+    分批是因为 SQLite 的变量上限（老版本 999）：草稿最多 1000 题，
+    一次性拼进去会超限。
+    """
+    if not qids:
+        return [], []
+    want = [str(q) for q in qids]
+    found: dict[str, int] = {}
+    for i in range(0, len(want), 400):
+        chunk = want[i:i + 400]
+        ph = ",".join("?" * len(chunk))
+        for r in conn.execute(
+                f"SELECT qid,id FROM documents WHERE qid IN ({ph})", tuple(chunk)):
+            found[str(r["qid"])] = int(r["id"])
+    missing = [q for q in want if q not in found]
+    return [found.get(q, 0) for q in want], missing
+
+
 def draft_progress(ids, state) -> dict:
     """纯函数：由草稿的 ids + state 算出「总题数 / 已答 / 还剩」。
 
@@ -5301,6 +5357,9 @@ def save_paper_draft(scope: str, title: str, ids: list, state: dict) -> None:
     """写入/覆盖指定 scope 的草稿（每个 scope 只留最近一份）。
 
     覆盖靠 `scope` 上的 UNIQUE + INSERT OR REPLACE 实现，不需要先删再插。
+
+    同时写 `ids_qid_json`（v14 影子列）：`ids_json` 里的整数 id 换题库源目录 /
+    重建题库后就指向别的题，而 qid 不会。读的时候 qid 优先、旧 ids_json 兜底。
     """
     sc = normalize_draft_scope(scope)
     clean_ids = _as_int_list(ids)
@@ -5311,15 +5370,41 @@ def save_paper_draft(scope: str, title: str, ids: list, state: dict) -> None:
         state_json = "{}"
     conn = connect()
     try:
+        qids = _qids_for_ids(conn, clean_ids)
         conn.execute(
             "INSERT OR REPLACE INTO paper_drafts"
-            "(scope,title,ids_json,state_json,updated_at) VALUES(?,?,?,?,?)",
+            "(scope,title,ids_json,ids_qid_json,state_json,updated_at)"
+            " VALUES(?,?,?,?,?,?)",
             (sc, str(title or "")[:_DRAFT_MAX_TITLE],
-             json.dumps(clean_ids), state_json, time.time()),
+             json.dumps(clean_ids), json.dumps(qids), state_json, time.time()),
         )
         conn.commit()
     finally:
         conn.close()
+
+
+def _resolve_draft_ids(conn: sqlite3.Connection, ids: list[int],
+                       qid_json) -> tuple[list[int], list[str], bool]:
+    """草稿题号解析：qid 优先，旧 `ids_json` 兜底。返回 `(ids, qids, invalid)`。
+
+    部分失联时的处理是**关键决策**：
+      - 不删条目（草稿的 `state["answers"]` 按位置存，删中间一题会让后面的
+        作答整体错位，比指向错题更难排查）
+      - 也不用原 ids 顶替（题号重排后原 ids 指向的是**别的题**，等于静默串题）
+      - 而是把失联位填 0 并置 `invalid`：长度与位置都不变，前端遇到 0 就显示
+        「该题已从题库移除」，用户能看懂发生了什么
+    """
+    try:
+        qids = json.loads(qid_json or "[]")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        qids = []
+    if not isinstance(qids, list) or not qids or len(qids) != len(ids):
+        return ids, [], False
+    qids = [str(q or "") for q in qids]
+    if not all(qids):
+        return ids, qids, False        # 存的时候就有题查不到 → 无从比对，按旧 id 走
+    mapped, missing = _ids_for_qids(conn, qids)
+    return mapped, qids, bool(missing)
 
 
 def load_paper_draft(scope: str = "") -> dict | None:
@@ -5327,29 +5412,38 @@ def load_paper_draft(scope: str = "") -> dict | None:
 
     脏草稿（ids_json/state_json 解析失败、类型不对）会被**顺手删掉**，
     否则首页每次读到同一份坏数据、永远提示「继续上次」却打不开。
+
+    返回里额外带 `qids`（稳定题号）与 `invalid`（题号失联标记）：
+    调用方可以据此提示「部分题目已从题库移除」，而不是让用户点进去看到错题。
     """
     sc = normalize_draft_scope(scope)
+    bad = False
     conn = connect()
     try:
         r = conn.execute(
-            "SELECT scope,title,ids_json,state_json,updated_at "
+            "SELECT scope,title,ids_json,ids_qid_json,state_json,updated_at "
             "FROM paper_drafts WHERE scope=?", (sc,)).fetchone()
+        if not r:
+            return None
+        try:
+            raw_ids = json.loads(r["ids_json"] or "[]")
+            state = json.loads(r["state_json"] or "{}")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            bad = True
+        if not bad and (not isinstance(raw_ids, list) or not isinstance(state, dict)):
+            bad = True
+        if not bad:
+            ids, qids, invalid = _resolve_draft_ids(
+                conn, _as_int_list(raw_ids), r["ids_qid_json"])
+            out = {"scope": r["scope"], "title": r["title"] or "",
+                   "ids": ids, "qids": qids, "invalid": invalid, "state": state,
+                   "updated": r["updated_at"] or 0}
     finally:
         conn.close()
-    if not r:
-        return None
-    try:
-        ids = json.loads(r["ids_json"] or "[]")
-        state = json.loads(r["state_json"] or "{}")
-    except (json.JSONDecodeError, TypeError, ValueError):
+    if bad:
         clear_paper_draft(sc)
         return None
-    if not isinstance(ids, list) or not isinstance(state, dict):
-        clear_paper_draft(sc)
-        return None
-    return {"scope": r["scope"], "title": r["title"] or "",
-            "ids": _as_int_list(ids), "state": state,
-            "updated": r["updated_at"] or 0}
+    return out
 
 
 def clear_paper_draft(scope: str) -> None:
