@@ -60,3 +60,5 @@ android/app/build/
 
 # GPL 项目的阅读笔记（只放 .md/.txt，不存放其源码；见 docs/来源与许可登记.md）
 /reference_only/
+# 对账报告（本机生成，含本机题库统计；数字转录进 docs，不入库）
+data/import_report.json
