@@ -294,6 +294,14 @@ CREATE TABLE IF NOT EXISTS _meta (
 # 桌面端：单库全量 schema（保持原行为）
 SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
 
+# 写 qid 影子列时统一用它取「当前题目的稳定题号」。
+#
+# 为什么内联成子查询而不是先查一次再写：写入路径（作答 / 复习排期 / 掌握度 /
+# 收藏 / 笔记）都在请求热路径上，多一次 `connect()` + `SELECT` 就是多两次
+# 系统调用；而 `documents.id` 是主键，子查询是一次 B 树点查，代价可忽略。
+# 拆成两步还有个隐患：中间题库被替换时，写进去的 qid 可能是上一版题库的值。
+_QID_OF_DOC = "(SELECT qid FROM documents WHERE id=?)"
+
 # 当前 schema 版本号（每次新增迁移步骤时 +1）
 SCHEMA_VERSION = 14
 
@@ -1158,14 +1166,18 @@ def _migrate_v14(conn: sqlite3.Connection) -> None:
             f"WHERE qid IS NULL OR qid=''")
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{t}_qid ON {t}(qid)")
 
-    # ③ 变式题：源题错位最难察觉（AI 衍生题挂在错的源题上）
-    if _table_exists(conn, "variants"):
-        if not _has_column(conn, "variants", "src_qid"):
-            conn.execute("ALTER TABLE variants ADD COLUMN src_qid TEXT DEFAULT ''")
-        conn.execute(
-            "UPDATE variants SET src_qid=(SELECT m.qid FROM qid_map m "
-            "WHERE m.id_old=variants.src_doc_id) "
-            "WHERE src_qid IS NULL OR src_qid=''")
+    # ③ 两张「懒建」的表（variant.py 里 CREATE IF NOT EXISTS，可能根本不存在）：
+    #    variants.src_qid —— 源题错位最难察觉（AI 衍生题挂在错的源题上）；
+    #    annihilations.qid —— 变式歼灭状态，重导入后同样会挂错题。
+    for t, key, col in (("variants", "src_doc_id", "src_qid"),
+                        ("annihilations", "doc_id", "qid")):
+        if not _table_exists(conn, t):
+            continue
+        if not _has_column(conn, t, col):
+            conn.execute(f"ALTER TABLE {t} ADD COLUMN {col} TEXT DEFAULT ''")
+        backfill = (f"UPDATE {t} SET {col}=(SELECT m.qid FROM qid_map m "
+                    f"WHERE m.id_old={t}.{key}) WHERE {col} IS NULL OR {col}=''")
+        conn.execute(backfill)
 
     # ④ 两处 JSON 整数引用的影子列（实际重映射在读写层，见 save/load_paper_draft）
     for t in ("paper_drafts", "shared_sets"):
@@ -1998,7 +2010,7 @@ def set_doubt_ai(qid: str, note: str):
 def _ensure_explain_cache(conn: sqlite3.Connection):
     conn.execute(
         """CREATE TABLE IF NOT EXISTS explain_cache(
-            doc_id INTEGER, mode TEXT, stuck_key TEXT,
+            doc_id INTEGER, qid TEXT DEFAULT '', mode TEXT, stuck_key TEXT,
             content TEXT, ts REAL,
             PRIMARY KEY(doc_id, mode, stuck_key))"""
     )
@@ -2019,8 +2031,9 @@ def set_explain_cache(doc_id: int, mode: str, stuck_key: str, content: str):
     conn = connect()
     _ensure_explain_cache(conn)
     conn.execute(
-        "INSERT OR REPLACE INTO explain_cache(doc_id,mode,stuck_key,content,ts) VALUES(?,?,?,?,?)",
-        (doc_id, mode, stuck_key, content, time.time()),
+        f"""INSERT OR REPLACE INTO explain_cache(doc_id,qid,mode,stuck_key,content,ts)
+           VALUES(?,{_QID_OF_DOC},?,?,?,?)""",
+        (doc_id, doc_id, mode, stuck_key, content, time.time()),
     )
     conn.commit()
     conn.close()
@@ -2079,9 +2092,9 @@ def add_answer(doc_id: int, selected: str, correct: bool | None, ms: int,
            FROM answers WHERE doc_id=?""",
         (doc_id,)).fetchone()
     conn.execute(
-        """INSERT INTO answers(doc_id,selected,correct,ms,created_at,guessed)
-           VALUES(?,?,?,?,?,?)""",
-        (doc_id, selected, int(correct) if graded else None,
+        f"""INSERT INTO answers(doc_id,qid,selected,correct,ms,created_at,guessed)
+           VALUES(?,{_QID_OF_DOC},?,?,?,?,?)""",
+        (doc_id, doc_id, selected, int(correct) if graded else None,
          ms, time.time(), int(guessed)),
     )
     # F-4 此前最后一次是错的，本次答对 → 错题歼灭；未判分不算“答对”
@@ -2108,12 +2121,14 @@ def _schedule_review(doc_id: int, correct: bool) -> None:
                 conn.execute("DELETE FROM review_plan WHERE doc_id=?", (doc_id,))
             else:
                 due = time.time() + EBBINGHAUS_DAYS[stage - 1] * DAY
-                conn.execute("UPDATE review_plan SET stage=?, due_at=? WHERE doc_id=?",
-                             (stage, due, doc_id))
+                conn.execute(
+                    f"UPDATE review_plan SET stage=?, due_at=?, qid={_QID_OF_DOC}"
+                    " WHERE doc_id=?", (stage, due, doc_id, doc_id))
     else:
         conn.execute(
-            "INSERT OR REPLACE INTO review_plan(doc_id,stage,due_at) VALUES(?,?,?)",
-            (doc_id, 1, time.time() + EBBINGHAUS_DAYS[0] * DAY),
+            f"INSERT OR REPLACE INTO review_plan(doc_id,qid,stage,due_at)"
+            f" VALUES(?,{_QID_OF_DOC},?,?)",
+            (doc_id, doc_id, 1, time.time() + EBBINGHAUS_DAYS[0] * DAY),
         )
     conn.commit()
     # 顺手重算本题难度
@@ -2139,10 +2154,12 @@ def set_wrong_reason(doc_id: int, reason: str) -> None:
     conn = connect()
     if reason:
         conn.execute(
-            """INSERT INTO wrong_reasons(doc_id, reason, updated_at) VALUES(?,?,?)
+            f"""INSERT INTO wrong_reasons(doc_id, qid, reason, updated_at)
+               VALUES(?,{_QID_OF_DOC},?,?)
                ON CONFLICT(doc_id) DO UPDATE SET
-                   reason=excluded.reason, updated_at=excluded.updated_at""",
-            (doc_id, reason, time.time()),
+                   qid=excluded.qid, reason=excluded.reason,
+                   updated_at=excluded.updated_at""",
+            (doc_id, doc_id, reason, time.time()),
         )
     else:
         conn.execute(
@@ -2158,16 +2175,17 @@ def set_wrong_ai(doc_id: int, category: str, specific: str = "",
     """写入 AI 结构化归因（错因 2.0），不覆盖用户手填 reason。"""
     conn = connect()
     conn.execute(
-        """INSERT INTO wrong_reasons(doc_id, reason, updated_at,
+        f"""INSERT INTO wrong_reasons(doc_id, qid, reason, updated_at,
                                      ai_category, ai_specific, ai_kaodian, ai_advice)
-           VALUES(?, '', ?, ?, ?, ?, ?)
+           VALUES(?,{_QID_OF_DOC}, '', ?, ?, ?, ?, ?)
            ON CONFLICT(doc_id) DO UPDATE SET
+               qid=excluded.qid,
                ai_category=excluded.ai_category,
                ai_specific=excluded.ai_specific,
                ai_kaodian=excluded.ai_kaodian,
                ai_advice=excluded.ai_advice,
                updated_at=excluded.updated_at""",
-        (doc_id, time.time(), category, specific, kaodian, advice),
+        (doc_id, doc_id, time.time(), category, specific, kaodian, advice),
     )
     conn.commit()
     conn.close()
@@ -2266,8 +2284,9 @@ def set_mark(doc_id: int, mark: str) -> None:
     conn = connect()
     if mark:
         conn.execute(
-            "INSERT OR REPLACE INTO marks(doc_id,mark,updated_at) VALUES(?,?,?)",
-            (doc_id, mark, time.time()),
+            f"INSERT OR REPLACE INTO marks(doc_id,qid,mark,updated_at)"
+            f" VALUES(?,{_QID_OF_DOC},?,?)",
+            (doc_id, doc_id, mark, time.time()),
         )
     else:
         conn.execute("DELETE FROM marks WHERE doc_id=?", (doc_id,))
@@ -2569,6 +2588,7 @@ def _ensure_mastery(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE IF NOT EXISTS mastery(
             doc_id INTEGER PRIMARY KEY,
+            qid TEXT DEFAULT '',
             score REAL DEFAULT 0.5,
             updated_at REAL DEFAULT 0,
             correct_streak INTEGER DEFAULT 0)"""
@@ -2592,9 +2612,9 @@ def update_mastery(doc_id: int, is_correct: bool) -> float:
         streak = 0
         score = max(0.0, score - MASTERY_DOWN)
     conn.execute(
-        """INSERT OR REPLACE INTO mastery(doc_id, score, updated_at, correct_streak)
-           VALUES(?,?,?,?)""",
-        (int(doc_id), score, time.time(), streak),
+        f"""INSERT OR REPLACE INTO mastery(doc_id, qid, score, updated_at, correct_streak)
+           VALUES(?,{_QID_OF_DOC},?,?,?)""",
+        (int(doc_id), int(doc_id), score, time.time(), streak),
     )
     conn.commit()
     conn.close()
@@ -3951,6 +3971,11 @@ def mobile_commit_items(items: list[dict], defaults: dict) -> dict:
     """手机端导入：规范化题目直接写入当前账号 my_documents（无 vault md 环节）。
 
     items 为已经过 importer.normalize_item 校验的题目。
+
+    **qid 用内容指纹，不用「批次号 + 自增 id」**（v14 改造）：旧规则下同一道题
+    二次导入会得到新 qid，复习进度无法继承 —— 这是「题库扩充」场景里最容易
+    被忽略的漏洞。指纹相同即同一道题，落库走 `ON CONFLICT(path) DO UPDATE`，
+    沿用原来的 id 与全部个人数据，只在返回里计一个 `duplicates`。
     """
     conn = connect()
     row = conn.execute(
@@ -3958,12 +3983,17 @@ def mobile_commit_items(items: list[dict], defaults: dict) -> dict:
     next_id = max(int(row["m"]), MOBILE_MYDOC_ID_BASE)
     batch = time.strftime("%Y%m%d%H%M%S")
     now = time.time()
-    saved, failed = 0, []
+    # 先取一次已有路径：用来区分「新增」与「重复导入」，避免每题一次查询
+    existing_paths = {r["path"] for r in conn.execute("SELECT path FROM my_documents")}
+    saved, duplicated, failed = 0, 0, []
     for i, item in enumerate(items, 1):
         new_id = next_id + i
         module = (item["module"] if item["module"] in _MOBILE_MODULES
                   else defaults.get("module")) or "未分类"
-        qid = f"imp-{batch}-{new_id}"
+        # 指纹算不出来（无题干）时退回旧规则，至少保证 path 唯一
+        qid = (qidmod.content_fingerprint(item.get("stem", ""),
+                                          item.get("options") or [])
+               or f"imp-{batch}-{new_id}")
         rel = f"99-自导入/{module}/{qid}.md"
         region = item.get("region") or defaults.get("region", "")
         year = item.get("year") or defaults.get("year", "")
@@ -3988,22 +4018,37 @@ def mobile_commit_items(items: list[dict], defaults: dict) -> dict:
                 """INSERT INTO my_documents(
                     id,path,kind,qid,title,module,daclass,region,year,exam,
                     kaodian,tags,difficulty,mtime,data,search_text,material_fp)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(path) DO UPDATE SET
+                     kind=excluded.kind,qid=excluded.qid,title=excluded.title,
+                     module=excluded.module,daclass=excluded.daclass,
+                     region=excluded.region,year=excluded.year,exam=excluded.exam,
+                     kaodian=excluded.kaodian,tags=excluded.tags,
+                     mtime=excluded.mtime,data=excluded.data,
+                     search_text=excluded.search_text,
+                     material_fp=excluded.material_fp""",
                 (new_id, rel, "真题", qid, title, module, "", region, year,
                  exam, item.get("kaodian", ""), '["自导入"]', "", now,
                  data, search_text, ""),
             )
             saved += 1
+            if rel in existing_paths:
+                duplicated += 1
+            else:
+                existing_paths.add(rel)
         except Exception as e:
             failed.append(f"第{i}题入库失败：{e}")
     conn.commit()
     # 本连接的 `documents` 视图是在 connect() 时按「my_documents 是否为空」定型的
     # （空 → 不带 UNION ALL，可被完全展平，见 `_create_shared_views`），本次刚插入的
-    # 私有题不在视图里。视图里的存量 + 本次 saved 就是插入后的真实总数，两种形态都成立。
+    # 私有题不在视图里。视图里的存量 + 本次**新增**条数才是插入后的真实总数 ——
+    # 重复导入走的是 upsert，行数没变，必须减掉 `duplicated`，否则每导一次就虚增。
     total = conn.execute(
-        "SELECT COUNT(*) c FROM documents WHERE kind='真题'").fetchone()["c"] + saved
+        "SELECT COUNT(*) c FROM documents WHERE kind='真题'").fetchone()["c"] \
+        + saved - duplicated
     conn.close()
-    return {"ok": True, "saved": saved, "failed": failed, "total": total}
+    return {"ok": True, "saved": saved, "duplicates": duplicated,
+            "failed": failed, "total": total}
 
 
 def list_my_documents() -> list[dict]:
@@ -4244,8 +4289,9 @@ def _recompute_difficulty(doc_id: int) -> None:
         # COALESCE(o.difficulty,d.difficulty) 读出来。
         if not _is_real_table(conn, "documents"):
             conn.execute(
-                "INSERT OR REPLACE INTO doc_overrides(doc_id,difficulty) VALUES(?,?)",
-                (doc_id, diff))
+                f"INSERT OR REPLACE INTO doc_overrides(doc_id,qid,difficulty)"
+                f" VALUES(?,{_QID_OF_DOC},?)",
+                (doc_id, doc_id, diff))
         else:
             conn.execute("UPDATE documents SET difficulty=? WHERE id=?", (diff, doc_id))
         conn.commit()
@@ -5398,10 +5444,11 @@ def set_note(doc_id, content) -> dict:
             return {"doc_id": did, "content": "", "updated": 0}
         now = time.time()
         conn.execute(
-            "INSERT INTO doc_notes(doc_id,content,updated_at) VALUES(?,?,?) "
-            "ON CONFLICT(doc_id) DO UPDATE SET content=excluded.content, "
-            "updated_at=excluded.updated_at",
-            (did, text, now),
+            f"INSERT INTO doc_notes(doc_id,qid,content,updated_at) "
+            f"VALUES(?,{_QID_OF_DOC},?,?) "
+            "ON CONFLICT(doc_id) DO UPDATE SET qid=excluded.qid, "
+            "content=excluded.content, updated_at=excluded.updated_at",
+            (did, did, text, now),
         )
         conn.commit()
     finally:

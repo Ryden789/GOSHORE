@@ -244,18 +244,25 @@ async def start_annihilation(doc_id: int, n: int = 3) -> dict:
 
 
 def finish_annihilation(doc_id: int) -> None:
-    """连对全部变式 → 记录歼灭（重复歼灭累加轮次）。"""
+    """连对全部变式 → 记录歼灭（重复歼灭累加轮次）。
+
+    `qid` 是 v14 的稳定题号影子列：`doc_id` 在换题库源目录 / 重建题库后
+    会重排，只按它记「已歼灭」会让歼灭状态挂到别的题上。
+    """
     conn = db.connect()
     conn.execute(
         """CREATE TABLE IF NOT EXISTS annihilations(
             doc_id INTEGER PRIMARY KEY,
+            qid TEXT DEFAULT '',
             rounds INTEGER DEFAULT 1,
             created_at REAL)""")
     conn.execute(
-        """INSERT INTO annihilations(doc_id,rounds,created_at) VALUES(?,?,?)
+        """INSERT INTO annihilations(doc_id,qid,rounds,created_at)
+           VALUES(?,(SELECT qid FROM documents WHERE id=?),?,?)
            ON CONFLICT(doc_id) DO UPDATE SET
+             qid=excluded.qid,
              rounds=rounds+1, created_at=excluded.created_at""",
-        (doc_id, 1, time.time()),
+        (doc_id, doc_id, 1, time.time()),
     )
     conn.commit()
     conn.close()
@@ -278,14 +285,18 @@ def save_variant(q: dict) -> int:
     conn.execute(
         """CREATE TABLE IF NOT EXISTS variants(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            src_doc_id INTEGER, stem TEXT, options TEXT,
+            src_doc_id INTEGER, src_qid TEXT DEFAULT '', stem TEXT, options TEXT,
             answer TEXT, analysis TEXT, verified INTEGER,
             created_at REAL)"""
     )
     cur = conn.execute(
-        "INSERT INTO variants(src_doc_id,stem,options,answer,analysis,verified,created_at) VALUES(?,?,?,?,?,?,?)",
-        (q["src_doc_id"], q["stem"], json.dumps(q["options"], ensure_ascii=False),
-         q["answer"], q.get("analysis", ""), 1 if q.get("verified") else 0, time.time()),
+        "INSERT INTO variants(src_doc_id,src_qid,stem,options,answer,analysis,"
+        "verified,created_at) VALUES(?,(SELECT qid FROM documents WHERE id=?),"
+        "?,?,?,?,?,?)",
+        (q["src_doc_id"], q["src_doc_id"], q["stem"],
+         json.dumps(q["options"], ensure_ascii=False),
+         q["answer"], q.get("analysis", ""), 1 if q.get("verified") else 0,
+         time.time()),
     )
     conn.commit()
     vid = cur.lastrowid
