@@ -123,8 +123,12 @@ def conn(seeded):
 # ============================================================
 
 def test_no_schema_change():
-    """G7 纯删数据、不改结构，schema 版本保持 13。"""
-    assert db.SCHEMA_VERSION == 13
+    """G7 纯删数据、不改结构：G7 落地时的版本是 13，不得回退。
+
+    刻意写 `>=` 而不是 `==`：后续功能（v14 qid 影子列等）会继续 +1，
+    这条要守的是「G7 没有偷偷改表结构」，不是「版本永远停在 13」。
+    """
+    assert db.SCHEMA_VERSION >= 13
 
 
 def test_scopes_are_the_four_documented_ones():

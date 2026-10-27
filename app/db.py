@@ -14,6 +14,7 @@ from datetime import date as _date
 from pathlib import Path
 
 from . import parser
+from . import qid as qidmod
 from .config import BUNDLE_DIR, CONTENT_DB_PATH, DB_PATH, USER_DB_PATH, load_settings
 from .logging_setup import get_logger
 
@@ -74,10 +75,17 @@ CREATE TABLE IF NOT EXISTS shizheng (
 """
 
 # 个人数据表（每个账号独立一份）
+#
+# 关于 `qid`：`documents.id` 是自增主键，换题库源目录 / 重建 content.db /
+# 跨设备导入都会重排。凡是以 `doc_id` 为键的个人表都同时存一列 `qid`
+# （稳定题号，见 app/qid.py），当前读写仍以 `doc_id` 为主、`qid` 为影子列
+# 双写；等 v14 验收通过后再把主键切到 `qid`。改这些表的写入语句时**必须**
+# 一起写 qid，否则新行会在对账里显示成「失联」。
 PERSONAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS answers (
     id INTEGER PRIMARY KEY,
     doc_id INTEGER,
+    qid TEXT DEFAULT '',
     selected TEXT,
     correct INTEGER,
     ms INTEGER,
@@ -100,6 +108,7 @@ CREATE TABLE IF NOT EXISTS speed_best (
 
 CREATE TABLE IF NOT EXISTS marks (
     doc_id INTEGER PRIMARY KEY,
+    qid TEXT DEFAULT '',
     mark TEXT,
     updated_at REAL
 );
@@ -142,12 +151,14 @@ CREATE TABLE IF NOT EXISTS wordfill_answers (
 
 CREATE TABLE IF NOT EXISTS wrong_reasons (
     doc_id INTEGER PRIMARY KEY,
+    qid TEXT DEFAULT '',
     reason TEXT DEFAULT '',
     updated_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS review_plan (
     doc_id INTEGER PRIMARY KEY,
+    qid TEXT DEFAULT '',
     stage INTEGER DEFAULT 1,
     due_at REAL
 );
@@ -234,7 +245,7 @@ CREATE TABLE IF NOT EXISTS doubts(
 );
 
 CREATE TABLE IF NOT EXISTS explain_cache(
-    doc_id INTEGER, mode TEXT, stuck_key TEXT,
+    doc_id INTEGER, qid TEXT DEFAULT '', mode TEXT, stuck_key TEXT,
     content TEXT, ts REAL,
     PRIMARY KEY(doc_id, mode, stuck_key)
 );
@@ -263,6 +274,7 @@ CREATE TABLE IF NOT EXISTS my_documents (
 -- 共享题库的个人难度覆写（题库只读，作答后难度变化存这里）
 CREATE TABLE IF NOT EXISTS doc_overrides (
     doc_id INTEGER PRIMARY KEY,
+    qid TEXT DEFAULT '',
     difficulty TEXT
 );
 
@@ -283,7 +295,7 @@ CREATE TABLE IF NOT EXISTS _meta (
 SCHEMA = SHARED_SCHEMA + PERSONAL_SCHEMA
 
 # 当前 schema 版本号（每次新增迁移步骤时 +1）
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 # ---------------- 桌面端「题库 / 个人库」拆分模式 ----------------
@@ -608,7 +620,7 @@ def snapshot_to(dest: Path | str) -> None:
 
 # 个人库最新 schema 版本，必须与 `_migrate()` 最后一步写入的值一致
 # （tests/test_personal_db_init.py::test_schema_version_constant_matches_migrate 守住）。
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _personal_init_locks: dict[str, threading.Lock] = {}
 _personal_init_guard = threading.Lock()
@@ -935,6 +947,255 @@ def _ensure_doc_indexes(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
 
 
+# ---------------- v14：qid 影子列（稳定题号） ----------------
+#
+# 背景：`documents.id` 是 `lastrowid` 自增，稳定性只靠 `path UNIQUE +
+# ON CONFLICT(path)`。三种场景会让它整片重排 —— 换题库源目录、`content.db`
+# 重建、跨设备导入。以 `doc_id` 为键的 8 张个人表一旦跟着漂移，复习排期 /
+# 错题归因 / 掌握度 / 收藏 / 笔记会**静默串题**（打开某题看到别人的进度）。
+#
+# v14 不直接换主键，而是走「影子列双写」：
+#   ① `qid_map` 落一份 `id_old → qid` 映射（重导入对账也复用它）
+#   ② 8 张个人表 + `variants` 加 `qid` 列并回填
+#   ③ `paper_drafts` / `shared_sets` 加 `ids_qid_json` 影子列
+#   ④ `documents(qid)` 升级为唯一部分索引（空 qid 不参与约束）
+# 读写路径仍以 `doc_id` 为主，等 14.7 的五条验收全过再切主键。
+#
+# 口径与验收见 docs/03-开发/2026-10-27-行测方向开源项目调研.md 第 14 节。
+
+# 以整数 doc_id 为键的个人表（调研文档 14.3 的 #1~#8）。
+# `variants` 不在其中：它是 variant.py 懒建的，可能根本不存在，单独判断。
+_QID_SHADOW_TABLES = (
+    "answers", "wrong_reasons", "review_plan", "mastery",
+    "marks", "doc_overrides", "explain_cache", "doc_notes",
+)
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
+def _documents_readable(conn: sqlite3.Connection) -> bool:
+    """本连接上能否 `SELECT ... FROM documents`（真实表或 TEMP VIEW 都算）。"""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
+    ).fetchone() is not None or conn.execute(
+        "SELECT 1 FROM sqlite_temp_master WHERE type='view' AND name='documents'"
+    ).fetchone() is not None
+
+
+def _has_column(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    """表是否有某列（`PRAGMA table_info` 不吃参数占位符，表名来自常量）。"""
+    try:
+        return any(r["name"] == col
+                   for r in conn.execute(f"PRAGMA table_info({table})"))
+    except sqlite3.Error:
+        return False
+
+
+def _documents_qid_map(conn: sqlite3.Connection) -> tuple[dict[int, str], list[tuple[str, int]]]:
+    """算 `documents.id → qid`，返回 `(映射, 需要落库的 (qid, id) 列表)`。
+
+    qid 为空或还是旧 `imp-*`（含自增 id，不稳定）的题，用 `data` 里的
+    题干 + 选项算内容指纹兜底 —— 这是「同一道题二次导入仍能继承复习进度」的前提。
+    只有这几行才去解析 `data`（题库 23k 行、data 列 70MB+，全量解析会让迁移
+    从毫秒级变成秒级）。
+
+    算不出指纹（无题干）的行保留原值，不写空串覆盖。
+    """
+    out: dict[int, str] = {}
+    writes: list[tuple[str, int]] = []
+    try:
+        rows = conn.execute("SELECT id, qid FROM documents").fetchall()
+    except sqlite3.Error:
+        return out, writes                 # 题库还没建 / 视图不可读
+    pending: list[int] = []
+    for r in rows:
+        try:
+            did = int(r["id"])
+        except (TypeError, ValueError):
+            continue
+        cur = str(r["qid"] or "").strip()
+        out[did] = cur
+        if qidmod.is_unstable(cur):
+            pending.append(did)
+    for did in pending:
+        try:
+            row = conn.execute("SELECT data FROM documents WHERE id=?", (did,)).fetchone()
+        except sqlite3.Error:
+            break
+        if not row:
+            continue
+        try:
+            data = json.loads(row["data"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        fp = qidmod.from_data(data)
+        if fp and fp != out.get(did):
+            out[did] = fp
+            writes.append((fp, did))
+    return out, writes
+
+
+def _backfill_document_qid(conn: sqlite3.Connection,
+                           writes: list[tuple[str, int]]) -> int:
+    """把补出来的 qid 写回题库（尽力而为，失败只记日志）。
+
+    三种连接形态分别处理：
+      - 单库 / legacy：`documents` 是真实表 → 直接写
+      - 桌面 split：`documents` 是本连接的 TEMP VIEW，写它会报
+        `cannot modify documents because it is a view` → 开 `content_writer()`
+      - 手机端：题库是只读 ATTACH、且没有 content.db → 跳过（个人表照样回填，
+        题库那几行 qid 留空，下次桌面端跑迁移会补上）
+    """
+    if not writes:
+        return 0
+    target, own = conn, False
+    if not _is_real_table(conn, "documents"):
+        if not split_enabled():
+            log.info("qid 回填：题库为只读附加，跳过 %d 条", len(writes))
+            return 0
+        try:
+            target = content_writer()
+        except (sqlite3.Error, OSError) as e:
+            log.warning("qid 回填：打开题库库失败，跳过 %d 条（%s）", len(writes), e)
+            return 0
+        own = True
+    try:
+        target.executemany("UPDATE documents SET qid=? WHERE id=?", writes)
+        target.commit()
+        return len(writes)
+    except sqlite3.Error as e:
+        log.warning("qid 回填失败（%d 条）：%s", len(writes), e)
+        return 0
+    finally:
+        if own:
+            target.close()
+
+
+def _ensure_qid_unique_index(conn: sqlite3.Connection) -> str:
+    """把 `documents(qid)` 升级成**唯一部分索引**，返回 `unique` / `plain` / `skipped`。
+
+    空 qid 不参与唯一约束（`WHERE qid <> ''`）：题库里「没编号」的题可以有多条，
+    它们的身份由迁移补的内容指纹给出，不会互相冲突。
+
+    存量若真有重复 qid（同一题在两个路径下各存一份），建唯一索引会失败。
+    此时**降级为普通索引并把重复数写进 `_meta`，不中止迁移** —— 中止会让
+    App 直接起不来，代价远大于收益；重复本身由 `reconcile_import()` 的
+    报告暴露出来，由人去决定合并哪一条。
+    """
+    target, own = conn, False
+    if not _is_real_table(conn, "documents"):
+        if not split_enabled():
+            return "skipped"
+        try:
+            target = content_writer()
+        except (sqlite3.Error, OSError) as e:
+            log.warning("qid 唯一索引：打开题库库失败（%s）", e)
+            return "skipped"
+        own = True
+    try:
+        dups = target.execute(
+            "SELECT COUNT(*) c FROM (SELECT qid FROM documents "
+            "WHERE qid<>'' GROUP BY qid HAVING COUNT(*)>1)"
+        ).fetchone()["c"]
+        target.execute("DROP INDEX IF EXISTS idx_docs_qid")
+        if not dups:
+            target.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_docs_qid ON documents(qid) "
+                "WHERE qid <> ''")
+            mode = "unique"
+        else:
+            target.execute(
+                "CREATE INDEX IF NOT EXISTS idx_docs_qid ON documents(qid)")
+            log.warning("qid 存在 %d 组重复，唯一索引降级为普通索引", dups)
+            mode = "plain"
+        target.commit()
+        return mode
+    except sqlite3.Error as e:
+        log.warning("qid 唯一索引建立失败：%s", e)
+        return "skipped"
+    finally:
+        if own:
+            target.close()
+
+
+def _migrate_v14(conn: sqlite3.Connection) -> None:
+    """v14 主体：补齐 qid → 落映射表 → 8 张表加影子列回填 → 索引。幂等。"""
+    # split / 手机端：迁移跑在 `_create_shared_views` **之前**，此时本连接上
+    # 还没有 `documents`（真实表在只读附加库里）。先建临时视图，否则既读不到
+    # 题目、也算不出 id→qid 映射，回填会静默变成 0 行。
+    if not _documents_readable(conn):
+        try:
+            _create_shared_views(conn)
+        except sqlite3.Error as e:
+            log.warning("qid 迁移：建 documents 视图失败（%s），跳过回填", e)
+
+    qid_by_id, writes = _documents_qid_map(conn)
+    filled = _backfill_document_qid(conn, writes)
+
+    # ① 映射表：既是本次回填的中间产物，也是重导入对账的基准。
+    #    刻意不进 RESET_SCOPES —— 它是结构映射，不是用户数据，清空进度不该丢它。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS qid_map("
+        "id_old INTEGER PRIMARY KEY, qid TEXT NOT NULL)")
+    if qid_by_id:
+        conn.executemany(
+            "INSERT OR REPLACE INTO qid_map(id_old,qid) VALUES(?,?)",
+            [(did, q) for did, q in qid_by_id.items() if q])
+
+    # ② 8 张个人表：加列 + 用映射回填（一条 UPDATE 搞定，不逐行往返）
+    for t in _QID_SHADOW_TABLES:
+        if not _table_exists(conn, t):
+            continue
+        if not _has_column(conn, t, "qid"):
+            conn.execute(f"ALTER TABLE {t} ADD COLUMN qid TEXT")
+        conn.execute(
+            f"UPDATE {t} SET qid=(SELECT m.qid FROM qid_map m "
+            f"WHERE m.id_old={t}.doc_id) "
+            f"WHERE qid IS NULL OR qid=''")
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{t}_qid ON {t}(qid)")
+
+    # ③ 变式题：源题错位最难察觉（AI 衍生题挂在错的源题上）
+    if _table_exists(conn, "variants"):
+        if not _has_column(conn, "variants", "src_qid"):
+            conn.execute("ALTER TABLE variants ADD COLUMN src_qid TEXT DEFAULT ''")
+        conn.execute(
+            "UPDATE variants SET src_qid=(SELECT m.qid FROM qid_map m "
+            "WHERE m.id_old=variants.src_doc_id) "
+            "WHERE src_qid IS NULL OR src_qid=''")
+
+    # ④ 两处 JSON 整数引用的影子列（实际重映射在读写层，见 save/load_paper_draft）
+    for t in ("paper_drafts", "shared_sets"):
+        if _table_exists(conn, t) and not _has_column(conn, t, "ids_qid_json"):
+            conn.execute(f"ALTER TABLE {t} ADD COLUMN ids_qid_json TEXT DEFAULT ''")
+
+    # ⑤ 元信息：指纹算法版本（规则一变要按版本重算）+ 本次回填量
+    conn.execute(
+        "INSERT OR REPLACE INTO _meta(key,value) VALUES('qid_fp_version',?)",
+        (qidmod.FINGERPRINT_VERSION,))
+    conn.execute(
+        "INSERT OR REPLACE INTO _meta(key,value) VALUES('qid_backfilled',?)",
+        (str(filled),))
+    conn.commit()
+
+    # ⑥ 唯一索引（要在 commit 之后单独跑：可能换到 content.db 这条连接上）
+    mode = _ensure_qid_unique_index(conn)
+    # 重复组数记在个人库（题库库没有 _meta 表，content_writer 只建 SHARED_SCHEMA）
+    try:
+        dups = conn.execute(
+            "SELECT COUNT(*) c FROM (SELECT qid FROM documents "
+            "WHERE qid<>'' GROUP BY qid HAVING COUNT(*)>1)").fetchone()["c"]
+    except sqlite3.Error:
+        dups = -1
+    for k, val in (("qid_index_mode", mode), ("qid_dup_groups", str(dups))):
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES(?,?)", (k, val))
+    conn.commit()
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """版本化迁移：按 schema_version 依次执行，幂等。
 
@@ -954,6 +1215,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
     只保留最近一份，故 scope 上加 UNIQUE —— 否则「同一时刻只留一份」只能靠
     应用层 delete+insert，并发下会留孤儿行。表落在**个人库**（与 answers 同库，
     手机端连的是 data_<uid>.db），因此移动端同样可写。
+    v12：doc_notes 题目自由笔记（每题一条，doc_id 上 UNIQUE）。
+    v13：answers 的 (doc_id, id, correct) 覆盖索引，供 /api/stats 流式分组。
+    v14：qid 影子列（稳定题号）。8 张以 doc_id 为键的个人表 + variants 加
+    `qid` 并回填，`qid_map` 落 id→qid 映射，`documents(qid)` 升为唯一部分
+    索引，`paper_drafts` / `shared_sets` 加 `ids_qid_json`。只加列不改主键。
     """
     conn.execute(
         "CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -1188,6 +1454,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         conn.commit()
 
+    if v < 14:
+        # v14: qid 影子列（稳定题号）。
+        # `documents.id` 自增，换源目录 / 重建 content.db / 跨设备导入都会重排；
+        # 8 张以 doc_id 为键的个人表 + variants 加 qid 列并回填，documents(qid)
+        # 升为唯一部分索引，paper_drafts / shared_sets 加 ids_qid_json 影子列。
+        # 本步只**加列回填**，不改主键、不改读写主路径 —— 双写期两套键并存，
+        # 验收通过后再切（见 _migrate_v14 与调研文档 14.6/14.7）。
+        _migrate_v14(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta(key,value) VALUES('schema_version','14')"
+        )
+        conn.commit()
+
 
 def _ensure_personal_columns(conn: sqlite3.Connection) -> None:
     """个人表的列补丁（旧库可能缺列，CREATE IF NOT EXISTS 不会加列）。"""
@@ -1281,6 +1560,11 @@ def _upsert(conn: sqlite3.Connection, p: parser.Parsed, mtime: float) -> int:
     tags = json.dumps(p.tags, ensure_ascii=False)
     data = json.dumps(p.data, ensure_ascii=False)
     fp = _material_fingerprint(p.data.get("material", "")) if p.module == "资料分析" else ""
+    # 题库没给编号时**入库即补**内容指纹：等迁移再补的话，新导入的题在
+    # 下一次启动前都没有稳定键，期间产生的复习记录会挂在自增 id 上。
+    # 规则与迁移完全一致（同一个 app/qid.py），所以两处算出的值必然相同。
+    qid = p.qid or qidmod.content_fingerprint(
+        p.data.get("stem", ""), p.data.get("options") or [])
     cur = conn.execute(
         """INSERT INTO documents
            (path,kind,qid,title,module,daclass,region,year,exam,kaodian,tags,mtime,data,search_text,material_fp)
@@ -1292,7 +1576,7 @@ def _upsert(conn: sqlite3.Connection, p: parser.Parsed, mtime: float) -> int:
              tags=excluded.tags,mtime=excluded.mtime,data=excluded.data,
              search_text=excluded.search_text,material_fp=excluded.material_fp""",
         (
-            p.rel_path, p.kind, p.qid, p.title, p.module, p.daclass,
+            p.rel_path, p.kind, qid, p.title, p.module, p.daclass,
             p.region, p.year, p.exam, p.kaodian, tags, mtime, data,
             p.search_text, fp,
         ),

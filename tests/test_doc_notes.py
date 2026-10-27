@@ -78,8 +78,13 @@ def client(tmp_path, monkeypatch):
 # A. 迁移 v12
 # ============================================================
 
-def test_schema_version_is_13():
-    assert db.SCHEMA_VERSION == 13
+def test_schema_version_covers_doc_notes_migration():
+    """doc_notes 是 v12 引入的；版本不得回退到 v12 之前。
+
+    用 `>=` 而非 `==`：后续迁移（v14 qid 影子列）会继续推进版本号，
+    这条守的是「doc_notes 的迁移还在」，不是「版本永远停在 13」。
+    """
+    assert db.SCHEMA_VERSION >= 12
 
 
 def test_migration_creates_doc_notes(temp_db):
