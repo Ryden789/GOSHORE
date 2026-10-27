@@ -57,3 +57,6 @@ android/app/build/
 # WorkBuddy AI 本地工作目录（记忆、技能等，仅本机）
 .workbuddy-ai/
 .workbuddy/
+
+# GPL 项目的阅读笔记（只放 .md/.txt，不存放其源码；见 docs/来源与许可登记.md）
+/reference_only/

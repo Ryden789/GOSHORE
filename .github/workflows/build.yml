@@ -86,6 +86,11 @@ jobs:
         run: python scripts/eval_ai.py --min-score 95
       - name: 示例库内容规则（严重问题即失败）
         run: python tools/check_content.py --db assets/content-sample.db --strict
+      - name: 许可守卫（代码目录不得混入 GPL 源码）
+        # GOSHORE 闭源分发 exe / APK，而调研里价值最高的项目是 GPL-3.0 强传染许可。
+        # 靠自觉守不住：一次「顺手拷个 writeback.py」就会传染整个项目，而代码照样
+        # 能跑、测试照样全绿。规则与登记表见 docs/来源与许可登记.md。
+        run: python tools/check_license_guard.py
 
   # APK 构建：仅在手动触发时执行。
   # 说明：本项目 Android 构建依赖本地工具链（Chaquopy + .tools/ 下的 Gradle/SDK/wheels，
