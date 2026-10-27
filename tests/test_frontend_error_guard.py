@@ -34,6 +34,7 @@ const chunk = src.slice(src.indexOf('const ErrorGuard'),
                         src.indexOf('/* shared-core:end */'));
 
 const toasts = [];
+const logs = [];
 const win = { addEventListener(ev, fn) { (this._h = this._h || {})[ev] = fn; } };
 const doc = {
   documentElement: {},
@@ -54,12 +55,12 @@ const make = new Function(
   '  return (new Function("window", "toast", "guard", body))' +
   '(window, toast, ErrorGuard);\n};');
 
-make(win, doc, { error() {} }, function () { return 0; },
+make(win, doc, { error(msg) { logs.push(String(msg)); } }, function () { return 0; },
      function (msg, ms) { toasts.push([msg, ms]); },
      { get() { return 'auto'; }, set() {} },
      Date, Object, String, JSON, __BODY__)();
 
-console.log(JSON.stringify({ toasts: toasts }));
+console.log(JSON.stringify({ toasts: toasts, console: logs }));
 """
 
 
@@ -174,9 +175,14 @@ for (let i = 0; i < 50; i++) {
 
 
 def test_resource_load_failure_is_labelled():
-    """图标 404 不该被说成「页面出错」——那类 error 事件没有 message。"""
+    """图标 404 不该被说成「页面出错」——那类 error 事件没有 message。
+
+    而且不能弹提示：坏图浏览器自带破图图标，再弹一条既误导又浪费提示预算
+    （_MAX_SHOW 只有 3 条，一道题 3 张图就把真正的脚本错误挤没了）。
+    这里断言「归类为 resource、但不产生 toast」。
+    """
     result = _run_guard("""
 window._h['error']({ target: { tagName: 'IMG', src: '/icons/x.png' } });
 """)
-    assert len(result["toasts"]) == 1
-    assert "资源加载失败" in result["toasts"][0][0]
+    assert result["toasts"] == [], result["toasts"]
+    assert result["console"] == ["[goshore:resource]"], result["console"]

@@ -863,7 +863,7 @@ const ErrorGuard = {
     return { message: String(err || fallback), where: "" };
   },
 
-  _report(kind, err, fallback) {
+  _report(kind, err, fallback, quiet) {
     const { message, where } = this._norm(err, fallback);
     const key = kind + "|" + message + "|" + where;
     const now = Date.now();
@@ -873,6 +873,8 @@ const ErrorGuard = {
     // 完整信息进控制台（含原始对象，浏览器能展开堆栈）
     try { console.error("[goshore:" + kind + "]", err); } catch (e) {}
 
+    // quiet：只进控制台、不弹提示。用于「一张图 404」这类不影响可操作的故障。
+    if (quiet) return;
     if (this._shown >= this._MAX_SHOW) return;
     this._shown += 1;
     this._toast(message, kind);
@@ -910,7 +912,10 @@ const ErrorGuard = {
       // 资源加载失败（img/script）也走 error 事件，但 target 不是 window，
       // 那类错误没有 message，单独归类，避免把「图标 404」说成页面崩溃。
       if (ev && ev.target && ev.target !== window && ev.target.tagName) {
-        this._report("resource", "资源加载失败 " + (ev.target.src || ev.target.href || ""), "资源加载失败");
+        // 图片 404 只进控制台，不弹提示：坏图在页面里本来就看得见（浏览器自带破图图标），
+        // 再弹一条「页面出错」既误导又浪费提示预算——一道题 3 张图就能把 _MAX_SHOW
+        // 吃干净，真正的脚本错误反而提示不出来。
+        this._report("resource", "资源加载失败 " + (ev.target.src || ev.target.href || ""), "资源加载失败", true);
         return;
       }
       this._report("error", ev && (ev.error || ev.message), "未知脚本错误");

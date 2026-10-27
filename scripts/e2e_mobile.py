@@ -284,8 +284,14 @@ def check_browser():
                 print("      " + line.strip(), flush=True)
 
         pg.on("pageerror", on_page_error)
+        # 资源 404 不算 JS 错误：CI 里没有题库 vault，示例库里 127 道图形推理题的
+        # 配图必然 404（见上面 img_dir 的说明）。ErrorGuard 会把这类失败以
+        # console.error("[goshore:resource] ...") 打出来，和浏览器自带的
+        # "Failed to load resource" 一样要排除，否则断言永远红。
         pg.on("console", lambda m: js_errors.append(m.text)
-            if m.type == "error" and "Failed to load resource" not in m.text else None)
+            if m.type == "error"
+            and "Failed to load resource" not in m.text
+            and not m.text.startswith("[goshore:resource]") else None)
 
         # ---- 启动：已登录（HTTP 冒烟末尾登录了 E2E 账号）→ 首页渲染，开门卡可见
         pg.goto(BASE + "/#/home", wait_until="domcontentloaded", timeout=20000)
