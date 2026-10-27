@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """综应C·论证评价训练器 + 论证错误辨析快练。
 
 数据源：app/argument_materials.json（与本模块同目录，Chaquopy 会作为数据文件打包进 APK）
@@ -11,18 +10,19 @@ AI 理由点评：submit 时用户填了理由才调用 DeepSeek，失败静默�
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import random
 import re
-import sqlite3
 import time
 from pathlib import Path
 
 import httpx
 
-from .config import load_settings
 from . import db
+from .config import load_settings
+from .logging_setup import get_logger
+
+log = get_logger(__name__)
 
 _DATA = Path(__file__).resolve().parent / "argument_materials.json"
 _BANK = Path(__file__).resolve().parent / "argument_quiz.json"
@@ -229,7 +229,7 @@ def _bank_items() -> list[dict]:
         try:
             _BANK_CACHE = json.loads(_BANK.read_text(encoding="utf-8")).get("items", [])
         except Exception as e:
-            print(f"[argument] 辨析题库加载失败: {e}")
+            log.warning("辨析题库加载失败：%s", e)
             _BANK_CACHE = []
     return _BANK_CACHE
 
@@ -433,5 +433,5 @@ async def ai_comment(mid: str, detail: list[dict]) -> list[str | None]:
             out[i] = str(arr[k]) if k < len(arr) else None
         return out
     except Exception as e:
-        print(f"[argument] AI 点评失败（静默降级）: {e}")
+        log.warning("AI 点评失败（静默降级）：%s", e)
         return [None] * len(detail)

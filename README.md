@@ -83,7 +83,7 @@
 - **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-flash`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 1048 条 + 16 个前端静态校验器（node）+ Playwright 移动端 E2E
+- **测试**：pytest 1072 条 + 16 个前端静态校验器（node）+ Playwright 移动端 E2E；ruff 全绿，覆盖率 60%
 
 ## 快速开始（首次使用顺序）
 
@@ -250,7 +250,7 @@ GOSHORE/
 │   ├── goshor.db          # 单库模式的老布局（与新布局二选一，见下）
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（1048 条）
+├── tests/                 # pytest 用例（1072 条）
 ├── tools/                 # 校验器（16 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── migrate_split.py       # 老单库 → content.db + user.db
@@ -288,8 +288,12 @@ python tools/migrate_split.py             # 真迁移（约 15~45 秒）
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（1048 条，跑在临时库上，不碰 data/*.db）
+# 后端单元 / 接口测试（1072 条，跑在临时库上，不碰 data/*.db）
 python -m pytest tests -q
+
+# 静态检查与覆盖率（配置见 pyproject.toml；开发依赖 pip install -r requirements-dev.txt）
+python -m ruff check .
+python -m pytest tests --cov --cov-report=term-missing:skip-covered
 
 # AI 离线质量评测（不联网、不花 token；低于 95 分退出码 1）
 python scripts/eval_ai.py --min-score 95
@@ -308,7 +312,7 @@ node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 1048 passed**、**AI 评测 33 条全过（100.00 分）**、**16 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
+当前基线：**pytest 1072 passed**、**`ruff check .` 全绿**、**覆盖率 60%**、**AI 评测 33 条全过（100.00 分）**、**16 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
 
 ## 常见问题
 

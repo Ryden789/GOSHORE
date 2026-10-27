@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,12 @@ if os.name == "nt":
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# 日志隔离：TestClient 的 lifespan 会调 setup_logging(DATA_DIR / "logs")，
+# 不拦截的话跑一次测试就往用户真实 data/logs/app.log 里追加几百行。
+# 这里指向一个进程级临时目录（不进 tmp_path：日志 handler 只在首次调用时装一次）。
+_LOG_DIR = Path(tempfile.mkdtemp(prefix="goshore-test-logs-"))
+os.environ["GOSHORE_LOG_DIR"] = str(_LOG_DIR)
 
 from app import db  # noqa: E402
 

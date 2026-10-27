@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import json
 
-from app import ai
-
 from conftest import seed_docs
+
+from app import ai
 
 
 def _one_doc(title="题", module="资料分析", kaodian="资料分析 / 增长量"):

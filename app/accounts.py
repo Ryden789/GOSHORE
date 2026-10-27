@@ -67,7 +67,7 @@ def _accounts_conn():
     """账号库连接：with 退出时提交事务并关闭（避免 Windows 下文件被句柄占用）。"""
     if _users_dir is None:
         raise RuntimeError("accounts 未 configure")
-    c = sqlite3.connect(_users_dir / "accounts.db")
+    c = db.open_connection(_users_dir / "accounts.db")
     c.row_factory = sqlite3.Row
     try:
         with c:  # 事务：正常退出提交，异常回滚
@@ -271,7 +271,7 @@ def migrate_legacy_if_needed(shared_db: Path) -> dict:
     db.set_user(_GUEST)
     db.connect().close()
 
-    legacy = sqlite3.connect(shared_db)
+    legacy = db.open_connection(shared_db)
     c0 = db.connect()
     moved = {}
     existing = {

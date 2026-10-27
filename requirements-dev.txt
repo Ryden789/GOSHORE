@@ -1,3 +1,6 @@
 # 开发/测试依赖（安装：pip install -r requirements-dev.txt）
 -r requirements.txt
 pytest>=8.0
+# 静态检查与覆盖率（配置见 pyproject.toml 的 [tool.ruff] / [tool.coverage]）
+ruff==0.17.2
+pytest-cov>=7.0

@@ -11,7 +11,6 @@ import sqlite3
 import time
 
 import pytest
-
 from conftest import seed_docs
 
 
@@ -393,7 +392,7 @@ def _seed_mastery(conn, n: int, days_old: int = 30, score: float = 0.9) -> None:
     conn.commit()
 
 
-def test_decay_mastery_logs_elapsed(temp_db, capsys, monkeypatch):
+def test_decay_mastery_logs_elapsed(temp_db, caplog, monkeypatch):
     """建议9：衰减过程必须打出耗时日志（题库扩大后靠它判断是否触发后台）。"""
     monkeypatch.setattr(temp_db, "_last_decay_at", 0.0)
     conn = temp_db.connect()
@@ -401,13 +400,14 @@ def test_decay_mastery_logs_elapsed(temp_db, capsys, monkeypatch):
     _seed_mastery(conn, 3)
     conn.close()
 
-    assert temp_db.decay_mastery(force=True) == 3
-    out = capsys.readouterr().out
+    with caplog.at_level("INFO", logger="goshore"):
+        assert temp_db.decay_mastery(force=True) == 3
+    out = caplog.text
     assert "[decay]" in out
     assert "同步阶段" in out and "耗时" in out and "3/3" in out
 
 
-def test_decay_mastery_defers_to_background_over_budget(temp_db, capsys, monkeypatch):
+def test_decay_mastery_defers_to_background_over_budget(temp_db, caplog, monkeypatch):
     """建议9：超过预算时同步阶段只处理一部分，剩余转后台且最终全部衰减完。"""
     monkeypatch.setattr(temp_db, "DECAY_BATCH", 200)
     monkeypatch.setattr(temp_db, "_last_decay_at", 0.0)
@@ -417,21 +417,23 @@ def test_decay_mastery_defers_to_background_over_budget(temp_db, capsys, monkeyp
     conn.close()
 
     # budget_ms=0 → 处理完第一行就必然超预算
-    sync_n = temp_db.decay_mastery(force=True, budget_ms=0)
-    out = capsys.readouterr().out
-    assert 0 < sync_n < 700                  # 同步阶段没跑完
-    assert "[decay]" in out and "转后台" in out
-    assert f"剩余 {700 - sync_n} 题" in out
+    with caplog.at_level("INFO", logger="goshore"):
+        sync_n = temp_db.decay_mastery(force=True, budget_ms=0)
+        out = caplog.text
+        assert 0 < sync_n < 700                  # 同步阶段没跑完
+        assert "[decay]" in out and "转后台" in out
+        assert f"剩余 {700 - sync_n} 题" in out
 
-    # 后台把剩余补齐，且打出后台日志
-    assert temp_db.wait_decay_bg(20) is True
-    assert "后台批次" in capsys.readouterr().out
+        # 后台把剩余补齐，且打出后台日志
+        caplog.clear()
+        assert temp_db.wait_decay_bg(20) is True
+        assert "后台批次" in caplog.text
     scores = temp_db.mastery_map()
     assert len(scores) == 700
     assert all(s < 0.9 for s in scores.values())
 
 
-def test_decay_mastery_background_is_single_flight(temp_db, capsys, monkeypatch):
+def test_decay_mastery_background_is_single_flight(temp_db, caplog, monkeypatch):
     """同一时间只允许一个后台批次；重复调度会被拒掉，不会重复衰减。"""
     monkeypatch.setattr(temp_db, "_last_decay_at", 0.0)
     conn = temp_db.connect()

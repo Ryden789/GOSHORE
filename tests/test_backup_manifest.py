@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import main, config
+from app import config, main
 
 
 @pytest.fixture()

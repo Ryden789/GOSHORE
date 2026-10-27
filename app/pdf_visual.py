@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import io
 import re
 from pathlib import Path
 
-from .config import vision_model
-
 import fitz  # pymupdf
 import httpx
+
+from .config import vision_model
+from .logging_setup import get_logger
+
+log = get_logger(__name__)
 
 # 题干特征：图形推理常见设问
 _FIG_STEM_RE = re.compile(r"规律性|填入问号处|展开图|立体图形|俯视图|截面图")
@@ -194,8 +196,10 @@ async def _vision_analysis(key: str, base_url: str, images: list[str], stem: str
                 d = _json.loads(out[i:j + 1])
                 if isinstance(d, dict):
                     return d
-    except Exception:
-        pass
+    except (httpx.HTTPError, KeyError, IndexError, ValueError, TypeError) as e:
+        # 视觉简析是「锦上添花」：模型/网络/JSON 任何一环失败都退回空 dict，
+        # 由调用方跳过简析。这里必须留痕，否则图形题没解析出来会像凭空消失。
+        log.warning("图形题视觉简析失败（降级为空）：%s", e)
     return {}
 
 

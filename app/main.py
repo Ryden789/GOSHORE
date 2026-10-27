@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -28,14 +29,53 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
-from . import access, ai, db, essay_rubric, exam_bank, formula_drill, importer, interview, knowledge, planner, share, speedcalc, variant, wordfill, argument, zy_notes, xingce_notes, cube_vision, sync_webdav
-from .config import (STATIC_DIR, DATA_DIR, DB_PATH, CONTENT_DB_PATH, SETTINGS_PATH, BASE_DIR, REMINDER_KEYS,
-                     GOAL_KEYS, load_settings, reminder_patch, goal_patch,
-                     save_settings, SYNC_KEYS, sync_patch, SYNC_REMOTE_DEFAULT)
+from . import (
+    access,
+    ai,
+    argument,
+    cube_vision,
+    db,
+    essay_rubric,
+    exam_bank,
+    formula_drill,
+    importer,
+    interview,
+    knowledge,
+    logging_setup,
+    planner,
+    share,
+    speedcalc,
+    sync_webdav,
+    variant,
+    wordfill,
+    xingce_notes,
+    zy_notes,
+)
+from .config import (
+    BASE_DIR,
+    CONTENT_DB_PATH,
+    DATA_DIR,
+    GOAL_KEYS,
+    REMINDER_KEYS,
+    SETTINGS_PATH,
+    STATIC_DIR,
+    SYNC_KEYS,
+    SYNC_REMOTE_DEFAULT,
+    goal_patch,
+    load_settings,
+    reminder_patch,
+    save_settings,
+    sync_patch,
+)
+from .logging_setup import get_logger
+
 # 可打印导出页（G5）：与手机端 goshor_server.py 共用同一份拼装逻辑。
 # esc/rich_text 也从这里引入，别再在本模块另写一份（会漂移）。
-from .print_export import esc, rich_text, render_html
+from .print_export import render_html
+
+log = get_logger(__name__)
 
 
 # 存储残缺（只剩一半库）时记录原因，lifespan 捕获 StorageBroken 时写入，
@@ -45,12 +85,20 @@ _STORAGE_ERROR: dict[str, str] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 日志要在任何业务代码之前装好：种子/索引/自检的输出都要落盘
+    logging_setup.setup_logging(DATA_DIR / "logs")
     try:
         # 全新安装：先把内置示例题库放到位，免得开箱就是「题库 0 道」。
         # 只在老库/新库都不存在时生效，已有数据的用户完全不受影响。
         if db.seed_sample():
-            print("[seed] 已放置内置示例题库（可在「导入」里换成自己的题源）")
-        db.init_db(db.connect())
+            log.info("已放置内置示例题库（可在「导入」里换成自己的题源）")
+        # 初始化用的连接必须显式关闭：sqlite3 连接在 GC 时才释放文件句柄，
+        # 不关会在每次启动/每个测试用例后留下 ResourceWarning 和悬挂句柄。
+        _init_conn = db.connect()
+        try:
+            db.init_db(_init_conn)
+        finally:
+            _init_conn.close()
         # 首次启动自动构建索引（库为空时）
         conn = db.connect()
         n = conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
@@ -61,15 +109,13 @@ async def lifespan(app: FastAPI):
             try:
                 db.reindex()
             except Exception as e:  # noqa: BLE001
-                print(f"[reindex] 首次建索引跳过：{e}")
+                log.warning("首次建索引跳过：%s", e)
         _startup_selfcheck()
     except db.StorageBroken as e:
         # 存储残缺时**仍然把服务起起来**：窗口能打开、页面能把这条原因显示给
         # 用户（各数据接口会统一返回 503 + 这个说明）。比进程直接退出、窗口
         # 一闪而过好得多——后者用户只会以为软件坏了。
-        print("\033[91m" + "=" * 60)
-        print(str(e))
-        print("=" * 60 + "\033[0m")
+        log.error("%s\n%s\n%s", "=" * 60, e, "=" * 60)
         _STORAGE_ERROR.clear()
         _STORAGE_ERROR.update(msg=str(e))
     yield
@@ -77,14 +123,14 @@ async def lifespan(app: FastAPI):
     try:
         db.wait_decay_bg(2.0)
     except Exception:  # noqa: BLE001  存储残缺时收尾也可能失败
-        pass
+        log.debug("后台衰减收尾失败", exc_info=True)
 
 
 def _startup_selfcheck() -> None:
-    """启动时自检核心数据接口，失败项用红色标注但不阻断启动。
+    """启动时自检核心数据接口，失败项记 ERROR，但不阻断启动。
 
-    逐项打印（含通过项）——这样「自检输出包含哪些项」本身是可观测的，
-    新增模块（面试 / 时政）有没有被覆盖，看启动日志即可确认（建议7）。
+    逐项记录（含通过项，DEBUG 级别）——这样「自检覆盖了哪些项」本身是可观测的，
+    新增模块（面试 / 时政）有没有被覆盖，看日志即可确认（建议7）。
     """
     checks = [
         ("题库 facets", lambda: db.facets()),
@@ -103,12 +149,16 @@ def _startup_selfcheck() -> None:
             if r is None:
                 raise RuntimeError("返回 None")
             ok += 1
-            print(f"\033[92m  [ OK ] {name}\033[0m")
+            # 逐项 INFO（与改造前的 print 同粒度）：新增模块有没有被自检覆盖，
+            # 看启动日志就能确认，不用翻源码。
+            log.info("自检通过 %s", name)
         except Exception as e:
             fail += 1
-            print(f"\033[91m  [FAIL] {name}: {e}\033[0m")
-    status = "\033[92m全部通过\033[0m" if fail == 0 else f"\033[91m{fail} 项失败\033[0m"
-    print(f"  启动自检: {ok}/{ok + fail} 通过 · {status}")
+            log.error("自检失败 %s：%s", name, e)
+    if fail == 0:
+        log.info("启动自检 %s/%s 通过 · 全部通过", ok, ok + fail)
+    else:
+        log.error("启动自检 %s/%s 通过 · %s 项失败", ok, ok + fail, fail)
 
 
 app = FastAPI(title="GOSHORE 上岸", lifespan=lifespan)
@@ -290,8 +340,18 @@ try:
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
-except Exception:
-    pass
+except ImportError:  # 依赖被裁剪时降级：没有 CORS 只影响本机开发页
+    log.warning("CORSMiddleware 不可用，本机开发页跨源请求将被浏览器拦截")
+
+# 响应压缩。题库类接口的 JSON 里全是重复字段名和中文题干，压缩比极高
+# （实测 23k 题库：`/api/wrong-book` 3.53MB → 332KB，9.4×；`/api/cards`
+# 1.03MB → 350KB；`/api/history` 41KB → 5KB）。手机上这直接决定弱网下
+# 是「秒开」还是「转圈十秒」。阈值 1KB 以下不压（头部开销大于收益）。
+try:
+    from starlette.middleware.gzip import GZipMiddleware
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+except ImportError:  # 老版本 Starlette 没有该中间件：功能可用，只是流量变大
+    log.warning("GZipMiddleware 不可用，响应将不再压缩（弱网下明显变慢）")
 
 
 @app.middleware("http")
@@ -412,8 +472,10 @@ def _mumu_connect(adb, deadline, elapsed):
         for port in _MUMU_ADB_PORTS:
             try:
                 _run([str(adb), "connect", f"127.0.0.1:{port}"], timeout=15)
-            except Exception:
-                pass
+            except (OSError, subprocess.SubprocessError) as e:
+                # 端口没起来时 adb connect 必然失败，这是等待循环的正常路径，
+                # 但 DEBUG 级别留一行，排查「模拟器一直连不上」时能看出试过哪些端口。
+                log.debug("adb connect 127.0.0.1:%s 失败：%s", port, e)
         found = _devices(adb)
         if found and _boot_completed(adb, found[0]):
             return found[0]
@@ -487,8 +549,9 @@ def _launch_apk(adb, serial):
         proc = _run([str(adb), "-s", serial, "shell", "pm", "list", "packages",
                      "com.goshor.app"], timeout=30)
         installed = "com.goshor.app" in (proc.stdout or b"").decode("utf-8", "ignore")
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError) as e:
+        # 查不到就当没装，走安装分支；这是安全的降级方向
+        log.debug("查询已安装包失败，按未安装处理：%s", e)
     if not installed:
         apk = _apk_path()
         if apk is None:
@@ -564,8 +627,10 @@ def _open_app_pipeline():
         return
     try:
         _run([str(adb), "start-server"], timeout=30)
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError) as e:
+        # start-server 失败后 _devices() 大概率也拿不到设备，后续会给出
+        # 「未检测到设备」的提示；这里记一条便于区分「adb 本身坏了」。
+        log.debug("adb start-server 失败：%s", e)
 
     def elapsed():
         return int(time.time() - _OPEN_APP["started"])
@@ -1026,8 +1091,9 @@ def api_weekly_report():
 
 
 @app.get("/api/wrong-book")
-def api_wrong_book():
-    return {"items": db.list_wrong_book()}
+def api_wrong_book(limit: int = 0):
+    """错题本列表。`limit<=0`（默认）返回全量，兼容旧前端。"""
+    return {"items": db.list_wrong_book(limit)}
 
 
 class DocIdIn(BaseModel):
@@ -1443,7 +1509,12 @@ async def api_import_file_preview(b: ImportFileIn):
     if ext not in ("pdf", "docx", "xlsx", "xls", "csv", "md", "txt", "json"):
         return {"items": [], "error": f"不支持的格式 .{ext}，支持 pdf/docx/xlsx/csv/md/txt/json"}
     try:
-        text = importer.extract_text_from_file(b.name, data)
+        # 解析是纯同步 CPU 活（PDF/Excel 解析、上万行 CSV 切分），直接写在
+        # async 路由里会把事件循环钉死：实测 3 万行 CSV 解析期间，并发的
+        # `/api/health` 尾延迟从 31ms 拉到 195ms（6.4×），手机端表现就是
+        # 「导入时整站卡住」。丢到线程池后尾延迟回到 31ms，端点本身也快 40%
+        # （236ms vs 369ms，GZip 等中间件不再排队）。
+        text = await run_in_threadpool(importer.extract_text_from_file, b.name, data)
     except Exception as e:
         return {"items": [], "error": f"文件解析失败：{e}"}
     if len(text.strip()) < 20:
@@ -1937,14 +2008,15 @@ async def api_shizheng_generate(b: ShizhengGenIn):
 async def api_shizheng_quiz(b: ShizhengGenIn):
     """为某期时政生成 10 道自测单选（JSON），存库；已存在直接返回。"""
     import json as _json
-    import re as _re
     period = b.period or _shizheng_period()[0]
     cached = db.get_shizheng_quiz(period)
     if cached:
         try:
             return {"ok": True, "cached": True, "items": _json.loads(cached)}
-        except Exception:
-            pass
+        except ValueError as e:
+            # 缓存里是坏 JSON：降级为重新生成，但要留痕（否则用户会看到
+            # 每次点都重新调模型，却不知道为什么）。
+            log.warning("时政自测缓存损坏，重新生成 %s：%s", period, e)
     item = db.get_shizheng(period)
     if not item:
         return {"ok": False, "error": "该期时政尚未生成"}
@@ -1986,13 +2058,15 @@ def _replace_db_file(src) -> None:
     split 模式下目标换成 user.db：**绝不**碰 content.db（题库是可分发、
     可整体替换的只读文件，恢复个人备份不该改动它）。
     """
-    import sqlite3
-    src_conn = sqlite3.connect(str(src), timeout=15)
+    src_conn = db.open_connection(str(src), timeout=15)
     try:
-        dst = sqlite3.connect(_user_db_path(), timeout=15)
+        dst = db.open_connection(_user_db_path(), timeout=15)
         try:
             src_conn.backup(dst)
             dst.commit()
+            # 换进来的库可能是旧结构（老备份 / 别人机器上的库）：作废「结构已就绪」
+            # 登记，让下一次 connect() 重新走补表 + 补列 + 可写探测。
+            db._forget_personal_ready(_user_db_path())
         finally:
             dst.close()
     finally:
@@ -2019,7 +2093,7 @@ def _prune_content_tables_from_user_db() -> None:
     VACUUM 收回空间；个人表一律不动。
     """
     import sqlite3
-    conn = sqlite3.connect(_user_db_path(), timeout=15)
+    conn = db.open_connection(_user_db_path(), timeout=15)
     try:
         names = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -2058,7 +2132,7 @@ def api_backup_status():
     answers = notes = 0
     integrity = "ok"
     try:
-        conn = sqlite3.connect(user_path, timeout=10)
+        conn = db.open_connection(user_path, timeout=10)
         try:
             answers = conn.execute("SELECT COUNT(*) FROM answers").fetchone()[0]
             try:
@@ -2141,8 +2215,9 @@ def api_backup_export():
     name = f"goshore_backup_{datetime.datetime.now():%Y%m%d_%H%M}.zip"
     try:
         save_settings({"last_backup_at": datetime.datetime.now().isoformat(timespec="seconds")})
-    except Exception:
-        pass
+    except OSError as e:
+        # 时间戳只是「上次备份于」的展示字段，写不进去不该让备份失败
+        log.warning("备份时间戳写入设置失败：%s", e)
     return FileResponse(
         zpath, media_type="application/zip", filename=name,
         background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True))
@@ -2155,27 +2230,34 @@ async def api_backup_import(file: UploadFile):
     split 模式下 zip 里那份 `goshor.db` 实际是 user.db 的内容：只覆盖个人库，
     **content.db 不动**（题库不随个人备份走，也不该被旧备份回滚）。
     """
-    import zipfile
     import shutil
     import tempfile
+    import zipfile
     ok_files = []
     try:
         with tempfile.TemporaryDirectory() as td:
             fp = Path(td) / "backup.zip"
-            fp.write_bytes(await file.read())
+            # 落盘和解压都是同步阻塞 IO（备份包可能几百 MB），丢线程池，
+            # 否则恢复期间整个服务（含 /api/health）都停在这里。
+            await run_in_threadpool(fp.write_bytes, await file.read())
             with zipfile.ZipFile(fp) as z:
                 names = z.namelist()
                 if "goshor.db" not in names:
                     return {"ok": False, "error": "备份包中缺少 goshor.db"}
                 tmp_db = Path(td) / "goshor.db"
-                z.extract("goshor.db", td)
+                await run_in_threadpool(z.extract, "goshor.db", td)
                 # 校验是合法 SQLite 再覆盖
-                import sqlite3
-                try:
-                    chk = sqlite3.connect(tmp_db)
-                    chk.execute("SELECT 1")
-                    chk.close()
-                except Exception:
+
+                def _check_db() -> bool:
+                    try:
+                        chk = db.open_connection(tmp_db)
+                        chk.execute("SELECT 1")
+                        chk.close()
+                        return True
+                    except Exception:
+                        return False
+
+                if not await run_in_threadpool(_check_db):
                     return {"ok": False, "error": "goshor.db 校验失败"}
                 verified = False
                 if "manifest.json" in names:
@@ -2191,22 +2273,25 @@ async def api_backup_import(file: UploadFile):
                         return {"ok": False,
                                 "error": "备份包来自更新版本，请先升级 GOSHORE"}
                     expected = str(manifest.get("db_sha256") or "")
-                    if expected and _sha256_file(tmp_db) != expected:
+                    if expected and await run_in_threadpool(_sha256_file, tmp_db) != expected:
                         return {"ok": False,
                                 "error": "备份包校验失败：数据库与清单不一致，文件可能损坏"}
                     verified = bool(expected)
-                _replace_db_file(tmp_db)
+                # 整库覆盖（SQLite 在线备份 API）同样可能搬几百 MB 页面
+                await run_in_threadpool(_replace_db_file, tmp_db)
                 ok_files.append("goshor.db")
                 if db.split_enabled():
                     # 旧版「整库」备份会把题库表一起写进 user.db，恢复后立刻摘掉
                     # （见 _prune_content_tables_from_user_db 的说明）
-                    _prune_content_tables_from_user_db()
+                    await run_in_threadpool(_prune_content_tables_from_user_db)
                 if "settings.json" in names:
-                    shutil.copy2(Path(td) / "settings.json", SETTINGS_PATH)
+                    await run_in_threadpool(
+                        shutil.copy2, Path(td) / "settings.json", SETTINGS_PATH)
                     ok_files.append("settings.json")
                 if "essay_questions.json" in names:
-                    shutil.copy2(Path(td) / "essay_questions.json",
-                                 DATA_DIR / "essay_questions.json")
+                    await run_in_threadpool(
+                        shutil.copy2, Path(td) / "essay_questions.json",
+                        DATA_DIR / "essay_questions.json")
                     ok_files.append("essay_questions.json")
         return {"ok": True, "restored": ok_files, "verified": verified,
                 "note": "请重启服务使恢复生效"}
@@ -2285,13 +2370,15 @@ def _settle_local_stamp() -> str:
     """
     import sqlite3
     try:
-        conn = sqlite3.connect(str(_user_db_path()), timeout=15)
+        conn = db.open_connection(str(_user_db_path()), timeout=15)
         try:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             conn.close()
-    except Exception:
-        pass
+    except sqlite3.Error as e:
+        # checkpoint 失败只会让基准戳略微偏旧（多一次「有未同步修改」的提示），
+        # 不该影响同步本身；但要记下来，否则偶发误报永远查不到原因。
+        log.warning("同步前 WAL checkpoint 失败：%s", e)
     return _local_stamp()
 
 
@@ -2415,7 +2502,6 @@ def api_sync_remote():
 def api_sync_down(b: SyncDownIn):
     import json as _json
     import shutil
-    import sqlite3
     import tempfile
     s = load_settings()
     err = _sync_ready(s)
@@ -2459,7 +2545,7 @@ def api_sync_down(b: SyncDownIn):
                 if "goshor.db" not in names:
                     return {"ok": False, "error": "云端备份包中缺少 goshor.db"}
                 z.extract("goshor.db", tmpdir)
-                chk = sqlite3.connect(Path(tmpdir) / "goshor.db")
+                chk = db.open_connection(Path(tmpdir) / "goshor.db")
                 chk.execute("SELECT 1")
                 chk.close()
                 restored.append("goshor.db")
@@ -2542,7 +2628,7 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
-def resolve_grade_reference(b: "EssayGradeIn") -> tuple[str, str, dict | None]:
+def resolve_grade_reference(b: EssayGradeIn) -> tuple[str, str, dict | None]:
     """决定本次批改用哪份「参考答案」，返回 `(reference, origin, hit)`。
 
     优先级（设计文档 4.2）：
@@ -2614,8 +2700,10 @@ async def api_essay_grade(b: EssayGradeIn):
             # 否则用户白等一次模型调用。
             try:
                 db.record_essay_weak_points(gid, b.category, parsed.get("points"))
-            except Exception:
-                pass
+            except (sqlite3.Error, ValueError) as e:
+                # 失分点入队失败不影响本次批改结果的返回，但要让用户/日志
+                # 能看到「这次没进复习队列」。
+                log.warning("作文失分点入复习队列失败 gid=%s：%s", gid, e)
             ev = {"type": "result", "data": parsed, "total": total,
                   "reference_origin": ref_origin}
             if ref_origin == "exam_bank" and hit:
@@ -3017,8 +3105,9 @@ def api_share_open(b: ShareOpenIn):
     found = [d["id"] for d in items]
     try:
         db.bump_shared_set_play(code)
-    except Exception:
-        pass
+    except sqlite3.Error as e:
+        # 播放计数只用于「热门分享」排序，失败不该影响打开分享码
+        log.warning("分享码播放计数失败：%s", e)
     return {
         "ok": True,
         "title": data["title"],

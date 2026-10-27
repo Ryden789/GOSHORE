@@ -830,4 +830,97 @@ function aiErrorHint(raw) {
   return "AI 服务暂时不可用，请稍后重试；若持续失败，请检查 Key 与模型设置。";
 }
 
+/* ============ 全局错误兜底（P3：前端无 onerror / unhandledrejection） ============
+ *
+ * 此前两端都没有任何全局错误钩子：一个 render 里漏判的空值、一次 await 没接住的
+ * reject，表现是「页面某块突然空白、点了没反应」，控制台里的堆栈用户看不见，
+ * 也没法反馈。这里补两条兜底：
+ *   - window.onerror：同步异常（渲染、事件回调）
+ *   - unhandledrejection：await / promise 链漏 catch
+ *
+ * 刻意**不做**的两件事：
+ *   1. 不 replaceChildren / 不清空视图 —— 局部报错不该让整页变成错误页，
+ *      能渲染的部分继续留着，用户还能操作。
+ *   2. 不弹模态框 —— 弹窗会把「可继续操作」变成「必须点掉才能继续」。
+ * 只做：console.error（保留完整堆栈给开发者）+ 右下角一条可自动消失的提示。
+ *
+ * 去重：同一个 message+source+line 在 10 秒内只提示一次，避免渲染循环里
+ * 每帧一条提示把页面刷爆。
+ */
+const ErrorGuard = {
+  _seen: Object.create(null),
+  _DEDUP_MS: 10000,
+  _MAX_SHOW: 3,          // 每次页面会话最多提示几条，防止连环报错刷屏
+  _shown: 0,
+
+  /** 错误归一化成 {message, where}，两边钩子的入参形状不同，这里统一 */
+  _norm(err, fallback) {
+    if (err && typeof err === "object") {
+      const msg = err.message || err.reason && err.reason.message || String(err.reason || err);
+      const where = err.filename ? (err.filename + ":" + (err.lineno || 0)) : "";
+      return { message: msg || fallback, where };
+    }
+    return { message: String(err || fallback), where: "" };
+  },
+
+  _report(kind, err, fallback) {
+    const { message, where } = this._norm(err, fallback);
+    const key = kind + "|" + message + "|" + where;
+    const now = Date.now();
+    if (this._seen[key] && now - this._seen[key] < this._DEDUP_MS) return;
+    this._seen[key] = now;
+
+    // 完整信息进控制台（含原始对象，浏览器能展开堆栈）
+    try { console.error("[goshore:" + kind + "]", err); } catch (e) {}
+
+    if (this._shown >= this._MAX_SHOW) return;
+    this._shown += 1;
+    this._toast(message, kind);
+  },
+
+  /** 右下角提示条：不抢焦点、不阻塞、8 秒自消。toast() 由各端定义，缺失则跳过 */
+  _toast(message, kind) {
+    const text = (kind === "promise" ? "后台操作失败：" : "页面出错：") + message;
+    try {
+      // 各端 toast(msg, ms) 的第二个参数是**毫秒数**，不是类型名 —— 传类型会让
+      // setTimeout 收到字符串（等价 0ms，提示一闪而过）。
+      if (typeof toast === "function") {
+        toast(text, 8000);
+        return;
+      }
+    } catch (e) { /* toast 自身出错也不能再抛 */ }
+    try {
+      const bar = document.createElement("div");
+      bar.setAttribute("role", "status");
+      bar.style.cssText =
+        "position:fixed;right:16px;bottom:16px;z-index:9999;max-width:min(420px,80vw);" +
+        "padding:10px 14px;border-radius:8px;font-size:13px;line-height:1.5;" +
+        "background:#a6342a;color:#fff;box-shadow:0 4px 16px rgba(0,0,0,.24)";
+      bar.textContent = text;
+      document.body.appendChild(bar);
+      setTimeout(() => { try { bar.remove(); } catch (e) {} }, 8000);
+    } catch (e) { /* DOM 都不可用（如已卸载）就只剩 console */ }
+  },
+
+  /** 启动时挂载；重复调用无副作用 */
+  init() {
+    if (this._inited) return;
+    this._inited = true;
+    window.addEventListener("error", (ev) => {
+      // 资源加载失败（img/script）也走 error 事件，但 target 不是 window，
+      // 那类错误没有 message，单独归类，避免把「图标 404」说成页面崩溃。
+      if (ev && ev.target && ev.target !== window && ev.target.tagName) {
+        this._report("resource", "资源加载失败 " + (ev.target.src || ev.target.href || ""), "资源加载失败");
+        return;
+      }
+      this._report("error", ev && (ev.error || ev.message), "未知脚本错误");
+    }, true);
+    window.addEventListener("unhandledrejection", (ev) => {
+      this._report("promise", ev && ev.reason, "未处理的 Promise 异常");
+    });
+  },
+};
+
+try { ErrorGuard.init(); } catch (e) { /* 极老 WebView：没有 addEventListener 也不该白屏 */ }
+
 /* shared-core:end */

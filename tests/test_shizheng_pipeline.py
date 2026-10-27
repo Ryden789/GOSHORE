@@ -16,8 +16,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 from app import ai, db
 
 ROOT = Path(__file__).resolve().parent.parent

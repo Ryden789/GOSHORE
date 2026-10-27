@@ -7,6 +7,9 @@ import re
 import httpx
 
 from .config import load_settings
+from .logging_setup import get_logger
+
+log = get_logger(__name__)
 
 GEN_SYSTEM = """你是行测言语理解教研员，专门命制「逻辑填空」真题风格题目。
 要求：
@@ -174,13 +177,13 @@ async def generate_one(category: str = "", difficulty: str = "mid") -> dict | No
         reason = _structural_check(obj)
         if reason:
             last_reason = f"结构校验未过：{reason}"
-            print(f"[wordfill] 第{attempt+1}次 {last_reason}")
+            log.info("第%s次 %s", attempt + 1, last_reason)
             continue
         # 答案交叉验证：盲选结论须与命题答案一致
         pick = await _blind_pick(s, obj)
         if pick and pick != obj["answer"]:
             last_reason = f"盲选复核不一致：命题 {obj['answer']} / 盲选 {pick}"
-            print(f"[wordfill] 第{attempt+1}次 {last_reason}")
+            log.info("第%s次 %s", attempt + 1, last_reason)
             continue
         if not pick:
             last_reason = "盲选复核请求失败"
@@ -189,5 +192,5 @@ async def generate_one(category: str = "", difficulty: str = "mid") -> dict | No
         obj["verified"] = True
         return obj
 
-    print(f"[wordfill] 放弃本题：{last_reason}")
+    log.warning("放弃本题：%s", last_reason)
     return None

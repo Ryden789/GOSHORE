@@ -1,0 +1,67 @@
+[tool.ruff]
+# 只跑「真 bug」相关规则：未定义名、未用导入、未用变量、f-string 占位符错、
+# 未排序导入等。风格类（行宽/引号/命名）一律不开 —— 这个仓库是两个人边写边
+# 演进出来的，一次性 reformat 只会制造巨大的无意义 diff。
+line-length = 120
+target-version = "py311"
+extend-exclude = [
+    ".tools", "android", "dist", "output", "reports",
+    "static/vendor",          # 第三方库原样入库，不参与检查
+    ".pytest_tmp*",
+    "_probe_*.py",            # 一次性性能探针，用完即删
+    "tools",                  # 一次性迁移/打包脚本，随任务废弃，不强求整洁
+    "scripts",                # 同上：冒烟与截图脚本
+]
+
+[tool.ruff.lint]
+select = [
+    "F",      # pyflakes：未定义名 / 未用导入 / 未用变量 / f-string 占位符
+    "E9",     # 语法错误、IO 错误
+    "I",      # import 排序
+    "UP",     # pyupgrade 中低风险项
+    "RUF100", # 失效的 noqa
+]
+ignore = [
+    "E501",   # 行宽交给 line-length，不因长注释/长字符串报错
+]
+# 这些规则本仓库**不启用**，但代码里已经写了 `# noqa: BLE001` 之类标注
+# （刻意宽捕获异常的地方，标注是给未来开启时用的说明书）。声明为 external
+# 后 ruff 不会把它们判成「失效 noqa」。
+external = ["BLE001", "A003", "E402"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里大量「import 后只用一次」「故意留的未用变量做对照」，按需放宽
+"tests/*" = ["F401", "F841"]
+# 打包/迁移脚本常需要按顺序 import 或有副作用导入
+"tools/*" = ["F401", "I001"]
+"scripts/*" = ["F401", "I001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    # Starlette 的 TestClient 弃用提示：上游修完前不刷屏
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = [
+    "app/ai_eval.py",         # 离线评测 CLI，只在手动跑
+    "app/pdf_visual.py",      # 依赖 pymupdf + 视觉模型，单测里不跑真实 PDF
+]
+
+[tool.coverage.report]
+skip_covered = false
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "except ImportError:",      # 可选依赖降级分支
+]

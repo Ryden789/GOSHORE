@@ -20,7 +20,6 @@
 """
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
@@ -124,8 +123,8 @@ def conn(seeded):
 # ============================================================
 
 def test_no_schema_change():
-    """G7 纯删数据、不改结构，schema 版本保持 12。"""
-    assert db.SCHEMA_VERSION == 12
+    """G7 纯删数据、不改结构，schema 版本保持 13。"""
+    assert db.SCHEMA_VERSION == 13
 
 
 def test_scopes_are_the_four_documented_ones():

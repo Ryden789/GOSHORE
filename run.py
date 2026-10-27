@@ -95,8 +95,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print("  按 Ctrl+C 停止服务")
     print("=" * 52)
+    from app.logging_setup import uvicorn_level
     uvicorn.run("app.main:app", host="0.0.0.0" if args.lan else "127.0.0.1",
-                port=port, log_level="warning")
+                port=port, log_level=uvicorn_level())
     return 0
 
 

@@ -18,8 +18,11 @@ import time
 
 import httpx
 
-from .config import load_settings
 from . import db
+from .config import load_settings
+from .logging_setup import get_logger
+
+log = get_logger(__name__)
 
 GEN_PROMPT = """你是行测/职测命题员（熟悉公务员国考/省考行测与事业单位职测）。根据给定母题生成一道「变式题」：保持考点与解题方法不变，更换题面情境、材料或数字。
 命题流程（必须遵守）：
@@ -142,7 +145,7 @@ async def generate_variant(doc: dict) -> dict | None:
             q["verified"] = True
             q["src_doc_id"] = doc["id"]
             return q
-        print(f"[variant] 盲选不一致: answer={q['answer']} blind={pick[:10]}，重试")
+        log.info("盲选不一致：answer=%s blind=%s，重试", q["answer"], pick[:10])
     return None
 
 
@@ -177,7 +180,7 @@ async def diagnose(doc: dict, hist: dict) -> dict:
             reason = j["reason"]
         tip = str(j.get("tip", "")).strip()
     except Exception as e:
-        print(f"[annihilate] 归因失败，降级: {e}")
+        log.warning("归因失败，降级：%s", e)
     if not reason:
         reason = hist.get("reason") or ""
     if not tip:

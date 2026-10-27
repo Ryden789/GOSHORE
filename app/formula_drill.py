@@ -113,7 +113,7 @@ def _gen_zengliang() -> dict:
         ctx = f"2025年某省{name}为{a}万吨，比上年增长{r}%。"
     else:
         ctx = f"2025年全国{name}为{a}亿件，比上年增长{r}%。"
-    ask = f"2025年该指标比上年增加了多少？下列列式正确的是（只列式，不计算）"
+    ask = "2025年该指标比上年增加了多少？下列列式正确的是（只列式，不计算）"
     correct = f"{a}×{r}%/(1+{r}%)"
     pits = [f"{a}×{r}%", f"{a}/(1+{r}%)", f"{a}×(1+{r}%)"]
     return _base_q("zengliang", ctx, ask, correct, pits)
@@ -239,7 +239,6 @@ def _gen_beishu() -> dict:
 
 
 def _gen_junian() -> dict:
-    years = [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
     y1, y2 = 2020, 2025
     n_gap = y2 - y1
     b = random.randint(200, 2000) * 10

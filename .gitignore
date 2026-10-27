@@ -11,6 +11,8 @@ data/*.db.bak
 data/.split-migrate-*/
 # 桌面模式（desktop.py）的 WebView2 用户数据：localStorage / 缓存，随程序生成，不分发
 data/webview/
+# 运行日志（app.log + 轮转的 app.log.1~3）：本机运行产物，可能含题库路径
+data/logs/
 
 # Python
 __pycache__/
@@ -27,6 +29,10 @@ scripts/_*_tmp/
 # pytest 的临时目录与缓存（DSH 沙箱下可能残留、普通权限删不掉）
 .pytest_tmp*/
 .pytest_cache/
+# 覆盖率产物（pytest --cov 生成，每次跑都变）
+.coverage
+.coverage.*
+htmlcov/
 # 测试/脚本遗留的根目录临时目录
 /tmp*/
 # 题库抽检单（可能含题目原文，按需本地留存，不入库）

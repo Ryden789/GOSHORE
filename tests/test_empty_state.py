@@ -21,10 +21,10 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from jsutil import fn_src
 
 from app import db
-from app.main import app, _startup_selfcheck
-from jsutil import fn_src
+from app.main import _startup_selfcheck, app
 
 ROOT = Path(__file__).resolve().parent.parent
 APP_JS = ROOT / "static" / "app.js"
@@ -118,26 +118,28 @@ def test_shizheng_api_empty_payload(client):
 
 # ---------- 启动自检：覆盖新模块表 ----------
 
-def test_selfcheck_includes_new_modules(temp_db, capsys):
+def test_selfcheck_includes_new_modules(temp_db, caplog):
     """自检输出必须包含面试 / 时政新项，且全部通过。"""
-    _startup_selfcheck()
-    out = capsys.readouterr().out
+    with caplog.at_level("INFO", logger="goshore"):
+        _startup_selfcheck()
+    out = caplog.text
     for kw in ("面试题库", "面试分类", "时政库"):
         assert kw in out, f"自检输出缺少新模块项：{kw}"
     assert "项失败" not in out, f"自检不应有失败项：{out!r}"
-    assert "[FAIL]" not in out
+    assert "自检失败" not in out
 
 
-def test_selfcheck_detects_missing_shizheng_table(temp_db, capsys):
-    """时政表被删 → 自检应把该项标红为失败（证明检查真的在查表）。"""
+def test_selfcheck_detects_missing_shizheng_table(temp_db, caplog):
+    """时政表被删 → 自检应把该项记为失败（证明检查真的在查表）。"""
     conn = db.connect()
     conn.execute("DROP TABLE shizheng")
     conn.commit()
     conn.close()
 
-    _startup_selfcheck()
-    out = capsys.readouterr().out
-    assert "[FAIL] 时政库" in out, f"删表后自检未报失败：{out!r}"
+    with caplog.at_level("INFO", logger="goshore"):
+        _startup_selfcheck()
+    out = caplog.text
+    assert "自检失败 时政库" in out, f"删表后自检未报失败：{out!r}"
     assert "项失败" in out
 
 

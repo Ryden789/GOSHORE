@@ -34,13 +34,12 @@ from fastapi.testclient import TestClient
 from app import config, db, sync_webdav
 from app.main import app
 
-
 # ============================================================
 # 一、信封加密层
 # ============================================================
 
 def test_encrypt_decrypt_roundtrip():
-    plain = "上岸题库 backup payload".encode("utf-8")
+    plain = "上岸题库 backup payload".encode()
     blob = sync_webdav.encrypt_bytes(plain, "我的口令123")
     assert sync_webdav.is_encrypted(blob)
     assert blob[:6] == b"GSYNC1"
@@ -231,7 +230,8 @@ def tmp_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     from app import main as main_mod
     monkeypatch.setattr(main_mod, "SETTINGS_PATH", sp)
-    monkeypatch.setattr(main_mod, "DB_PATH", tmp_path / "goshor.db")
+    # 库路径只 patch db 模块：main 里所有库路径都走 `db.DB_PATH` /
+    # `db.USER_DB_PATH`（见 `_user_db_path()`），main 自己不再持有 DB_PATH。
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "goshor.db")
     return sp
 
@@ -287,7 +287,6 @@ def test_settings_clear_secret_with_empty_string(tmp_settings):
 def test_deepseek_key_still_works_after_generalization(tmp_settings):
     """把单字段加密泛化成 _SECRET_FIELDS 后，原有 API Key 行为必须不变。"""
     config.save_settings({"deepseek_api_key": "sk-abc123"})
-    disk = json.loads(tmp_settings.read_text(encoding="utf-8"))
     if config._dpapi_available():
         assert "sk-abc123" not in tmp_settings.read_text(encoding="utf-8")
     assert config.load_settings()["deepseek_api_key"] == "sk-abc123"

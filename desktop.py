@@ -111,10 +111,11 @@ def _start_server(port: int, host: str = "127.0.0.1"):
     运行时用 importlib 重新导入，而打包成单文件 exe 后模块在 PYZ 归档里，
     uvicorn 的通用导入路径找不到它，报 "Could not import module app.main"。
     """
-    from app.main import app as fastapi_app   # 显式导入，也让静态分析能收集到
+    from app.logging_setup import uvicorn_level
+    from app.main import app as fastapi_app  # 显式导入，也让静态分析能收集到
 
     cfg = uvicorn.Config(
-        fastapi_app, host=host, port=port, log_level="warning"
+        fastapi_app, host=host, port=port, log_level=uvicorn_level()
     )
     srv = uvicorn.Server(cfg)
     errors: list[BaseException] = []
@@ -206,10 +207,11 @@ def _selftest(port: int, srv) -> int:
     ok &= good
 
     try:
-        import webview
-
         # pywebview 6.x 去掉了 webview.__version__，改从包元数据读，读不到就退回 "?"
         from importlib.metadata import PackageNotFoundError, version
+
+        # 这里要的就是「能不能 import」本身，不取任何名字
+        import webview  # noqa: F401
 
         try:
             ver = version("pywebview")

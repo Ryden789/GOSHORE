@@ -9,6 +9,11 @@ import threading
 import time
 from pathlib import Path
 
+# logging_setup 只依赖标准库，不会反向 import 本模块，不存在循环导入
+from .logging_setup import get_logger
+
+_log = get_logger(__name__)
+
 # 设置文件的进程内互斥。必须是 RLock：save_settings 持锁期间会调用
 # load_settings，而后者在「明文迁移密文」分支里也要拿同一把锁。
 _SETTINGS_LOCK = threading.RLock()
@@ -437,8 +442,10 @@ def load_settings() -> dict:
         try:
             disk = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
             s.update(disk)
-        except Exception:
-            pass
+        except (OSError, ValueError) as e:
+            # 设置文件损坏/读不了：退回默认值继续跑，但必须留下痕迹——
+            # 静默吞掉会让「我改的设置怎么没了」变成无法排查的问题。
+            _log.warning("设置文件读取失败，改用默认值：%s", e)
     _normalize_model_names(s)
     dirty = False
     for plain, enc_field in _SECRET_FIELDS.items():
@@ -457,8 +464,10 @@ def load_settings() -> dict:
         with _SETTINGS_LOCK:
             try:
                 _atomic_write_json(SETTINGS_PATH, disk)
-            except Exception:
-                pass
+            except OSError as e:
+                # 明文→密文迁移没写回去不影响本次使用（内存里已是密文），
+                # 但下次启动会再迁移一次；记一条，避免永远不知道写盘失败。
+                _log.warning("密钥迁移回写失败：%s", e)
     for enc_field in _SECRET_FIELDS.values():
         s.pop(enc_field, None)
     return s
@@ -484,8 +493,10 @@ def _save_settings_locked(patch: dict) -> dict:
             for field, enc_field in _SECRET_FIELDS.items():
                 if old.get(enc_field):
                     s[enc_field] = old[enc_field]
-        except Exception:
-            pass
+        except (OSError, ValueError) as e:
+            # 读不到旧密文 → 本次保存会用新密钥覆盖，等于用户要重新填一次 Key。
+            # 这是有损的，必须让它可见。
+            _log.warning("读取旧密文失败，本次保存将覆盖旧密钥：%s", e)
     for field, plain in secrets.items():
         plain = plain or ""
         enc_field = _SECRET_FIELDS[field]

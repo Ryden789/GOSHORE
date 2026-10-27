@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import os
@@ -186,11 +187,16 @@ class WebDAVClient:
     def _auth_header(self) -> dict:
         if not self.user:
             return {}
-        raw = f"{self.user}:{self.password}".encode("utf-8")
+        raw = f"{self.user}:{self.password}".encode()
         return {"Authorization": "Basic " + base64.b64encode(raw).decode("ascii")}
 
     def _req(self, method: str, url: str, data: bytes | None = None,
              headers: dict | None = None):
+        """发一次请求，返回响应对象 —— **调用方负责关闭**（用 `_call` 更省事）。
+
+        这里刻意不用 `with _OPENER.open(...)`：`HTTPError` 也是响应对象，
+        调用方要靠状态码分支，包在 with 里会让 4xx/5xx 提前抛出。
+        """
         req = urllib.request.Request(url, data=data, method=method)
         for k, v in self._auth_header().items():
             req.add_header(k, v)
@@ -204,6 +210,25 @@ class WebDAVClient:
             raise SyncError(f"连接 WebDAV 失败：{getattr(e, 'reason', e)}")
         except Exception as e:
             raise SyncError(f"请求 WebDAV 出错：{e}")
+
+    @contextlib.contextmanager
+    def _call(self, method: str, url: str, data: bytes | None = None,
+              headers: dict | None = None):
+        """`_req` 的带自动关闭版本：`with self._call(...) as r:`。
+
+        urllib 的响应对象持有 socket，不 close 就要等 GC —— 桌面端连续同步
+        几十个文件时会攒下几十个半开连接，服务器侧的连接数也会被拖住。
+        """
+        r = self._req(method, url, data, headers)
+        try:
+            yield r
+        finally:
+            close = getattr(r, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 — 关连接失败不影响业务结果
+                    pass
 
     @staticmethod
     def _explain(code: int, what: str) -> str:
@@ -229,14 +254,16 @@ class WebDAVClient:
         for method, hdrs in (("PROPFIND", {"Depth": "0"}),
                              ("MKCOL", None),
                              ("OPTIONS", None)):
-            r = self._req(method, self.base + "/", b"" if method == "MKCOL" else None,
-                          hdrs)
-            code = getattr(r, "status", getattr(r, "code", 0))
-            server = ""
-            try:
-                server = r.headers.get("Server") or ""
-            except Exception:
-                pass
+            with self._call(method, self.base + "/",
+                            b"" if method == "MKCOL" else None, hdrs) as r:
+                code = getattr(r, "status", getattr(r, "code", 0))
+                server = ""
+                try:
+                    server = r.headers.get("Server") or ""
+                except (AttributeError, TypeError):
+                    # 某些 urllib 响应对象没有 headers（测试替身、极老版本），
+                    # 拿不到 Server 头只影响诊断信息的丰富度，不影响连通性判定。
+                    server = ""
             if code in (200, 207):
                 return {"ok": True, "status": code, "server": server,
                         "message": "连接成功"}
@@ -261,46 +288,46 @@ class WebDAVClient:
         cur = self.base
         for p in parts:
             cur = cur + "/" + urllib.parse.quote(p, safe="")
-            r = self._req("MKCOL", cur + "/", b"")
-            code = getattr(r, "status", getattr(r, "code", 0))
+            with self._call("MKCOL", cur + "/", b"") as r:
+                code = getattr(r, "status", getattr(r, "code", 0))
             if code not in (200, 201, 405, 301):
                 raise SyncError(self._explain(code, f"创建目录 {p}"))
 
     def put(self, remote_path: str, data: bytes) -> int:
-        r = self._req("PUT", join_url(self.base, remote_path), data,
-                      {"Content-Type": "application/octet-stream",
-                       "Content-Length": str(len(data))})
-        code = getattr(r, "status", getattr(r, "code", 0))
+        with self._call("PUT", join_url(self.base, remote_path), data,
+                        {"Content-Type": "application/octet-stream",
+                         "Content-Length": str(len(data))}) as r:
+            code = getattr(r, "status", getattr(r, "code", 0))
         if code not in (200, 201, 204):
             raise SyncError(self._explain(code, "上传"))
         return len(data)
 
     def get(self, remote_path: str) -> bytes | None:
         """取回远端文件；不存在返回 None（不算错误）。"""
-        r = self._req("GET", join_url(self.base, remote_path))
-        code = getattr(r, "status", getattr(r, "code", 0))
-        if code == 404:
-            return None
-        if code != 200:
-            raise SyncError(self._explain(code, "下载"))
-        return r.read()
+        with self._call("GET", join_url(self.base, remote_path)) as r:
+            code = getattr(r, "status", getattr(r, "code", 0))
+            if code == 404:
+                return None
+            if code != 200:
+                raise SyncError(self._explain(code, "下载"))
+            return r.read()
 
     def stat(self, remote_path: str) -> dict | None:
         """远端文件元信息 {size, modified, etag}；不存在返回 None。"""
-        r = self._req("HEAD", join_url(self.base, remote_path))
-        code = getattr(r, "status", getattr(r, "code", 0))
-        if code == 404:
-            return None
-        if code != 200:
-            raise SyncError(self._explain(code, "读取云端信息"))
-        h = r.headers
-        try:
-            size = int(h.get("Content-Length") or 0)
-        except Exception:
-            size = 0
-        return {"size": size,
-                "modified": h.get("Last-Modified") or "",
-                "etag": h.get("ETag") or ""}
+        with self._call("HEAD", join_url(self.base, remote_path)) as r:
+            code = getattr(r, "status", getattr(r, "code", 0))
+            if code == 404:
+                return None
+            if code != 200:
+                raise SyncError(self._explain(code, "读取云端信息"))
+            h = r.headers
+            try:
+                size = int(h.get("Content-Length") or 0)
+            except Exception:
+                size = 0
+            return {"size": size,
+                    "modified": h.get("Last-Modified") or "",
+                    "etag": h.get("ETag") or ""}
 
 
 # ============================================================
@@ -372,7 +399,7 @@ def remote_newer(modified: str, last_iso: str) -> bool:
         from email.utils import parsedate_to_datetime
         remote = parsedate_to_datetime(modified)
         if remote.tzinfo is None:
-            remote = remote.replace(tzinfo=datetime.timezone.utc)
+            remote = remote.replace(tzinfo=datetime.UTC)
         local = datetime.datetime.fromisoformat(last_iso)
         if local.tzinfo is None:
             local = local.astimezone()

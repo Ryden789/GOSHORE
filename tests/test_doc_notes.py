@@ -78,8 +78,8 @@ def client(tmp_path, monkeypatch):
 # A. 迁移 v12
 # ============================================================
 
-def test_schema_version_is_12():
-    assert db.SCHEMA_VERSION == 12
+def test_schema_version_is_13():
+    assert db.SCHEMA_VERSION == 13
 
 
 def test_migration_creates_doc_notes(temp_db):
@@ -91,20 +91,33 @@ def test_migration_creates_doc_notes(temp_db):
         assert any("idx_docnotes_doc" == i for i in idx), idx
         ver = conn.execute(
             "SELECT value FROM _meta WHERE key='schema_version'").fetchone()["value"]
-        assert ver == "12"
+        assert ver == str(db.SCHEMA_VERSION)
     finally:
         conn.close()
 
 
 def test_migration_v12_is_idempotent(temp_db):
-    """重复 init_db 不应报错、版本号仍是 12。"""
+    """重复 init_db 不应报错、版本号仍停在最新版本。"""
     conn = db.connect()
     db.init_db(conn)
     db.init_db(conn)
     ver = conn.execute(
         "SELECT value FROM _meta WHERE key='schema_version'").fetchone()["value"]
-    assert ver == "12"
+    assert ver == str(db.SCHEMA_VERSION)
     conn.close()
+
+
+def test_migration_v13_adds_answers_index(temp_db):
+    """v13：answers 上的按题聚合复合索引必须建出来。"""
+    conn = db.connect()
+    try:
+        idx = [r["name"] for r in conn.execute("PRAGMA index_list(answers)")]
+        assert "idx_answers_doc" in idx, idx
+        cols = [r["name"] for r in conn.execute(
+            "PRAGMA index_info(idx_answers_doc)")]
+        assert cols == ["doc_id", "id", "correct"], cols
+    finally:
+        conn.close()
 
 
 def test_upgrade_from_v11_adds_table(tmp_path, monkeypatch):
@@ -120,13 +133,13 @@ def test_upgrade_from_v11_adds_table(tmp_path, monkeypatch):
     conn.close()
 
     conn = db.connect()
-    db.init_db(conn)   # 应重新跑到 v12
+    db.init_db(conn)   # 应重新跑到最新版本
     tables = [r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")]
     assert "doc_notes" in tables
     ver = conn.execute(
         "SELECT value FROM _meta WHERE key='schema_version'").fetchone()["value"]
-    assert ver == "12"
+    assert ver == str(db.SCHEMA_VERSION)
     conn.close()
 
 

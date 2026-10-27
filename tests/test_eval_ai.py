@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """AI 质量评测（golden set）回归。
 
 两层守卫：

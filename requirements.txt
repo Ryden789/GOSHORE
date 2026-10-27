@@ -1,5 +1,21 @@
+# 运行时依赖（安装：pip install -r requirements.txt）
+#
+# 下面 5 个是**核心**依赖：不装就无法启动服务。
 fastapi==0.141.1
 uvicorn[standard]==0.54.0
 httpx==0.28.1
 pydantic==2.13.5
 python-multipart==0.0.32
+
+# 下面这些是**可选**依赖：只在「导入题库」/「PDF 视觉解析」这些路径上
+# 才会被 import（见 app/importer.py:269、app/pdf_visual.py:14）。缺了不会
+# 影响启动和做题，但对应功能会抛 ImportError，所以默认一并装上。
+#
+# 注意 openpyxl：pandas.read_excel 读 .xlsx 实际靠它，缺了会报
+# `Import openpyxl failed`。这是 Excel 题库导入的唯一通路，不能漏。
+pymupdf==1.28.2        # PDF 文本/图像解析（import fitz）
+pdfplumber==0.11.10    # PDF 表格与文字提取
+python-docx==1.2.0     # Word 题库导入
+pandas==3.0.5          # Excel 题库导入
+openpyxl==3.1.5        # pandas.read_excel 的 .xlsx 引擎（缺了 xlsx 导入必炸）
+xlrd==2.0.2            # pandas.read_excel 的 .xls 引擎（老格式 Excel）
