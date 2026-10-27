@@ -159,6 +159,26 @@ def test_overwrite_paths_refresh_qid(seeded):
         conn.close()
 
 
+# ---------------- 接口透出 ----------------
+
+def test_api_payloads_expose_qid(seeded):
+    """历史记录与笔记列表都要透出 qid（接口层不删 doc_id，双字段并存）。"""
+    db.add_answer(1, "B", False, 1000)         # 答错 → 同时进错题本
+    db.set_note(2, "这题要画图")
+
+    hist = db.answer_history()
+    assert hist["items"][0]["qid"] == Q1
+    assert hist["items"][0]["doc_id"] == 1
+
+    notes = db.list_notes()
+    assert notes[0]["qid"] == Q2
+    assert notes[0]["doc_id"] == 2
+
+    # 题目列表本来就带 qid（_LIST_COLS），这里一并锁住，避免有人精简列时删掉
+    wrong = db.list_wrong_book()
+    assert wrong and wrong[0]["qid"] == Q1
+
+
 # ---------------- 自导入题（手机端） ----------------
 
 def _item(stem: str, answer: str = "A") -> dict:

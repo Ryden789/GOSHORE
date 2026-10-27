@@ -3564,12 +3564,16 @@ def stats_overview(goal_questions: int = 0, goal_minutes: int = 0) -> dict:
 
 
 def answer_history(limit: int = 100, offset: int = 0) -> dict:
-    """获取做题历史记录（含题目信息），按时间倒序。"""
+    """获取做题历史记录（含题目信息），按时间倒序。
+
+    同时回传 `qid`（稳定题号）：接口层刻意**不删** `doc_id`，前端可以逐步切到
+    qid —— 换题库源目录 / 重建题库后 `doc_id` 会指向别的题，而 qid 不会。
+    """
     conn = connect()
     total = conn.execute("SELECT COUNT(*) c FROM answers").fetchone()["c"]
     rows = conn.execute(
         """SELECT a.id, a.doc_id, a.selected, a.correct, a.ms, a.created_at,
-                  d.title, d.module, d.kaodian, d.region, d.year, d.exam
+                  d.qid, d.title, d.module, d.kaodian, d.region, d.year, d.exam
            FROM answers a
            JOIN documents d ON d.id = a.doc_id
            ORDER BY a.created_at DESC
@@ -3581,6 +3585,7 @@ def answer_history(limit: int = 100, offset: int = 0) -> dict:
         items.append({
             "id": r["id"],
             "doc_id": r["doc_id"],
+            "qid": r["qid"] or "",
             "title": r["title"],
             "module": r["module"],
             "kaodian": r["kaodian"],
@@ -5767,7 +5772,7 @@ def list_notes(limit: int = 500) -> list[dict]:
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT n.doc_id AS doc_id, n.content AS content, "
+            "SELECT n.doc_id AS doc_id, n.qid AS qid, n.content AS content, "
             "       n.updated_at AS updated_at, "
             "       d.title AS title, d.module AS module, "
             "       d.kaodian AS kaodian, d.kind AS kind "
@@ -5779,6 +5784,7 @@ def list_notes(limit: int = 500) -> list[dict]:
     for r in rows:
         out.append({
             "doc_id": int(r["doc_id"]),
+            "qid": r["qid"] or "",
             "content": r["content"] or "",
             "updated": r["updated_at"] or 0,
             "title": r["title"] or "题目已删除",

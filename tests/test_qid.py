@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from app import qid as q
 
-
 # ---------------- 归一化 ----------------
 
 def test_normalize_strips_whitespace_and_fullwidth():
