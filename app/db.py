@@ -1683,6 +1683,158 @@ def reindex(progress=None) -> dict:
     }
 
 
+# ---------------- 导入对账（qid 视角） ----------------
+#
+# P0 的验收（调研文档 14.7）与 P1 的缺失清单都依赖同一份事实：
+# 「以 qid 为键，这次导入相对上次多了什么、少了什么、个人数据有没有孤儿」。
+# 这里只做统计与留痕，不改任何数据 —— 对账是**只读**的，随时可以跑。
+
+# 上一次导入的 qid 集合，存在 _meta 里（不进 RESET_SCOPES：它是结构基准，不是用户数据）
+_QID_SNAPSHOT_KEY = "qid_snapshot"
+# 快照条数上限：23k 题库远低于此；设上限只是防「题库被误指到超大目录」时把 _meta 撑爆
+_SNAPSHOT_MAX = 200_000
+# 报告里列出的明细条数上限（全量清单会让人不想看）
+_DIFF_SAMPLE = 50
+
+
+def reconcile_import(report_path=None, *, write_snapshot: bool = True,
+                     check_images: bool = False) -> dict:
+    """按 qid 对账，输出 `import_report.json`。
+
+    对账内容：
+      - **totals**：题目总数、有 qid 的条数、空 qid 条数、qid 重复组数
+      - **diff**：相对上一次快照的「新增 / 失联 / 保留」（失联 = 题库被替换或题被删）
+      - **by_module**：按模块统计真题数、缺答案、缺解析、含图条数
+      - **orphans**：8 张个人表里 qid 为空或指向不存在题目的行（必须全为 0）
+      - **invalid_json_refs**：草稿 / 分享码里解析不出来的题目引用
+
+    `check_images=False` 时**不做**图片存在性校验（要遍历 2 万多张图，属 P1 导入器
+    的职责），报告里如实写 `image_check: skipped`，不编造 0 缺图。
+
+    返回报告字典；`report_path` 默认落在题库库同目录的 `import_report.json`
+    （测试里 DB_PATH 指向 tmp_path，报告也就跟着隔离，不会写进真实 data/）。
+    """
+    conn = connect()
+    try:
+        total = with_qid = blank = 0
+        qids: list[str] = []
+        by_module: dict[str, dict] = {}
+        for r in conn.execute("SELECT qid, kind, module, data FROM documents"):
+            total += 1
+            q = str(r["qid"] or "").strip()
+            if q:
+                qids.append(q)
+                with_qid += 1
+            else:
+                blank += 1
+            if r["kind"] != "真题":
+                continue
+            m = by_module.setdefault(
+                r["module"] or "未分类",
+                {"total": 0, "missing_answer": 0, "missing_analysis": 0,
+                 "with_image": 0})
+            m["total"] += 1
+            try:
+                d = json.loads(r["data"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d = {}
+            opts = d.get("options") or []
+            if not any(isinstance(o, dict) and o.get("correct") for o in opts):
+                m["missing_answer"] += 1
+            if not str(d.get("official") or "").strip():
+                m["missing_analysis"] += 1
+            blob = "".join(str(d.get(k) or "") for k in ("stem", "official", "material"))
+            if "<img" in blob:
+                m["with_image"] += 1
+
+        dup_groups = conn.execute(
+            "SELECT COUNT(*) c FROM (SELECT qid FROM documents WHERE qid<>'' "
+            "GROUP BY qid HAVING COUNT(*)>1)").fetchone()["c"]
+
+        cur = set(qids)
+        prev: set[str] = set()
+        row = conn.execute(
+            "SELECT value FROM _meta WHERE key=?", (_QID_SNAPSHOT_KEY,)).fetchone()
+        if row and row["value"]:
+            try:
+                prev = {str(x) for x in json.loads(row["value"])}
+            except (json.JSONDecodeError, TypeError):
+                prev = set()
+        added = sorted(cur - prev)
+        removed = sorted(prev - cur)
+
+        # 孤儿分两类，不能混为一谈：
+        #   blank —— qid 为空：指向**非题目行**（考点/材料没有题干，算不出内容指纹）
+        #            或历史脏数据。本机实测有 8,001 条作答落在 考点 行上，正是
+        #            「题库重建后自增 id 重排」已经造成的损伤，无法回填，只能如实计数。
+        #   lost  —— qid 非空但题库里查不到：这是**真失联**，切主键前必须为 0。
+        # 混成一个数字会让人误以为「有 8001 条要修」，而实际修不了也不该修。
+        orphans: dict[str, dict[str, int]] = {}
+        for t in _QID_SHADOW_TABLES:
+            if not _table_exists(conn, t):
+                continue
+            row = conn.execute(
+                f"SELECT "
+                f"  SUM(CASE WHEN x.qid IS NULL OR x.qid='' THEN 1 ELSE 0 END) blank, "
+                f"  SUM(CASE WHEN x.qid IS NOT NULL AND x.qid<>'' AND d.qid IS NULL "
+                f"           THEN 1 ELSE 0 END) lost "
+                f"FROM {t} x LEFT JOIN documents d ON d.qid=x.qid").fetchone()
+            orphans[t] = {"blank": int(row["blank"] or 0),
+                          "lost": int(row["lost"] or 0)}
+
+        # 草稿 / 分享码里解析不出来的引用（数量必须可复现）
+        invalid_refs: dict[str, int] = {}
+        for t in ("paper_drafts", "shared_sets"):
+            if not _table_exists(conn, t):
+                continue
+            bad = 0
+            for r in conn.execute(f"SELECT ids_qid_json FROM {t}"):
+                try:
+                    qs = json.loads(r["ids_qid_json"] or "[]")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(qs, list) and any(
+                        str(q) not in cur for q in qs if q):
+                    bad += 1
+            invalid_refs[t] = bad
+
+        report = {
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "fingerprint_version": qidmod.FINGERPRINT_VERSION,
+            "totals": {"documents": total, "with_qid": with_qid,
+                       "blank_qid": blank, "duplicate_qid_groups": dup_groups},
+            "diff": {"added": len(added), "removed": len(removed),
+                     "kept": len(cur & prev), "baseline": len(prev),
+                     "added_qids": added[:_DIFF_SAMPLE],
+                     "removed_qids": removed[:_DIFF_SAMPLE]},
+            "by_module": by_module,
+            "orphans": orphans,
+            "invalid_json_refs": invalid_refs,
+            "image_check": "done" if check_images else "skipped",
+        }
+
+        if write_snapshot and len(cur) <= _SNAPSHOT_MAX:
+            conn.execute(
+                "INSERT OR REPLACE INTO _meta(key,value) VALUES(?,?)",
+                (_QID_SNAPSHOT_KEY, json.dumps(sorted(cur), ensure_ascii=False)))
+            conn.commit()
+    finally:
+        conn.close()
+
+    if report_path is None:
+        report_path = Path(DB_PATH).parent / "import_report.json"
+    try:
+        p = Path(report_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(report, ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+        report["report_path"] = str(p)
+    except OSError as e:
+        log.warning("导入报告落盘失败：%s", e)
+        report["report_path"] = ""
+    return report
+
+
 # ---------------- 查询 ----------------
 
 _LIST_COLS = (
