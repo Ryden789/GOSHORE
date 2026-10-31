@@ -35,6 +35,7 @@ from . import (
     access,
     ai,
     argument,
+    attach,
     cube_vision,
     db,
     essay_rubric,
@@ -46,6 +47,7 @@ from . import (
     knowledge,
     logging_setup,
     note_weak,
+    ocr,
     planner,
     share,
     shenlun_notes,
@@ -967,6 +969,51 @@ async def api_ai_guide(b: GuideIn):
         yield _sse({"type": "result", "data": parsed})
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ---------------- 附件解析与图片识别 ----------------
+
+# 文件走 base64 JSON 而不是 multipart：安卓端 goshor_server 是手写 HTTP 服务，
+# 自己实现 multipart 边界切分不值当，而既有图片上传本来就是 base64 这一套。
+# 6 MB 文件 base64 后约 8 MB，这里挡到 12 MB 留余量。
+ATTACH_MAX_BODY_BYTES = 12 * 1024 * 1024
+
+
+class FileExtractIn(BaseModel):
+    name: str = ""
+    data_url: str = ""
+
+
+@app.post("/api/file/extract")
+def api_file_extract(b: FileExtractIn, request: Request):
+    """上传 txt/md/docx/pdf → 纯文本，供 AI 答疑与申论批改使用。
+
+    同步路由：解析是 CPU 活（unzip + XML），走线程池不占事件循环。
+    """
+    try:
+        length = int(request.headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        length = 0
+    if length > ATTACH_MAX_BODY_BYTES:
+        raise HTTPException(413, "文件太大，请控制在 6 MB 以内")
+    try:
+        return attach.extract(b.name, b.data_url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class OcrIn(BaseModel):
+    image: str = ""
+    mode: str = "general"
+
+
+@app.post("/api/ocr")
+async def api_ocr(b: OcrIn):
+    """图片识别文字：申论手写作答拍照、题目/材料截图。"""
+    try:
+        return await ocr.recognize(b.image, load_settings(), b.mode)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ---------------- 折纸盒·拍照录题 ----------------

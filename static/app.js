@@ -3994,7 +3994,7 @@ async function renderSettings() {
       <div class="field">
         <label>字体</label>
         <div class="type-checks" id="fontFacePick">${FontFace.pickerHtml()}</div>
-        <div class="hint">均为系统自带字体，不联网下载：宋体、黑体、楷体在 Windows 上最稳；手机缺字体会自动回退到系统默认，不会显示空白。</div>
+        <div class="hint">均为系统自带字体，不联网下载：宋体、黑体、楷体在 Windows 上最稳；安卓没有这些字体，可选「思源宋体 / 思源黑体」（安卓系统自带），其余档位会按字体栈自动回退到系统默认，不会显示空白。</div>
       </div>
       <div class="field">
         <label class="cb"><input type="checkbox" id="fontLoose" ${FontSize.loose() ? "checked" : ""}/> 行高宽松</label>
@@ -5295,6 +5295,136 @@ function trendSvg(items) {
   <div class="gr-trend-legend">共 ${n} 次批改${dtxt ? " · " + dtxt : ""}（纵轴为得分率，悬停圆点看具体分数）</div>`;
 }
 
+// ---- 附件导入（AI 答疑与申论批改共用）----
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error("读取文件失败"));
+    r.readAsDataURL(file);
+  });
+}
+
+// 解析一律走后端：docx/pdf 前端解不了，且桌面与安卓必须是同一份实现
+async function extractFileText(file) {
+  const dataUrl = await readFileAsDataUrl(file);
+  const r = await fetch("/api/file/extract", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: file.name, data_url: dataUrl }),
+  });
+  if (!r.ok) {
+    let msg = "解析失败";
+    try { msg = (await r.json()).detail || msg; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+// 图片压缩到 1024px / JPEG 0.8：既够模型认字，又不至于把请求撑到几十 MB
+function compressImageFile(file, maxW = 1024) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (w > maxW) { h = h * maxW / w; w = maxW; }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      reader.readAsDataURL(file);
+    };
+  });
+}
+
+// 把「📎 导入文件 / 📷 图片识别」工具条接到对应输入框上：
+// 选中的内容**追加**到框尾，不覆盖用户已手打的文字
+function bindAttachBars(root) {
+  $$(".attach-bar", root || document).forEach(bar => {
+    if (bar.dataset.bound) return;
+    bar.dataset.bound = "1";
+    const target = document.getElementById(bar.dataset.target);
+    if (!target) return;
+    const hint = bar.querySelector(".attach-hint");
+    const baseHint = hint ? hint.textContent : "";
+    const ocrMode = bar.dataset.ocr || "general";
+    const setHint = t => { if (hint) hint.textContent = t; };
+
+    const append = text => {
+      const cur = target.value;
+      target.value = (cur.trim() ? cur.replace(/\s+$/, "") + "\n\n" : "") + text;
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.scrollTop = target.scrollHeight;
+    };
+
+    const pick = (accept, capture, onPick) => {
+      const inp = document.createElement("input");
+      inp.type = "file";
+      inp.accept = accept;
+      if (capture) inp.capture = capture;
+      inp.style.display = "none";
+      document.body.appendChild(inp);
+      inp.onchange = async () => {
+        const f = (inp.files || [])[0];
+        inp.remove();
+        if (f) await onPick(f);
+      };
+      inp.click();
+    };
+
+    bar.querySelectorAll(".attach-btn").forEach(btn => {
+      btn.onclick = async () => {
+        if (btn.dataset.busy) return;
+        const mode = btn.dataset.mode;
+        if (mode === "file") {
+          pick(".txt,.text,.md,.markdown,.csv,.json,.docx,.pdf", "", async f => {
+            btn.dataset.busy = "1";
+            setHint("解析中…");
+            try {
+              const d = await extractFileText(f);
+              append(d.text);
+              setHint(d.note || `${f.name} · ${d.chars} 字`);
+            } catch (e) {
+              setHint(baseHint);
+              toast(`${f.name}：${e.message}`);
+            } finally {
+              delete btn.dataset.busy;
+            }
+          });
+        } else {
+          pick("image/*", "environment", async f => {
+            btn.dataset.busy = "1";
+            setHint("识别中，约 5-20 秒…");
+            try {
+              const dataUrl = await compressImageFile(f);
+              const r = await fetch("/api/ocr", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ image: dataUrl, mode: ocrMode }),
+              });
+              if (!r.ok) {
+                let msg = "识别失败";
+                try { msg = (await r.json()).detail || msg; } catch {}
+                throw new Error(msg);
+              }
+              const d = await r.json();
+              append(d.text);
+              setHint(`已识别 ${d.chars} 字，请核对后使用`);
+            } catch (e) {
+              setHint(baseHint);
+              toast(e.message);
+            } finally {
+              delete btn.dataset.busy;
+            }
+          });
+        }
+      };
+    });
+  });
+}
+
 async function renderGrade() {
   const [rub, hist, qs] = await Promise.all([
     api("/api/essay/rubrics"),
@@ -5318,9 +5448,24 @@ async function renderGrade() {
         </select>
         <label style="font-size:calc(13px * var(--fs));color:var(--ink-2)">满分 <input id="gTotal" type="number" min="10" max="100" style="width:64px;padding:6px"> </label>
       </div>
-      <textarea id="gQ" rows="3" placeholder="【题目】粘贴题干，含作答要求与字数限制（必填）" style="width:100%;margin-bottom:8px"></textarea>
-      <textarea id="gM" rows="5" placeholder="【给定材料】粘贴题目对应的材料（建议提供，没有材料无法判要点命中）" style="width:100%;margin-bottom:8px"></textarea>
-      <textarea id="gA" rows="8" placeholder="【你的作答】粘贴你的答案（必填）" style="width:100%;margin-bottom:8px"></textarea>
+      <textarea id="gQ" rows="3" placeholder="【题目】粘贴题干，含作答要求与字数限制（必填）" style="width:100%;margin-bottom:4px"></textarea>
+      <div class="attach-bar" data-target="gQ" data-ocr="general" style="margin-bottom:8px">
+        <button type="button" class="attach-btn" data-mode="file">📎 导入文件</button>
+        <button type="button" class="attach-btn" data-mode="image">📷 图片识别</button>
+        <span class="attach-hint">从 Word/PDF/图片导入题干</span>
+      </div>
+      <textarea id="gM" rows="5" placeholder="【给定材料】粘贴题目对应的材料（建议提供，没有材料无法判要点命中）" style="width:100%;margin-bottom:4px"></textarea>
+      <div class="attach-bar" data-target="gM" data-ocr="general" style="margin-bottom:8px">
+        <button type="button" class="attach-btn" data-mode="file">📎 导入文件</button>
+        <button type="button" class="attach-btn" data-mode="image">📷 图片识别</button>
+        <span class="attach-hint">材料较长时建议用文件导入</span>
+      </div>
+      <textarea id="gA" rows="8" placeholder="【你的作答】粘贴你的答案（必填）；手写在纸上可直接拍照识别" style="width:100%;margin-bottom:4px"></textarea>
+      <div class="attach-bar" data-target="gA" data-ocr="essay" style="margin-bottom:8px">
+        <button type="button" class="attach-btn" data-mode="file">📎 导入文件</button>
+        <button type="button" class="attach-btn" data-mode="image">📷 拍照识别</button>
+        <span class="attach-hint">手写稿拍照即可转成文字，逐字转写不纠错</span>
+      </div>
       <div style="display:flex;gap:10px;align-items:center">
         <button class="btn btn-primary" id="gGo">开始批改</button>
         <button class="btn btn-sm" id="gRef" style="display:none">对照参考答案</button>
@@ -5349,6 +5494,7 @@ async function renderGrade() {
     totalIn.placeholder = r ? r.default_score : "";
   };
   catSel.onchange = setDef; setDef();
+  bindAttachBars();
 
   // 从真题库选题：自动填充题型/题目/材料/满分
   $("#gZhenti").onchange = async e => {
@@ -6293,9 +6439,9 @@ async function renderAiAsk() {
       </div>
       <div id="aiAskPreviews" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"></div>
       <div style="display:flex;gap:10px;margin-top:12px;align-items:flex-end">
-        <label id="aiAskImgBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--line-soft);border-radius:8px;flex-shrink:0" title="上传图片">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-          <input type="file" accept="image/*" multiple style="display:none" id="aiAskFile">
+        <label id="aiAskImgBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--line-soft);border-radius:8px;flex-shrink:0" title="上传图片或文件（txt / md / docx / pdf）">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          <input type="file" accept="image/*,.txt,.text,.md,.markdown,.csv,.json,.docx,.pdf" multiple style="display:none" id="aiAskFile">
         </label>
         <textarea id="aiAskInput" rows="2" placeholder="随便问点什么…（Enter 发送，Shift+Enter 换行）"
           style="flex:1;resize:none;padding:10px;border:1px solid var(--line-soft);border-radius:8px;font-family:inherit;font-size:calc(14px * var(--fs));background:transparent;color:inherit"></textarea>
@@ -6313,42 +6459,53 @@ async function renderAiAsk() {
   const fileInput = $("#aiAskFile");
   const previewBox = $("#aiAskPreviews");
   let attachedImages = [];
-
-  const compressImage = (file) => new Promise(resolve => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      const img = new Image();
-      img.onload = () => {
-        const maxW = 1024;
-        let w = img.width, h = img.height;
-        if (w > maxW) { h = h * maxW / w; w = maxW; }
-        const canvas = document.createElement("canvas");
-        canvas.width = w; canvas.height = h;
-        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL("image/jpeg", 0.8));
-      };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
-  });
+  // 文件附件只保留解析出的文本，不进 localStorage：几万字的材料会撑爆配额
+  let attachedFiles = [];
+  const ATTACH_TEXT_BUDGET = 8000;   // 附加正文合计上限，超了模型抓不住重点
 
   const renderPreviews = () => {
-    previewBox.innerHTML = attachedImages.map((src, i) =>
+    const imgs = attachedImages.map((src, i) =>
       `<div style="position:relative;width:64px;height:64px">
         <img src="${src}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;border:1px solid var(--line-soft)">
-        <span data-rm="${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:calc(12px * var(--fs));line-height:1">×</span>
+        <span data-rm="img:${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:calc(12px * var(--fs));line-height:1">×</span>
       </div>`).join("");
+    const docs = attachedFiles.map((f, i) =>
+      `<span style="position:relative;display:inline-flex;align-items:center;gap:6px;max-width:260px;padding:5px 24px 5px 10px;border:1px solid var(--line-soft);border-radius:8px;font-size:calc(12px * var(--fs));color:var(--ink-2);background:rgba(0,0,0,.02)">
+        <span aria-hidden="true">📄</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
+        <span style="color:var(--ink-3);flex:none">${f.chars} 字</span>
+        <span data-rm="file:${i}" role="button" tabindex="0" aria-label="移除 ${esc(f.name)}" style="position:absolute;top:50%;right:5px;transform:translateY(-50%);cursor:pointer;color:var(--cinnabar)">×</span>
+      </span>`).join("");
+    previewBox.innerHTML = imgs + docs;
     previewBox.querySelectorAll("[data-rm]").forEach(el => {
-      el.onclick = () => { attachedImages.splice(+el.dataset.rm, 1); renderPreviews(); };
+      el.onclick = () => {
+        const [kind, idx] = el.dataset.rm.split(":");
+        (kind === "img" ? attachedImages : attachedFiles).splice(+idx, 1);
+        renderPreviews();
+      };
     });
   };
 
   fileInput.onchange = async () => {
-    const files = Array.from(fileInput.files).slice(0, 3 - attachedImages.length);
-    for (const f of files) {
-      if (!f.type.startsWith("image/")) continue;
-      const compressed = await compressImage(f);
-      attachedImages.push(compressed);
+    // 图片先压缩到 1024px 再发；其余类型交给 /api/file/extract 解成文本
+    for (const f of Array.from(fileInput.files || [])) {
+      if (f.type.startsWith("image/")) {
+        if (attachedImages.length >= 3) { toast("图片最多 3 张"); continue; }
+        attachedImages.push(await compressImageFile(f));
+        continue;
+      }
+      try {
+        const d = await extractFileText(f);
+        const used = attachedFiles.reduce((n, x) => n + x.chars, 0);
+        if (used + d.chars > ATTACH_TEXT_BUDGET) {
+          toast(`附件正文合计上限 ${ATTACH_TEXT_BUDGET} 字，${f.name} 未加入`);
+          continue;
+        }
+        attachedFiles.push({ name: f.name, text: d.text, chars: d.chars });
+        if (d.truncated) toast(`${f.name} 内容较长，已截断到前 ${d.chars} 字`);
+      } catch (e) {
+        toast(`${f.name}：${e.message}`);
+      }
     }
     renderPreviews();
     fileInput.value = "";
@@ -6388,24 +6545,33 @@ async function renderAiAsk() {
   const send = async () => {
     const ask = input.value.trim();
     const imgs = attachedImages.slice();
-    if ((!ask && !imgs.length) || streaming) return;
+    const files = attachedFiles.slice();
+    if ((!ask && !imgs.length && !files.length) || streaming) return;
     streaming = true;
     goBtn.disabled = true;
     input.value = "";
     attachedImages = [];
+    attachedFiles = [];
     renderPreviews();
-    bubble("user", ask || "(图片)", imgs);
+    // 气泡里给文件留一行说明；图片仍走缩略图
+    const fileLine = files.map(f => `📄 ${f.name}`).join("\n");
+    bubble("user", [fileLine, ask].filter(Boolean).join("\n") || "(附件)", imgs);
 
     // 历史消息只发文本（图片 base64 太大不存 localStorage）
     const his = msgs.map(m => ({ role: m.role, content: m.content }));
+    // 附件正文只进本次请求，不进历史：几万字塞进 localStorage 会撑爆配额
+    const attachText = files.length
+      ? files.map(f => `【附件：${f.name}】\n${f.text}`).join("\n\n")
+      : "";
+    const sendText = attachText ? (ask ? `${ask}\n\n${attachText}` : attachText) : ask;
     // 当前消息：有图片时用多模态 content 格式
     if (imgs.length) {
       const content = [];
-      if (ask) content.push({ type: "text", text: ask });
+      if (sendText) content.push({ type: "text", text: sendText });
       for (const src of imgs) content.push({ type: "image_url", image_url: { url: src } });
       his.push({ role: "user", content });
     } else {
-      his.push({ role: "user", content: ask });
+      his.push({ role: "user", content: sendText });
     }
 
     let thinkBox = null, think = "", full = "";
@@ -6457,7 +6623,9 @@ async function renderAiAsk() {
     }
     b.classList.remove("cursor-blink");
     list.scrollTop = list.scrollHeight;
-    const savedContent = imgs.length ? `[图片] ${ask}` : ask;
+    const savedTag = [imgs.length ? "[图片]" : "", files.length ? `[附件 ${files.length} 个]` : ""]
+      .filter(Boolean).join(" ");
+    const savedContent = savedTag ? `${savedTag} ${ask}`.trim() : ask;
     msgs = [...msgs, { role: "user", content: savedContent }];
     if (full.trim()) msgs = [...msgs, { role: "assistant", content: full }];
     aiAskSave(msgs);

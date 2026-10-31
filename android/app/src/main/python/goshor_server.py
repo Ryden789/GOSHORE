@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, kb, knowledge, note_weak, planner, print_export, share, shenlun_notes, speedcalc, sync_webdav, variant, wordfill, xingce_notes, zy_notes
+from app import accounts, ai, argument, attach, config, db, essay_rubric, formula_drill, importer, interview, kb, knowledge, note_weak, ocr, planner, print_export, share, shenlun_notes, speedcalc, sync_webdav, variant, wordfill, xingce_notes, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -1463,6 +1463,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._ai_ask(b)
             elif path == "/api/ai/guide":
                 self._ai_guide(b)
+            elif path == "/api/file/extract":
+                try:
+                    self._json(attach.extract(b.get("name", ""), b.get("data_url", "")))
+                except ValueError as e:
+                    self._err(400, str(e))
+            elif path == "/api/ocr":
+                try:
+                    self._json(_run_async(ocr.recognize(
+                        b.get("image", ""), _mobile_load_settings(),
+                        b.get("mode", "general"))))
+                except ValueError as e:
+                    self._err(400, str(e))
             elif path == "/api/share/create":
                 self._json(self._share_create(b))
             elif path == "/api/share/open":

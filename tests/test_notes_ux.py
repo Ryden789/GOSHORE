@@ -117,10 +117,16 @@ def test_desktop_filter_renders_filtered_list(page):
 
 @pytest.mark.parametrize("page", PAGES)
 def test_mobile_renders_filtered_list(page):
-    """移动端是长页，直接拿 shown 铺列表。"""
+    """移动端与桌面一致：入口页六格，进入模块后用过滤后的 shown 铺列表。"""
     block = _fn_block(_text(M_JS), page)
-    assert "shown.map(" in block, f"m.js {page} 没按过滤结果渲染"
-    assert "shown.length ? shown.map" in block, f"m.js {page} 空态与列表应共用 shown"
+    assert re.search(r"const sel = k \? null : shown\.find\(", block), (
+        f"m.js {page} 的模块列表没走过滤后的 shown"
+    )
+    assert "const list = k ? shown : [sel];" in block, (
+        f"m.js {page} 没按过滤结果渲染"
+    )
+    assert "list.map(" in block, f"m.js {page} 未用 list 铺模块"
+    assert "if (!shown.length)" in block, f"m.js {page} 空态没用 shown 判定"
 
 
 @pytest.mark.parametrize("path", [APP_JS, M_JS])

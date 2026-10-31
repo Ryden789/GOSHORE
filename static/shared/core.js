@@ -123,19 +123,26 @@ const FontSize = {
 };
 
 /* N9 字体选择 · 网页端（app.js / m.js 共用）。
-   偏好 Pref('fontface') ∈ 'auto' | 'song' | 'hei' | 'kai' | 'yahei'，落到 <html data-fontface>。
+   偏好 Pref('fontface') ∈ 'auto' | 'song' | 'hei' | 'kai' | 'yahei' | 'sysong' | 'syshei'，
+   落到 <html data-fontface>。
    CSS 只覆写 --serif / --sans 两条字体栈，全站文字随之切换；'auto' 保留原
    「宋体标题 + 黑体正文」的默认混排，与升级前完全一致。
-   只列系统自带字体：中文字库动辄 10MB，离线包不内置，缺字体时由后面的族名回退。 */
+   只列系统自带字体：中文字库动辄 10MB，离线包不内置，缺字体时由后面的族名回退。
+   安卓没有 SimSun / KaiTi / Microsoft YaHei，字体栈统一补上系统自带的
+   「思源黑体 / 思源宋体」（Noto Sans/Serif CJK SC）与通用族 serif/sans-serif，
+   最后兜底到通用族，保证安卓真机上换字体有可见效果、且不会出现豆腐块。 */
 const FontFace = {
   KEY: "fontface",
-  FACES: [["auto", "默认"], ["song", "宋体"], ["hei", "黑体"], ["kai", "楷体"], ["yahei", "雅黑"]],
+  FACES: [["auto", "默认"], ["song", "宋体"], ["hei", "黑体"], ["kai", "楷体"], ["yahei", "雅黑"],
+    ["sysong", "思源宋体"], ["syshei", "思源黑体"]],
   STACK: {
     auto: "",
-    song: "'SimSun','Songti SC','Noto Serif SC',serif",
-    hei: "'SimHei','Heiti SC','Microsoft YaHei','Noto Sans SC',sans-serif",
-    kai: "'KaiTi','Kaiti SC','STKaiti',serif",
-    yahei: "'Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif",
+    song: "'SimSun','宋体','Songti SC','Noto Serif CJK SC','Noto Serif SC','Source Han Serif SC',serif",
+    hei: "'SimHei','黑体','Heiti SC','Microsoft YaHei','Noto Sans CJK SC','Noto Sans SC','Source Han Sans SC',sans-serif",
+    kai: "'KaiTi','楷体','Kaiti SC','STKaiti','Noto Serif CJK SC','Noto Serif SC',serif",
+    yahei: "'Microsoft YaHei','微软雅黑','PingFang SC','Noto Sans CJK SC','Noto Sans SC','Source Han Sans SC',sans-serif",
+    sysong: "'Noto Serif CJK SC','Noto Serif SC','Source Han Serif SC','Songti SC','SimSun',serif",
+    syshei: "-apple-system,'PingFang SC','Noto Sans CJK SC','Noto Sans SC','Source Han Sans SC','Microsoft YaHei',sans-serif",
   },
   norm(v) { return this.FACES.some(f => f[0] === v) ? v : "auto"; },
   current() { return this.norm(Pref.get(this.KEY, "auto")); },

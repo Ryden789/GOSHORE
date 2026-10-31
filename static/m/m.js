@@ -1333,15 +1333,21 @@ function setupCard(s, cfg) {
 
 const GUIDE_STEPS = [
   { sel: "", title: "欢迎使用上岸自习室",
-    desc: "三步就能上手：选一个入口开始 → 做完及时复盘 → 每周看一次数据。这个引导只出现一次，之后可在「使用指南」重看。" },
+    desc: "三步就能上手：选一个入口开始 → 做完及时复盘 → 每周看一次数据。后面的几步会带你认一下刷题、速查、笔记与每日目标。这个引导只出现一次，之后可在「使用指南」重看。" },
   { sel: "#recGo", title: "从今日推荐开始",
     desc: "不知道先做什么，就点这里。系统按掌握度组 15 题，弱项优先。" },
+  { sel: "#entryPractice", title: "刷题 · 组卷与专项训练",
+    desc: "整卷模拟或按模块专项练；每题下方可以写笔记，写过的会汇总到「我的笔记」。" },
   { sel: "#entryReview", title: "错题与到期复习",
     desc: "做完题先来这里。答错的题会自动进错题本，到期复习也会排好。" },
   { sel: "#entryAi", title: "卡住了就问 AI",
     desc: "没思路、看不懂解析都可以直接问；也支持上传题目图片。" },
+  { sel: "#entryCards", title: "辨析卡记忆",
+    desc: "易混词、易错点做成卡片，按到期提醒翻看，每天顺手过几张。" },
+  { sel: "#tabbar a[data-tab='knowledge']", title: "速查与知识资料",
+    desc: "在「资料」里：行测/申论速查各分六个模块，点大框进入该模块，再点一次回到入口页；还有知识点综合与全文搜索。" },
   { sel: "#dataCard", title: "学习数据与目标",
-    desc: "展开明细可看正确率、连续学习与称号进度。随时点「使用指南」可重看这轮引导。" },
+    desc: "展开明细可看正确率、连续学习与称号进度；首页上方的「今日学习目标」显示题量与专注完成度。随时点「使用指南」可重看这轮引导。" },
 ];
 
 let guideState = null;
@@ -4034,7 +4040,7 @@ async function renderSettings() {
       <div class="muted" style="margin:6px 0 0">作用于全站文字：题目、长文与界面元素一起缩放，四档差距明显。</div>
       <div class="cfg-label" style="margin-top:14px">字体</div>
       <div class="type-checks" id="fontFacePick">${FontFace.pickerHtml()}</div>
-      <div class="muted" style="margin:6px 0 0">系统自带字体，不联网下载；手机缺该字体会自动回退，不会空白。</div>
+      <div class="muted" style="margin:6px 0 0">系统自带字体，不联网下载；安卓可选「思源宋体 / 思源黑体」，手机缺其他字体会按字体栈自动回退，不会空白或出现方块。</div>
       <label class="check" style="margin-top:12px"><input type="checkbox" id="prefLoose"
         ${FontSize.loose() ? "checked" : ""}/> 行高宽松（长文更透气）</label>
       <label class="check" style="margin-top:12px"><input type="checkbox" id="prefSound"
@@ -5757,6 +5763,138 @@ function mTrendSvg(items) {
   <div class="gr-trend-legend">共 ${n} 次批改${dtxt ? " · " + dtxt : ""}</div>`;
 }
 
+// ---- 附件导入（AI 答疑与申论批改共用，与桌面同构）----
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error("读取文件失败"));
+    r.readAsDataURL(file);
+  });
+}
+
+// 解析一律走后端：手机端没有 pymupdf/docx，前端解不了，双端共用同一份实现
+async function extractFileText(file) {
+  const dataUrl = await readFileAsDataUrl(file);
+  const r = await fetch("/api/file/extract", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: file.name, data_url: dataUrl }),
+  });
+  if (!r.ok) {
+    let msg = "解析失败";
+    try { msg = (await r.json()).detail || msg; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+// 手机拍的照原图动辄 4-6 MB，压到 1024px 再发
+function compressImageFile(file, maxW = 1024) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onerror = () => resolve("");
+    reader.onload = e => {
+      const img = new Image();
+      img.onerror = () => resolve("");
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (w > maxW) { h = h * maxW / w; w = maxW; }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// 把「📎 导入文件 / 📷 图片识别」接到对应输入框：结果是**追加**，不覆盖已打内容
+function bindAttachBars(root) {
+  $$(".attach-bar", root || document).forEach(bar => {
+    if (bar.dataset.bound) return;
+    bar.dataset.bound = "1";
+    const target = document.getElementById(bar.dataset.target);
+    if (!target) return;
+    const hint = bar.querySelector(".attach-hint");
+    const baseHint = hint ? hint.textContent : "";
+    const ocrMode = bar.dataset.ocr || "general";
+    const setHint = t => { if (hint) hint.textContent = t; };
+
+    const append = text => {
+      const cur = target.value;
+      target.value = (cur.trim() ? cur.replace(/\s+$/, "") + "\n\n" : "") + text;
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.scrollTop = target.scrollHeight;
+    };
+
+    const pick = (accept, capture, onPick) => {
+      const inp = document.createElement("input");
+      inp.type = "file";
+      inp.accept = accept;
+      if (capture) inp.capture = capture;
+      inp.style.display = "none";
+      document.body.appendChild(inp);
+      inp.onchange = async () => {
+        const f = (inp.files || [])[0];
+        inp.remove();
+        if (f) await onPick(f);
+      };
+      inp.click();
+    };
+
+    bar.querySelectorAll(".attach-btn").forEach(btn => {
+      btn.onclick = async () => {
+        if (btn.dataset.busy) return;
+        if (btn.dataset.mode === "file") {
+          pick(".txt,.text,.md,.markdown,.csv,.json,.docx,.pdf", "", async f => {
+            btn.dataset.busy = "1";
+            setHint("解析中…");
+            try {
+              const d = await extractFileText(f);
+              append(d.text);
+              setHint(d.note || `${f.name} · ${d.chars} 字`);
+            } catch (e) {
+              setHint(baseHint);
+              toast(`${f.name}：${e.message}`);
+            } finally {
+              delete btn.dataset.busy;
+            }
+          });
+        } else {
+          pick("image/*", "environment", async f => {
+            btn.dataset.busy = "1";
+            setHint("识别中，约 5-20 秒…");
+            try {
+              const dataUrl = await compressImageFile(f);
+              if (!dataUrl) throw new Error("图片读取失败，请换一张");
+              const r = await fetch("/api/ocr", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ image: dataUrl, mode: ocrMode }),
+              });
+              if (!r.ok) {
+                let msg = "识别失败";
+                try { msg = (await r.json()).detail || msg; } catch {}
+                throw new Error(msg);
+              }
+              const d = await r.json();
+              append(d.text);
+              setHint(`已识别 ${d.chars} 字，请核对后使用`);
+            } catch (e) {
+              setHint(baseHint);
+              toast(e.message);
+            } finally {
+              delete btn.dataset.busy;
+            }
+          });
+        }
+      };
+    });
+  });
+}
+
 async function renderGrade() {
   const [rub, hist, qs, set] = await Promise.all([
     api("/api/essay/rubrics"),
@@ -5783,8 +5921,23 @@ async function renderGrade() {
       <select id="gCat" class="g-field"></select>
       <label class="g-total">满分 <input id="gTotal" type="number" min="10" max="100" placeholder=""></label>
       <textarea id="gQ" rows="3" placeholder="【题目】粘贴题干，含作答要求与字数限制（必填）"></textarea>
+      <div class="attach-bar" data-target="gQ" data-ocr="general" style="margin:4px 0 8px">
+        <button type="button" class="attach-btn" data-mode="file">📎 导入</button>
+        <button type="button" class="attach-btn" data-mode="image">📷 识别</button>
+        <span class="attach-hint">导入题干</span>
+      </div>
       <textarea id="gM" rows="5" placeholder="【给定材料】粘贴题目对应的材料（建议提供）"></textarea>
-      <textarea id="gA" rows="7" placeholder="【你的作答】粘贴你的答案（必填）"></textarea>
+      <div class="attach-bar" data-target="gM" data-ocr="general" style="margin:4px 0 8px">
+        <button type="button" class="attach-btn" data-mode="file">📎 导入</button>
+        <button type="button" class="attach-btn" data-mode="image">📷 识别</button>
+        <span class="attach-hint">材料较长建议用文件</span>
+      </div>
+      <textarea id="gA" rows="7" placeholder="【你的作答】粘贴你的答案（必填）；手写可拍照识别"></textarea>
+      <div class="attach-bar" data-target="gA" data-ocr="essay" style="margin:4px 0 8px">
+        <button type="button" class="attach-btn" data-mode="file">📎 导入</button>
+        <button type="button" class="attach-btn" data-mode="image">📷 拍照识别</button>
+        <span class="attach-hint">逐字转写，不纠错</span>
+      </div>
       <div class="g-actions">
         <button class="btn btn-primary" id="gGo">${hasKey ? "开始批改" : "对照自评"}</button>
         <span id="gTip" class="muted"></span>
@@ -5819,6 +5972,7 @@ async function renderGrade() {
     totalIn.placeholder = x ? x.default_score : "";
   };
   catSel.onchange = setDef; setDef();
+  bindAttachBars();
 
   $("#gZhenti").onchange = async e => {
     const qid = e.target.value;
@@ -6069,9 +6223,9 @@ async function renderAiAsk() {
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
           <input type="file" accept="image/*" capture="environment" style="display:none" id="aiCamera">
         </label>
-        <label id="aiImgBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--line,#ddd);border-radius:8px;flex-shrink:0" title="从相册选择" aria-label="从相册选择">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-          <input type="file" accept="image/*" multiple style="display:none" id="aiFile">
+        <label id="aiImgBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:34px;height:34px;border:1px solid var(--line,#ddd);border-radius:8px;flex-shrink:0" title="相册或文件" aria-label="从相册或文件选择">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          <input type="file" accept="image/*,.txt,.text,.md,.markdown,.csv,.json,.docx,.pdf" multiple style="display:none" id="aiFile">
         </label>
         <textarea id="aiInput" rows="2" placeholder="随便问：考点 · 技巧 · 规划…"
           style="flex:1;resize:none;border:1px solid var(--line,#ddd);border-radius:10px;padding:8px;font-size:calc(15px * var(--fs));font-family:inherit;background:transparent;color:inherit"></textarea>
@@ -6090,6 +6244,9 @@ async function renderAiAsk() {
   const cameraInput = $("#aiCamera");
   const previewBox = $("#aiPreviews");
   let attachedImages = [];
+  // 文件只留解析出的文本，不进 localStorage（几万字会撑爆配额）
+  let attachedFiles = [];
+  const ATTACH_TEXT_BUDGET = 8000;
 
   const compressImage = (file) => new Promise(resolve => {
     const reader = new FileReader();
@@ -6112,22 +6269,49 @@ async function renderAiAsk() {
   });
 
   const renderPreviews = () => {
-    previewBox.innerHTML = attachedImages.map((src, i) =>
+    const imgs = attachedImages.map((src, i) =>
       `<div style="position:relative;width:56px;height:56px">
         <img src="${src}" style="width:100%;height:100%;object-fit:cover;border-radius:6px;border:1px solid var(--line,#ddd)">
-        <span data-rm="${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar,#a33);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:calc(12px * var(--fs));line-height:1">×</span>
+        <span data-rm="img:${i}" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;background:var(--cinnabar,#a33);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:calc(12px * var(--fs));line-height:1">×</span>
       </div>`).join("");
+    const docs = attachedFiles.map((f, i) =>
+      `<span style="position:relative;display:inline-flex;align-items:center;gap:5px;max-width:230px;padding:5px 23px 5px 9px;border:1px solid var(--line,#ddd);border-radius:8px;font-size:calc(11.5px * var(--fs));color:var(--ink-2,#666)">
+        <span aria-hidden="true">📄</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</span>
+        <span style="color:var(--ink-3,#999);flex:none">${f.chars} 字</span>
+        <span data-rm="file:${i}" role="button" tabindex="0" aria-label="移除 ${esc(f.name)}" style="position:absolute;top:50%;right:5px;transform:translateY(-50%);cursor:pointer;color:var(--cinnabar,#a33)">×</span>
+      </span>`).join("");
+    previewBox.innerHTML = imgs + docs;
     previewBox.querySelectorAll("[data-rm]").forEach(el => {
-      el.onclick = () => { attachedImages.splice(+el.dataset.rm, 1); renderPreviews(); };
+      el.onclick = () => {
+        const [kind, idx] = el.dataset.rm.split(":");
+        (kind === "img" ? attachedImages : attachedFiles).splice(+idx, 1);
+        renderPreviews();
+      };
     });
   };
 
   const attachFiles = async (inputEl) => {
-    const files = Array.from(inputEl.files).slice(0, 3 - attachedImages.length);
-    for (const f of files) {
-      if (!f.type.startsWith("image/")) continue;
-      const compressed = await compressImage(f);
-      if (compressed) attachedImages.push(compressed);
+    // 图片压缩后走多模态；其余类型交给后端解成文本，与桌面上限一致
+    for (const f of Array.from(inputEl.files || [])) {
+      if (f.type.startsWith("image/")) {
+        if (attachedImages.length >= 3) { toast("图片最多 3 张"); continue; }
+        const compressed = await compressImage(f);
+        if (compressed) attachedImages.push(compressed);
+        continue;
+      }
+      try {
+        const d = await extractFileText(f);
+        const used = attachedFiles.reduce((n, x) => n + x.chars, 0);
+        if (used + d.chars > ATTACH_TEXT_BUDGET) {
+          toast(`附件正文合计上限 ${ATTACH_TEXT_BUDGET} 字，${f.name} 未加入`);
+          continue;
+        }
+        attachedFiles.push({ name: f.name, text: d.text, chars: d.chars });
+        if (d.truncated) toast(`${f.name} 内容较长，已截断`);
+      } catch (e) {
+        toast(`${f.name}：${e.message}`);
+      }
     }
     renderPreviews();
     inputEl.value = "";
@@ -6172,22 +6356,30 @@ async function renderAiAsk() {
   const send = async () => {
     const ask = input.value.trim();
     const imgs = attachedImages.slice();
-    if ((!ask && !imgs.length) || streaming) return;
+    const files = attachedFiles.slice();
+    if ((!ask && !imgs.length && !files.length) || streaming) return;
     streaming = true;
     goBtn.disabled = true;
     input.value = "";
     attachedImages = [];
+    attachedFiles = [];
     renderPreviews();
-    bubble("user", ask || "(图片)", imgs);
+    const fileLine = files.map(f => `📄 ${f.name}`).join("\n");
+    bubble("user", [fileLine, ask].filter(Boolean).join("\n") || "(附件)", imgs);
 
     const his = msgs.map(m => ({ role: m.role, content: m.content }));
+    // 附件正文只进本次请求，不进历史
+    const attachText = files.length
+      ? files.map(f => `【附件：${f.name}】\n${f.text}`).join("\n\n")
+      : "";
+    const sendText = attachText ? (ask ? `${ask}\n\n${attachText}` : attachText) : ask;
     if (imgs.length) {
       const content = [];
-      if (ask) content.push({ type: "text", text: ask });
+      if (sendText) content.push({ type: "text", text: sendText });
       for (const src of imgs) content.push({ type: "image_url", image_url: { url: src } });
       his.push({ role: "user", content });
     } else {
-      his.push({ role: "user", content: ask });
+      his.push({ role: "user", content: sendText });
     }
 
     let full = "";
@@ -6227,7 +6419,9 @@ async function renderAiAsk() {
         `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
     }
     list.scrollTop = list.scrollHeight;
-    const savedContent = imgs.length ? `[图片] ${ask}` : ask;
+    const savedTag = [imgs.length ? "[图片]" : "", files.length ? `[附件 ${files.length} 个]` : ""]
+      .filter(Boolean).join(" ");
+    const savedContent = savedTag ? `${savedTag} ${ask}`.trim() : ask;
     msgs = [...msgs, { role: "user", content: savedContent }];
     if (full.trim()) msgs = [...msgs, { role: "assistant", content: full }];
     aiAskSave(msgs);
@@ -6878,44 +7072,44 @@ async function renderXcNotes() {
       </div>`;
   };
 
-  // 目录：模块胶囊，按下才跳到对应模块的位置（搜索时按钮同步收窄）
-  const TOC_BTN = "display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border:1px solid var(--line-soft);"
-    + "border-radius:15px;background:transparent;font-size:calc(12.5px * var(--fs));color:var(--ink-2);cursor:pointer";
-  const drawToc = shown => {
+  // 目录：六个大框按钮（两列三行），点一次进入该模块，再点一次返回入口页
+  const TOC_BTN = "display:flex;flex-direction:column;gap:4px;text-align:left;padding:12px 13px;border:1px solid var(--line);"
+    + "border-radius:14px;background:rgba(178,58,48,.02);cursor:pointer;min-height:104px;position:relative;width:100%";
+  const TOC_ON = TOC_BTN + ";border-color:var(--cinnabar);background:rgba(178,58,48,.07)";
+  const drawToc = counts => {
     if (!groups.length) { toc.innerHTML = ""; return; }
     const pr = NotesUX.mProg("xc", groups);
-    const live_ = shown.length ? shown : groups;
-    const total = shown.reduce((s, g) => s + g.points.length, 0);
+    const total = groups.reduce((s, g) => s + (counts[g.key] === undefined ? g.points.length : counts[g.key]), 0);
     toc.innerHTML = `
       <div class="nx-toc-head">
-        <b>模块</b>
-        <span class="nx-toc-desc">点胶囊跳到该模块 · 本页 ${total} 个考点</span>
+        <b>六个模块</b>
+        <span class="nx-toc-desc">点大框进入该模块，再点一次返回入口页 · 本页 ${total} 个考点</span>
         <span class="nx-prog" aria-label="掌握进度">已掌握 <b id="xcProgDone">${pr.done}</b> / ${pr.total}</span>
       </div>
-      <div class="nx-cap-row">
-        ${live_.map(g => {
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px">
+        ${groups.map((g, gi) => {
+          const n = counts[g.key] === undefined ? g.points.length : counts[g.key];
+          const on = g.key === xcSel;
           const gp = NotesUX.mProg("xc", [g]);
-          return `<button type="button" class="xc-toc" data-g="${esc(g.key)}" aria-pressed="${g.key === xcSel ? "true" : "false"}"
-            style="${g.key === xcSel ? TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)" : TOC_BTN}">
-            ${MI(g, 20)}${esc(g.name)}
-            <span class="muted">${g.points.length}</span>
-            <span class="nx-cap-p">${gp.done}/${gp.total}</span></button>`;
+          return `<button type="button" class="xc-toc" data-g="${esc(g.key)}" aria-pressed="${on ? "true" : "false"}"
+            style="${on ? TOC_ON : TOC_BTN}">
+            <span class="nx-no" aria-hidden="true" style="position:absolute;top:8px;right:10px">${String(gi + 1).padStart(2, "0")}</span>
+            <span style="font-size:calc(14px * var(--fs));font-weight:600;color:${on ? "var(--cinnabar)" : "var(--ink)"};display:flex;align-items:center;gap:5px;padding-right:18px">
+              ${MI(g, 22)}${esc(g.name)}
+              <span class="muted" style="font-size:calc(11.5px * var(--fs));font-weight:400">${n}</span>
+            </span>
+            <span class="muted" style="font-size:calc(11.5px * var(--fs));line-height:1.55">${esc(g.desc)}</span>
+            <span class="nx-toc-prog">掌握 ${gp.done}/${gp.total}</span></button>`;
         }).join("")}
       </div>`;
     $$(".xc-toc", toc).forEach(a => {
       a.onclick = () => {
-        const t = document.getElementById("xc-" + a.dataset.g);
-        if (!t) return;
-        t.scrollIntoView({ behavior: "smooth", block: "start" });
-        xcSel = a.dataset.g;
+        const key = a.dataset.g;
+        if (key === xcSel && !$("#xcQ").value.trim()) xcSel = "";
+        else { xcSel = key; $("#xcQ").value = ""; }
         NotesUX.uiSet("xc", { group: xcSel });
-        $$(".xc-toc", toc).forEach(b => {
-          b.style.cssText = TOC_BTN;
-          b.setAttribute("aria-pressed", "false");
-        });
-        a.style.cssText = TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)";
-        a.setAttribute("aria-pressed", "true");
-        a.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+        draw("");
+        body.scrollIntoView({ behavior: "smooth", block: "start" });
       };
     });
   };
@@ -6926,8 +7120,8 @@ async function renderXcNotes() {
     if (el) el.textContent = pr.done;
     $$(".xc-toc", toc).forEach(a => {
       const g = groups.find(x => x.key === a.dataset.g);
-      const s = a.querySelector(".nx-cap-p");
-      if (g && s) { const gp = NotesUX.mProg("xc", [g]); s.textContent = `${gp.done}/${gp.total}`; }
+      const s = a.querySelector(".nx-toc-prog");
+      if (g && s) { const gp = NotesUX.mProg("xc", [g]); s.textContent = `掌握 ${gp.done} / ${gp.total}`; }
     });
   };
 
@@ -6954,7 +7148,12 @@ async function renderXcNotes() {
       const n = NotesUX.countPoint(p, terms);
       if (n) hitMap[`${g.key}|${p.title}`] = n;
     }));
-    drawToc(shown);
+    const counts = {};
+    groups.forEach(g => {
+      const m = shown.find(s => s.key === g.key);
+      counts[g.key] = m ? m.points.length : 0;
+    });
+    drawToc(counts);
     const hitN = shown.reduce((s, g) => s + g.points.length, 0);
     const pr = NotesUX.mProg("xc", groups);
     if (k) meta.textContent = `命中 ${hitN} 个考点${onlyTodo || onlyHot ? "（已叠加筛选）" : ""}`;
@@ -6964,7 +7163,46 @@ async function renderXcNotes() {
     $("#xcTodo").classList.toggle("on", onlyTodo);
     $("#xcHot").classList.toggle("on", onlyHot);
     const el = body;
-    el.innerHTML = shown.length ? shown.map(g => {
+    if (!shown.length) {
+      el.innerHTML = `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点${
+        onlyTodo || onlyHot ? "（可先关掉筛选）" : ""}</div>`;
+      return;
+    }
+    if (!k && !xcSel) {
+      const total = groups.reduce((s, g) => s + g.points.length, 0);
+      const hotN = groups.reduce((s, g) => s + g.points.filter(p => p.hot).length, 0);
+      el.innerHTML = `<div class="card">
+        <h3 class="sec">行测速查 · 六个模块</h3>
+        <p class="muted" style="margin:0 0 6px;font-size:calc(12.5px * var(--fs))">
+          共 ${groups.length} 个模块、${total} 个考点。点上方大框进入对应模块；再点一次同一模块可回到本页。</p>
+        <div class="nx-entry-bar">
+          <span>掌握度 <b>${pr.done}</b> / ${pr.total}</span>
+          <span class="nx-bar"><i style="width:${pr.total ? Math.round(pr.done / pr.total * 100) : 0}%"></i></span>
+          <span class="muted">★ 高频 ${hotN} 个</span>
+        </div>
+        ${groups.map(g => `<div style="padding:8px 0;border-top:1px solid var(--line-soft)">
+          <div style="display:flex;align-items:center;gap:8px;font-size:calc(13px * var(--fs))">
+            ${MI(g, 20)}<b>${esc(g.name)}</b>
+            <span class="muted" style="margin-left:auto;white-space:nowrap;font-size:calc(11.5px * var(--fs))">${(g.sections || []).length} 分类 · ${g.points.length} 考点</span>
+          </div>
+          <div class="muted" style="font-size:calc(11.5px * var(--fs));margin-top:2px">${esc(g.desc)}</div>
+        </div>`).join("")}
+      </div>`;
+      return;
+    }
+    // 筛选只作用在 shown 上；选中模块被筛空时留在模块内，给可回退的空态
+    const sel = k ? null : shown.find(g => g.key === xcSel);
+    if (!k && !sel) {
+      el.innerHTML = `<div class="card muted" style="text-align:center;padding:18px">
+        「${esc((groups.find(g => g.key === xcSel) || {}).name || "")}」在当前筛选下没有考点
+        <button type="button" class="btn btn-ghost xc-back" style="margin-left:8px">← 返回六个模块</button></div>`;
+      const back = el.querySelector(".xc-back");
+      if (back) back.onclick = () => { xcSel = ""; NotesUX.uiSet("xc", { group: "" }); draw(""); };
+      return;
+    }
+    const list = k ? shown : [sel];
+    const prefix = k ? "" : `<div style="margin:0 0 8px"><button class="btn btn-ghost xc-back" style="font-size:calc(12px * var(--fs));padding:4px 12px">← 返回六个模块</button></div>`;
+    el.innerHTML = prefix + list.map(g => {
       const secs = sectionsOf(g);
       return `
       <div class="card" id="xc-${esc(g.key)}">
@@ -6990,8 +7228,14 @@ async function renderXcNotes() {
           </div>`;
         }).join("")}
       </div>`;
-    }).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点${
-      onlyTodo || onlyHot ? "（可先关掉筛选）" : ""}</div>`;
+    }).join("");
+    const back = el.querySelector(".xc-back");
+    if (back) back.onclick = () => {
+      xcSel = "";
+      NotesUX.uiSet("xc", { group: "" });
+      draw("");
+      body.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
     // S-5 恢复上次展开的分类（默认收起契约不变，只是渲染后补开）
     Object.keys(SECS).forEach(kk => {
       if (!SECS[kk]) return;
@@ -7126,7 +7370,7 @@ async function renderSlNotes() {
   view.innerHTML = `
     <div class="page-head">
       <h2>申论速查</h2>
-      <p class="muted">申论六个模块 · 点按钮跳到对应模块，模块内按分类分层；点「看框架」再展开</p>
+      <p class="muted">申论六个模块 · 点大框进入该模块，模块内按分类分层；点「看框架」再展开</p>
     </div>
     <div class="card">
       <label class="nx-label" for="slQ">搜索申论考点</label>
@@ -7253,43 +7497,44 @@ async function renderSlNotes() {
       </div>`;
   };
 
-  const TOC_BTN = "display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border:1px solid var(--line-soft);"
-    + "border-radius:15px;background:transparent;font-size:calc(12.5px * var(--fs));color:var(--ink-2);cursor:pointer";
-  const drawToc = shown => {
+  // 目录：六个大框按钮（两列三行），点一次进入该模块，再点一次返回入口页
+  const TOC_BTN = "display:flex;flex-direction:column;gap:4px;text-align:left;padding:12px 13px;border:1px solid var(--line);"
+    + "border-radius:14px;background:rgba(178,58,48,.02);cursor:pointer;min-height:104px;position:relative;width:100%";
+  const TOC_ON = TOC_BTN + ";border-color:var(--cinnabar);background:rgba(178,58,48,.07)";
+  const drawToc = counts => {
     if (!groups.length) { toc.innerHTML = ""; return; }
     const pr = NotesUX.mProg("sl", groups);
-    const live_ = shown.length ? shown : groups;
-    const total = shown.reduce((s, g) => s + g.points.length, 0);
+    const total = groups.reduce((s, g) => s + (counts[g.key] === undefined ? g.points.length : counts[g.key]), 0);
     toc.innerHTML = `
       <div class="nx-toc-head">
-        <b>模块</b>
-        <span class="nx-toc-desc">点胶囊跳到该模块 · 本页 ${total} 个考点</span>
+        <b>六个模块</b>
+        <span class="nx-toc-desc">点大框进入该模块，再点一次返回入口页 · 本页 ${total} 个考点</span>
         <span class="nx-prog" aria-label="掌握进度">已掌握 <b id="slProgDone">${pr.done}</b> / ${pr.total}</span>
       </div>
-      <div class="nx-cap-row">
-        ${live_.map(g => {
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px">
+        ${groups.map((g, gi) => {
+          const n = counts[g.key] === undefined ? g.points.length : counts[g.key];
+          const on = g.key === slSel;
           const gp = NotesUX.mProg("sl", [g]);
-          return `<button type="button" class="sl-toc" data-g="${esc(g.key)}" aria-pressed="${g.key === slSel ? "true" : "false"}"
-            style="${g.key === slSel ? TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)" : TOC_BTN}">
-            ${MI(g, 20)}${esc(g.name)}
-            <span class="muted">${g.points.length}</span>
-            <span class="nx-cap-p">${gp.done}/${gp.total}</span></button>`;
+          return `<button type="button" class="sl-toc" data-g="${esc(g.key)}" aria-pressed="${on ? "true" : "false"}"
+            style="${on ? TOC_ON : TOC_BTN}">
+            <span class="nx-no" aria-hidden="true" style="position:absolute;top:8px;right:10px">${String(gi + 1).padStart(2, "0")}</span>
+            <span style="font-size:calc(14px * var(--fs));font-weight:600;color:${on ? "var(--cinnabar)" : "var(--ink)"};display:flex;align-items:center;gap:5px;padding-right:18px">
+              ${MI(g, 22)}${esc(g.name)}
+              <span class="muted" style="font-size:calc(11.5px * var(--fs));font-weight:400">${n}</span>
+            </span>
+            <span class="muted" style="font-size:calc(11.5px * var(--fs));line-height:1.55">${esc(g.desc)}</span>
+            <span class="nx-toc-prog">掌握 ${gp.done}/${gp.total}</span></button>`;
         }).join("")}
       </div>`;
     $$(".sl-toc", toc).forEach(a => {
       a.onclick = () => {
-        const t = document.getElementById("sl-" + a.dataset.g);
-        if (!t) return;
-        t.scrollIntoView({ behavior: "smooth", block: "start" });
-        slSel = a.dataset.g;
+        const key = a.dataset.g;
+        if (key === slSel && !$("#slQ").value.trim()) slSel = "";
+        else { slSel = key; $("#slQ").value = ""; }
         NotesUX.uiSet("sl", { group: slSel });
-        $$(".sl-toc", toc).forEach(b => {
-          b.style.cssText = TOC_BTN;
-          b.setAttribute("aria-pressed", "false");
-        });
-        a.style.cssText = TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)";
-        a.setAttribute("aria-pressed", "true");
-        a.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+        draw("");
+        body.scrollIntoView({ behavior: "smooth", block: "start" });
       };
     });
   };
@@ -7300,8 +7545,8 @@ async function renderSlNotes() {
     if (el) el.textContent = pr.done;
     $$(".sl-toc", toc).forEach(a => {
       const g = groups.find(x => x.key === a.dataset.g);
-      const s = a.querySelector(".nx-cap-p");
-      if (g && s) { const gp = NotesUX.mProg("sl", [g]); s.textContent = `${gp.done}/${gp.total}`; }
+      const s = a.querySelector(".nx-toc-prog");
+      if (g && s) { const gp = NotesUX.mProg("sl", [g]); s.textContent = `掌握 ${gp.done} / ${gp.total}`; }
     });
   };
 
@@ -7328,7 +7573,12 @@ async function renderSlNotes() {
       const n = NotesUX.countPoint(p, terms);
       if (n) hitMap[`${g.key}|${p.title}`] = n;
     }));
-    drawToc(shown);
+    const counts = {};
+    groups.forEach(g => {
+      const m = shown.find(s => s.key === g.key);
+      counts[g.key] = m ? m.points.length : 0;
+    });
+    drawToc(counts);
     const hitN = shown.reduce((s, g) => s + g.points.length, 0);
     const pr = NotesUX.mProg("sl", groups);
     if (k) meta.textContent = `命中 ${hitN} 个考点${onlyTodo || onlyDemo ? "（已叠加筛选）" : ""}`;
@@ -7338,7 +7588,46 @@ async function renderSlNotes() {
     $("#slTodo").classList.toggle("on", onlyTodo);
     $("#slDemo").classList.toggle("on", onlyDemo);
     const el = body;
-    el.innerHTML = shown.length ? shown.map(g => {
+    if (!shown.length) {
+      el.innerHTML = `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点${
+        onlyTodo || onlyDemo ? "（可先关掉筛选）" : ""}</div>`;
+      return;
+    }
+    if (!k && !slSel) {
+      const total = groups.reduce((s, g) => s + g.points.length, 0);
+      const demoN = groups.reduce((s, g) => s + g.points.filter(p => (p.examples || []).length).length, 0);
+      el.innerHTML = `<div class="card">
+        <h3 class="sec">申论速查 · 六个模块</h3>
+        <p class="muted" style="margin:0 0 6px;font-size:calc(12.5px * var(--fs))">
+          共 ${groups.length} 个模块、${total} 个考点。点上方大框进入对应模块；再点一次同一模块可回到本页。</p>
+        <div class="nx-entry-bar">
+          <span>掌握度 <b>${pr.done}</b> / ${pr.total}</span>
+          <span class="nx-bar"><i style="width:${pr.total ? Math.round(pr.done / pr.total * 100) : 0}%"></i></span>
+          <span class="muted">真题范例 ${demoN} 个考点</span>
+        </div>
+        ${groups.map(g => `<div style="padding:8px 0;border-top:1px solid var(--line-soft)">
+          <div style="display:flex;align-items:center;gap:8px;font-size:calc(13px * var(--fs))">
+            ${MI(g, 20)}<b>${esc(g.name)}</b>
+            <span class="muted" style="margin-left:auto;white-space:nowrap;font-size:calc(11.5px * var(--fs))">${(g.sections || []).length} 分类 · ${g.points.length} 考点</span>
+          </div>
+          <div class="muted" style="font-size:calc(11.5px * var(--fs));margin-top:2px">${esc(g.desc)}</div>
+        </div>`).join("")}
+      </div>`;
+      return;
+    }
+    // 筛选只作用在 shown 上；选中模块被筛空时留在模块内，给可回退的空态
+    const sel = k ? null : shown.find(g => g.key === slSel);
+    if (!k && !sel) {
+      el.innerHTML = `<div class="card muted" style="text-align:center;padding:18px">
+        「${esc((groups.find(g => g.key === slSel) || {}).name || "")}」在当前筛选下没有考点
+        <button type="button" class="btn btn-ghost sl-back" style="margin-left:8px">← 返回六个模块</button></div>`;
+      const back = el.querySelector(".sl-back");
+      if (back) back.onclick = () => { slSel = ""; NotesUX.uiSet("sl", { group: "" }); draw(""); };
+      return;
+    }
+    const list = k ? shown : [sel];
+    const prefix = k ? "" : `<div style="margin:0 0 8px"><button class="btn btn-ghost sl-back" style="font-size:calc(12px * var(--fs));padding:4px 12px">← 返回六个模块</button></div>`;
+    el.innerHTML = prefix + list.map(g => {
       const secs = sectionsOf(g);
       return `
       <div class="card" id="sl-${esc(g.key)}">
@@ -7364,8 +7653,14 @@ async function renderSlNotes() {
           </div>`;
         }).join("")}
       </div>`;
-    }).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点${
-      onlyTodo || onlyDemo ? "（可先关掉筛选）" : ""}</div>`;
+    }).join("");
+    const back = el.querySelector(".sl-back");
+    if (back) back.onclick = () => {
+      slSel = "";
+      NotesUX.uiSet("sl", { group: "" });
+      draw("");
+      body.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
     // S-5 恢复上次展开的分类
     Object.keys(SECS).forEach(kk => {
       if (!SECS[kk]) return;

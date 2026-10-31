@@ -332,7 +332,7 @@ def test_fontface_shared_impl():
     core = _norm(SHARED_CORE)
     assert 'KEY: "fontface"' in core, "shared/core.js 缺字体偏好键"
     assert "dataset.fontface" in core, "shared/core.js 未把字体会落到 <html>"
-    for k in ("song", "hei", "kai", "yahei"):
+    for k in ("song", "hei", "kai", "yahei", "sysong", "syshei"):
         assert f'["{k}",' in core, f"shared/core.js 字体白名单缺 {k}"
     _assert_not_inline("/* N9 字体选择")
 
@@ -340,15 +340,20 @@ def test_fontface_shared_impl():
 def test_fontface_css_overrides_both_clients():
     for p in (STYLES, M_CSS):
         css = _norm(p)
-        for k in ("song", "hei", "kai", "yahei"):
+        for k in ("song", "hei", "kai", "yahei", "sysong", "syshei"):
             assert f'html[data-fontface="{k}"]' in css, f"{p.name} 缺 {k} 字体覆写"
         assert "--serif:" in css and "--sans:" in css, f"{p.name} 缺字体栈变量"
+        # 安卓真机：系统只有思源字体，栈里必须有对应族名与通用族兜底
+        assert "Noto Serif CJK SC" in css, f"{p.name} 字体栈缺安卓思源宋体"
+        assert "Noto Sans CJK SC" in css, f"{p.name} 字体栈缺安卓思源黑体"
 
 
 def test_fontface_head_script_and_settings():
     for p in (INDEX, M_INDEX):
         html = _norm(p)
         assert "g:fontface" in html, f"{p.name} 缺字体防闪烁脚本"
+        assert '"sysong"' in html and '"syshei"' in html, \
+            f"{p.name} 防闪烁脚本白名单缺安卓思源两档，刷新会被重置为默认"
         assert html.index("g:fontface") < html.index("</head>"), \
             f"{p.name} 字体脚本必须在 <head> 内"
     for p in (APP_JS, M_JS):

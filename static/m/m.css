@@ -36,8 +36,9 @@
   --read-lh: 1.6;
   --radius: 10px;
   --shadow: 0 1px 3px rgba(60, 50, 30, .12);
-  --serif: "Songti SC", "Noto Serif SC", "SimSun", serif;
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 安卓没有 Songti SC / PingFang，回退链补上系统自带的思源宋体/思源黑体 */
+  --serif: "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
+  --sans: -apple-system, "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
 }
 
 /* N5 夜间模式（宣纸夜景）：暖灰墨底 + 米白文字（不用纯黑纯白），保持纸墨气质。
@@ -77,22 +78,33 @@ html[data-fontsize="sm"] { --fs: .84; }
 html[data-fontsize="lg"] { --fs: 1.16; }
 html[data-fontsize="xl"] { --fs: 1.35; }
 html[data-lineheight="loose"] { --read-lh: 1.95; }
-/* N9 字体选择：与桌面端同一套字体栈；默认 auto 不覆写，保持原混排 */
+/* N9 字体选择：与桌面端同一套字体栈；默认 auto 不覆写，保持原混排。
+   每条栈都按「Windows / iOS / 安卓」顺序列族名，末尾落通用族：
+   安卓没有 SimSun / KaiTi / 雅黑，会用系统思源宋体、思源黑体兜底。 */
 html[data-fontface="song"] {
-  --serif: "SimSun", "宋体", "Songti SC", "Noto Serif SC", serif;
-  --sans: "SimSun", "宋体", "Songti SC", "Noto Serif SC", serif;
+  --serif: "SimSun", "宋体", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", serif;
+  --sans: "SimSun", "宋体", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", serif;
 }
 html[data-fontface="hei"] {
-  --serif: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  --sans: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --serif: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+  --sans: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
 }
 html[data-fontface="kai"] {
-  --serif: "KaiTi", "楷体", "Kaiti SC", "STKaiti", serif;
-  --sans: "KaiTi", "楷体", "Kaiti SC", "STKaiti", serif;
+  --serif: "KaiTi", "楷体", "Kaiti SC", "STKaiti", "Noto Serif CJK SC", "Noto Serif SC", serif;
+  --sans: "KaiTi", "楷体", "Kaiti SC", "STKaiti", "Noto Serif CJK SC", "Noto Serif SC", serif;
 }
 html[data-fontface="yahei"] {
-  --serif: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", sans-serif;
-  --sans: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", sans-serif;
+  --serif: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+  --sans: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+}
+/* 安卓原生两档：直接用系统自带的思源字体，真机上一定可见 */
+html[data-fontface="sysong"] {
+  --serif: "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  --sans: "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+}
+html[data-fontface="syshei"] {
+  --serif: -apple-system, "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  --sans: -apple-system, "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
 }
 /* 特大档下长文允许换行、表格横向滚动，但不横向溢出（文档边界要求） */
 .stem, .opt, .sz-content, .f-ctx, .f-explain, .muted, .card { overflow-wrap: anywhere; }
@@ -1721,3 +1733,9 @@ mark.nx-hit { background:rgba(176,124,36,.32); color:inherit; padding:0 1px; bor
 .nx-top { position:fixed; right:12px; bottom:74px; z-index:31; padding:7px 12px; border:1px solid var(--line); border-radius:16px; background:var(--panel); color:var(--ink-2); font-size:calc(11.5px * var(--fs)); box-shadow:0 4px 14px rgba(0,0,0,.16); cursor:pointer; opacity:0; pointer-events:none; transition:opacity .18s ease; }
 .nx-top.on { opacity:1; pointer-events:auto; }
 .nx-top:hover { color:var(--cinnabar); border-color:var(--cinnabar); }
+
+/* ===== 附件导入（AI 答疑 / 申论批改） ===== */
+.attach-bar { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+.attach-btn { padding:4px 11px; border:1px dashed var(--line); border-radius:7px; background:transparent; color:var(--ink-3); font-size:calc(11.5px * var(--fs)); cursor:pointer; }
+.attach-btn[data-busy] { opacity:.55; cursor:progress; }
+.attach-hint { font-size:calc(11px * var(--fs)); color:var(--ink-3); }

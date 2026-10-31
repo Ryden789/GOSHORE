@@ -41,8 +41,9 @@
   --read-font: calc(16px * var(--fs));      /* 题面/长文基数 */
   --read-lh: 1.9;
   --shadow: 0 1px 0 rgba(35, 32, 26, .04), 0 6px 18px rgba(35, 32, 26, .07);
-  --serif: "Noto Serif SC", "Songti SC", serif;
-  --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 安卓没有 Songti SC / PingFang，回退链补上系统自带的思源宋体/思源黑体 */
+  --serif: "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  --sans: "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   --mono: "JetBrains Mono", "Consolas", monospace;
 }
 
@@ -88,20 +89,29 @@ html[data-lineheight="loose"] { --read-lh: 2.15; }
    默认（html[data-fontface="auto"]）不覆写，保持「宋体标题 + 黑体正文」的原混排。
    --mono 不跟着换，数字与代码维持等宽，避免表格对不齐。 */
 html[data-fontface="song"] {
-  --serif: "SimSun", "宋体", "Songti SC", "Noto Serif SC", serif;
-  --sans: "SimSun", "宋体", "Songti SC", "Noto Serif SC", serif;
+  --serif: "SimSun", "宋体", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", serif;
+  --sans: "SimSun", "宋体", "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", serif;
 }
 html[data-fontface="hei"] {
-  --serif: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  --sans: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --serif: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+  --sans: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
 }
 html[data-fontface="kai"] {
-  --serif: "KaiTi", "楷体", "Kaiti SC", "STKaiti", serif;
-  --sans: "KaiTi", "楷体", "Kaiti SC", "STKaiti", serif;
+  --serif: "KaiTi", "楷体", "Kaiti SC", "STKaiti", "Noto Serif CJK SC", "Noto Serif SC", serif;
+  --sans: "KaiTi", "楷体", "Kaiti SC", "STKaiti", "Noto Serif CJK SC", "Noto Serif SC", serif;
 }
 html[data-fontface="yahei"] {
-  --serif: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", sans-serif;
-  --sans: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", sans-serif;
+  --serif: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+  --sans: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+}
+/* 安卓原生两档：直接用系统自带的思源字体，真机上一定可见 */
+html[data-fontface="sysong"] {
+  --serif: "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+  --sans: "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "SimSun", serif;
+}
+html[data-fontface="syshei"] {
+  --serif: "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sans: "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 /* 特大档下长文允许换行、表格/公式区横向滚动，但不横向溢出（文档边界要求）。 */
@@ -1407,3 +1417,11 @@ mark.nx-hit { background:rgba(176,124,36,.3); color:inherit; padding:0 1px; bord
 .nx-top { position:fixed; right:18px; bottom:22px; z-index:40; padding:7px 13px; border:1px solid var(--line); border-radius:16px; background:var(--panel); color:var(--ink-2); font-size:calc(12px * var(--fs)); box-shadow:0 4px 14px rgba(0,0,0,.12); cursor:pointer; opacity:0; pointer-events:none; transition:opacity .18s ease; }
 .nx-top.on { opacity:1; pointer-events:auto; }
 .nx-top:hover { color:var(--cinnabar); border-color:var(--cinnabar); }
+
+/* ===== 附件导入（AI 答疑 / 申论批改） =====
+   文件与图片走同一套按钮，颜色只用于 hover 反馈，避免分散注意力。 */
+.attach-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.attach-btn { padding:3px 10px; border:1px dashed var(--line); border-radius:7px; background:transparent; color:var(--ink-3); font-size:calc(11.5px * var(--fs)); cursor:pointer; }
+.attach-btn:hover { border-color:var(--cinnabar); color:var(--cinnabar); }
+.attach-btn[data-busy] { opacity:.55; cursor:progress; }
+.attach-hint { font-size:calc(11.5px * var(--fs)); color:var(--ink-3); }
