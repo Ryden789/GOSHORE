@@ -35,6 +35,8 @@ scripts/_*_tmp/
 htmlcov/
 # 测试/脚本遗留的根目录临时目录
 /tmp*/
+# 本地讲义与 PDF 提取中间产物（源文件约 2 GB，可按 scripts/pdf_notes_extract*.py 重建）
+/知识点综合/
 # 题库抽检单（可能含题目原文，按需本地留存，不入库）
 /reports/
 # 宣传材料导出产物（PDF / 逐页 PNG，可由 docs/05-宣传/*.md 重新生成，不分发）

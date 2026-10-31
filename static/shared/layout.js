@@ -148,6 +148,11 @@
         "desc": "公式、规律与速算技巧"
       },
       {
+        "route": "sl-notes",
+        "title": "申论速查",
+        "desc": "题型方法与答题框架"
+      },
+      {
         "route": "zy-notes",
         "title": "综应考点",
         "desc": "C 类综应知识体系"
@@ -242,7 +247,7 @@
     if (["home","plan"].includes(route)) return "home";
     if (["practice","paper","exam","logic","formula","wordfill","speed","cube","essay","argument","argument-quiz","wenxian","grade","interview","share"].includes(route)) return "practice";
     if (["review-center","review","wrong","mastery","cards","marks","notes"].includes(route)) return "review-center";
-    if (["knowledge","xc-notes","zy-notes","shizheng"].includes(route)) return "knowledge";
+    if (["knowledge","xc-notes","zy-notes","sl-notes","shizheng"].includes(route)) return "knowledge";
     if (["reports","overview","summary","report","time","history"].includes(route)) return "reports";
     if (["manage","search","doubts","import","mydocs","doc"].includes(route)) return "manage";
     if (["ai-ask","guide"].includes(route)) return "ai-ask";

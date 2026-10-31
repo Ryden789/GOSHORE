@@ -322,3 +322,49 @@ def test_font_settings_picker_wired():
         assert "FontSize.bindPicker(" in src, f"{p.name} 设置页未绑定字号控件"
         assert 'id="fontPick"' in src, f"{p.name} 设置页缺少 #fontPick 容器"
 
+
+# ============================================================
+# F. N9 字体选择 / N10 模块图标
+# ============================================================
+
+def test_fontface_shared_impl():
+    """字体选择与字号同源：偏好只停留在 shared/core.js，两端不得各写一份。"""
+    core = _norm(SHARED_CORE)
+    assert 'KEY: "fontface"' in core, "shared/core.js 缺字体偏好键"
+    assert "dataset.fontface" in core, "shared/core.js 未把字体会落到 <html>"
+    for k in ("song", "hei", "kai", "yahei"):
+        assert f'["{k}",' in core, f"shared/core.js 字体白名单缺 {k}"
+    _assert_not_inline("/* N9 字体选择")
+
+
+def test_fontface_css_overrides_both_clients():
+    for p in (STYLES, M_CSS):
+        css = _norm(p)
+        for k in ("song", "hei", "kai", "yahei"):
+            assert f'html[data-fontface="{k}"]' in css, f"{p.name} 缺 {k} 字体覆写"
+        assert "--serif:" in css and "--sans:" in css, f"{p.name} 缺字体栈变量"
+
+
+def test_fontface_head_script_and_settings():
+    for p in (INDEX, M_INDEX):
+        html = _norm(p)
+        assert "g:fontface" in html, f"{p.name} 缺字体防闪烁脚本"
+        assert html.index("g:fontface") < html.index("</head>"), \
+            f"{p.name} 字体脚本必须在 <head> 内"
+    for p in (APP_JS, M_JS):
+        src = _norm(p)
+        assert "FontFace.pickerHtml()" in src, f"{p.name} 设置页未渲染字体控件"
+        assert "FontFace.bindPicker(" in src, f"{p.name} 设置页未绑定字体控件"
+        assert 'id="fontFacePick"' in src, f"{p.name} 设置页缺少 #fontFacePick 容器"
+        assert "FontFace.init()" in src, f"{p.name} 启动时未初始化字体"
+
+
+def test_module_icons_inline_and_wired():
+    """六个模块的专属线图标内联在共享块里，双端都用 ModuleIcon.html 渲染。"""
+    core = _norm(SHARED_CORE)
+    assert "const ModuleIcon = {" in core, "shared/core.js 缺模块图标集"
+    for k in ("zhengzhi", "ziliao", "shuliang", "panduan", "yanyu", "changshi"):
+        assert f"{k}: '<" in core, f"模块图标缺 {k}"
+    for p in (APP_JS, M_JS):
+        assert "ModuleIcon.html(g.key" in _norm(p), f"{p.name} 未接入模块图标"
+

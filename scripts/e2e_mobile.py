@@ -227,6 +227,9 @@ def check_http():
 #   __animAdds —— MutationObserver 统计 page-in class 被添加次数（同帧同步重复 add
 #                 会被浏览器合并成一次动画事件，但 mutation 记录不会合并）。
 INIT_JS = """
+/* 新手引导默认已读：E2E 断言的是回归流程，不该被首次启动的蒙层挡住点击；
+   「引导本身能不能开/关」在最前面的用例里显式 openGuide() 验证。 */
+try { localStorage.setItem('g:onboard_done', 'true'); } catch (e) {}
 window.__animLog = [];
 window.__animAdds = 0;
 window.__sig = function () {
@@ -319,6 +322,24 @@ def check_browser():
         record(daily_visible and daily_flag is False,
                "新账号首页出现每日开门卡",
                f"#dailyGo 可见={daily_visible}，DAILY_DONE={daily_flag}")
+
+        # ---- 新手引导：分层蒙层能开、能翻步、跳过即落本地偏好（常驻入口在 #/help）
+        try:
+            seeded = pg.evaluate("Pref.get('onboard_done', false)")
+            pg.evaluate("openGuide()")
+            pg.wait_for_selector(".guide-mask .guide-tip", timeout=4000)
+            title1 = pg.locator("#gTitle").inner_text()
+            pg.click("#gNext")
+            pg.wait_for_function(
+                "document.querySelector('#gStep').textContent.startsWith('2 /')", timeout=4000)
+            pg.click("#gSkip")
+            pg.wait_for_function("!document.querySelector('.guide-mask')", timeout=4000)
+            done = pg.evaluate("Pref.get('onboard_done', false)")
+            record(bool(seeded) and bool(title1) and done is True,
+                   "新手引导：蒙层可开可翻步，跳过即持久化",
+                   f"seed={seeded}，首步={title1}，标记={done}")
+        except Exception as e:
+            record(False, "新手引导：蒙层可开可翻步，跳过即持久化", f"异常：{e}")
 
         # ---- 开门守卫：未完成每日一题时访问 #/practice 被弹回 #/home，并弹出可读提示
         pg.evaluate("window.__animLog.length = 0")

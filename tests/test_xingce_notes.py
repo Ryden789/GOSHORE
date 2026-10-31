@@ -256,3 +256,112 @@ def test_both_frontends_share_the_same_render_contract():
         block = block[:block.index("\n/* =====")]
         assert "p.title.toLowerCase().includes(k)" in block
         assert '(p.body || "").toLowerCase().includes(k)' in block
+
+
+POLITICS = next(g for g in GROUPS if g["name"] == "政治理论")
+
+
+def test_politics_points_have_full_body():
+    """政治理论考点要能当复习材料读，不能只有一句结论。"""
+    for p in POLITICS["points"]:
+        n = len(p["body"])
+        assert 600 <= n <= 900, f"政治理论 · {p['title']} 正文 {n} 字，超出 600—900 区间"
+
+
+def test_politics_points_have_quizzes():
+    """每个考点至少 1 道题：4 个选项、答案在 A—D、解析非空。"""
+    total = 0
+    for p in POLITICS["points"]:
+        qs = p.get("quizzes")
+        assert isinstance(qs, list) and qs, f"政治理论 · {p['title']} 缺少 quizzes"
+        assert "quiz" not in p, f"政治理论 · {p['title']} 仍在用单题字段 quiz"
+        total += len(qs)
+        for q in qs:
+            assert q["q"].strip(), f"政治理论 · {p['title']} 题干为空"
+            assert len(q["options"]) == 4, f"政治理论 · {p['title']} 选项数不是 4"
+            assert q["answer"] in list("ABCD"), f"政治理论 · {p['title']} 答案不是 A—D"
+            assert q["explain"].strip(), f"政治理论 · {p['title']} 解析为空"
+    assert total >= 60, f"题量只有 {total}，排坑手册题目未正确合并"
+
+
+def test_paikeng_quiz_titles_match_politics_points():
+    """排坑题库的键必须与考点标题完全一致，否则题目会静默丢失。"""
+    from app.xingce_paikeng_quiz import QUIZZES
+
+    titles = {p["title"] for p in POLITICS["points"]}
+    missing = [t for t in QUIZZES if t not in titles]
+    assert not missing, f"排坑题库键与考点标题不匹配：{missing}"
+
+
+def test_both_frontends_render_quiz_with_folded_answer():
+    """题干常显、答案默认折叠：两端都要有折叠按钮与默认隐藏的解析容器。"""
+    for p in (APP_JS, M_JS):
+        js = _text(p)
+        block = js[js.index("async function renderXcNotes()"):]
+        block = block[:block.index("\n/* =====")]
+        assert "xc-quiz" in block, f"{p.name} 未渲染题目"
+        assert "xc-quiz-ans" in block, f"{p.name} 缺少答案与解析容器"
+        assert "查看答案与解析" in block, f"{p.name} 缺少答案折叠按钮文案"
+        assert "quizHtml" not in block, f"{p.name} 仍是单题渲染"
+        assert "quizzesHtml" in block, f"{p.name} 未按多题渲染"
+        assert "${quizzesHtml(p.quizzes)}" in block, f"{p.name} 未传入考点题库"
+
+
+def test_sections_collapsed_until_clicked():
+    """进入模块时分类默认收起：无搜索词时隐藏分类正文，只有搜索才自动展开。"""
+    for p in (APP_JS, M_JS):
+        js = _text(p)
+        block = js[js.index("async function renderXcNotes()"):]
+        block = block[:block.index("\n/* =====")]
+        assert '<div class="xc-sec-body"${k ? "" : " hidden"}>' in block, \
+            f"{p.name} 进入模块时分类未默认收起"
+
+
+FOUR_MODULES = ("资料分析", "数量关系", "判断推理", "言语理解")
+
+
+def test_four_modules_points_have_full_body():
+    """其余四个模块正文按规范 §2.3 落在 300—600 字，提示 3—5 条。"""
+    for g in GROUPS:
+        if g["name"] not in FOUR_MODULES:
+            continue
+        for p in g["points"]:
+            n = len(p["body"])
+            assert 300 <= n <= 600, f"{g['name']} · {p['title']} 正文 {n} 字，超出 300—600 区间"
+            tips = p.get("tips") or []
+            assert 3 <= len(tips) <= 5, f"{g['name']} · {p['title']} 提示 {len(tips)} 条"
+
+
+def test_four_modules_points_have_quizzes():
+    """四个模块每点 1—3 题：4 个选项、答案 A—D、解析非空且逐项说明。"""
+    total = 0
+    for g in GROUPS:
+        if g["name"] not in FOUR_MODULES:
+            continue
+        for p in g["points"]:
+            qs = p.get("quizzes")
+            assert isinstance(qs, list) and qs, f"{g['name']} · {p['title']} 缺少 quizzes"
+            assert 1 <= len(qs) <= 3, f"{g['name']} · {p['title']} 题目数 {len(qs)} 不在 1—3"
+            total += len(qs)
+            for q in qs:
+                assert q["q"].strip(), f"{p['title']} 题干为空"
+                assert len(q["options"]) == 4, f"{p['title']} 选项数不是 4"
+                assert q["answer"] in list("ABCD"), f"{p['title']} 答案不是 A—D"
+                assert len(q["explain"].strip()) >= 40, f"{p['title']} 解析过短"
+    assert total >= 90, f"四模块总题量只有 {total}"
+
+
+def test_content_files_match_point_titles():
+    """内容文件的键必须与考点标题逐字一致、顺序一致，否则正文与题目会静默错位。"""
+    from app import (xingce_content_ziliao, xingce_content_shuliang,
+                     xingce_content_panduan, xingce_content_yanyu)
+
+    pairs = {
+        "资料分析": xingce_content_ziliao.POINTS,
+        "数量关系": xingce_content_shuliang.POINTS,
+        "判断推理": xingce_content_panduan.POINTS,
+        "言语理解": xingce_content_yanyu.POINTS,
+    }
+    for name, pts in pairs.items():
+        g = next(x for x in GROUPS if x["name"] == name)
+        assert list(pts) == [p["title"] for p in g["points"]], f"{name} 内容文件与考点标题不一致"

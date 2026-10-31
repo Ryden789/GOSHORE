@@ -84,6 +84,26 @@ html[data-fontsize="xl"] { --fs: 1.35; }
 /* 行高宽松（可选开关） */
 html[data-lineheight="loose"] { --read-lh: 2.15; }
 
+/* N9 字体选择：只覆写 --serif / --sans 两条字体栈，全站文字一起换；
+   默认（html[data-fontface="auto"]）不覆写，保持「宋体标题 + 黑体正文」的原混排。
+   --mono 不跟着换，数字与代码维持等宽，避免表格对不齐。 */
+html[data-fontface="song"] {
+  --serif: "SimSun", "宋体", "Songti SC", "Noto Serif SC", serif;
+  --sans: "SimSun", "宋体", "Songti SC", "Noto Serif SC", serif;
+}
+html[data-fontface="hei"] {
+  --serif: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --sans: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+}
+html[data-fontface="kai"] {
+  --serif: "KaiTi", "楷体", "Kaiti SC", "STKaiti", serif;
+  --sans: "KaiTi", "楷体", "Kaiti SC", "STKaiti", serif;
+}
+html[data-fontface="yahei"] {
+  --serif: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", sans-serif;
+  --sans: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", sans-serif;
+}
+
 /* 特大档下长文允许换行、表格/公式区横向滚动，但不横向溢出（文档边界要求）。 */
 .sz-content, .stem, .f-ctx, .f-explain, .msg-bubble, .iv-model, .arg-sent {
   overflow-wrap: anywhere; word-break: break-word;

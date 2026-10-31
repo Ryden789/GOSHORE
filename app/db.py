@@ -452,6 +452,11 @@ def _is_real_table(conn: sqlite3.Connection, name: str) -> bool:
     附加的共享库里）→ 返回 False，调用方据此把写入改到个人库（doc_overrides /
     shizheng_quiz）。legacy 桌面端：真实表 → True。
     """
+    temporary = conn.execute(
+        "SELECT type FROM sqlite_temp_master WHERE name=?", (name,)
+    ).fetchone()
+    if temporary:
+        return temporary["type"] == "table"
     row = conn.execute(
         "SELECT type FROM sqlite_master WHERE name=?", (name,)
     ).fetchone()
@@ -1577,7 +1582,7 @@ def _upsert(conn: sqlite3.Connection, p: parser.Parsed, mtime: float) -> int:
     # 规则与迁移完全一致（同一个 app/qid.py），所以两处算出的值必然相同。
     qid = p.qid or qidmod.content_fingerprint(
         p.data.get("stem", ""), p.data.get("options") or [])
-    cur = conn.execute(
+    conn.execute(
         """INSERT INTO documents
            (path,kind,qid,title,module,daclass,region,year,exam,kaodian,tags,mtime,data,search_text,material_fp)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -1593,7 +1598,8 @@ def _upsert(conn: sqlite3.Connection, p: parser.Parsed, mtime: float) -> int:
             p.search_text, fp,
         ),
     )
-    doc_id = cur.lastrowid
+    # 冲突更新不会刷新 lastrowid；按路径取真实 id，避免改写上一题的全文索引。
+    doc_id = conn.execute("SELECT id FROM documents WHERE path=?", (p.rel_path,)).fetchone()[0]
     conn.execute("DELETE FROM docs_fts WHERE rowid=?", (doc_id,))
     conn.execute(
         "INSERT INTO docs_fts(rowid,title,content) VALUES (?,?,?)",
@@ -1609,17 +1615,34 @@ def reindex(progress=None) -> dict:
     if not raw:
         return {"ok": False, "error": "尚未设置题库源目录（vault_path），请在设置里指定"}
     vault = Path(raw)
-    if not vault.exists():
+    if not vault.is_dir():
         return {"ok": False, "error": f"vault 路径不存在: {vault}"}
 
     conn = connect()
-    init_db(conn)
-    # split 模式：`documents` 在本连接上是只读附加题库的 TEMP VIEW，写它会报
-    # `cannot modify documents because it is a view`。题库的读写统一走
-    # content.db 的独立可写连接；legacy 模式仍然就是这个库本身（行为不变）。
-    wconn = content_writer() if split_enabled() else conn
+    wconn = conn
+    try:
+        init_db(conn)
+        # split 模式的 documents 是只读视图，写入必须走独立题库连接。
+        wconn = content_writer() if split_enabled() else conn
+        result = _scan_vault(wconn, vault, progress)
+        if wconn is not conn:
+            _ensure_content_columns(wconn)
+        wconn.commit()
+    finally:
+        if wconn is not conn:
+            wconn.close()
+        conn.close()
+    # 对新增/变更且未标难度的题目做启发式打标
+    try:
+        tag_difficulty_batch(progress)
+    except Exception as e:
+        log.warning("启发式难度打标失败：%s", e)
+    return result
+
+
+def _scan_vault(wconn: sqlite3.Connection, vault: Path, progress=None) -> dict:
+    """同一事务内完成路径搬迁与重建，写入失败时由调用方关闭连接回滚。"""
     existing = {r["path"]: r["mtime"] for r in wconn.execute("SELECT path,mtime FROM documents")}
-    seen: set[str] = set()
 
     files: list[Path] = []
     for root, dirs, fnames in os.walk(vault):
@@ -1627,12 +1650,23 @@ def reindex(progress=None) -> dict:
         for fn in fnames:
             if fn.endswith(".md"):
                 files.append(Path(root) / fn)
+    files.sort()
+
+    # 换源后同一 qid 会出现在新路径；先删除已消失的旧路径，再插入，
+    # 否则 documents(qid) 的唯一索引会把正常的搬迁判为重复题。
+    seen = {fp.relative_to(vault).as_posix() for fp in files}
+    removed = 0
+    for gone in set(existing) - seen:
+        row = wconn.execute("SELECT id FROM documents WHERE path=?", (gone,)).fetchone()
+        if row:
+            wconn.execute("DELETE FROM docs_fts WHERE rowid=?", (row["id"],))
+        wconn.execute("DELETE FROM documents WHERE path=?", (gone,))
+        removed += 1
 
     changed = 0
     total = len(files)
     for i, fp in enumerate(files):
         rel = fp.relative_to(vault).as_posix()
-        seen.add(rel)
         try:
             mt = fp.stat().st_mtime
         except OSError:
@@ -1651,30 +1685,6 @@ def reindex(progress=None) -> dict:
         changed += 1
         if progress:
             progress(i + 1, total, "index")
-        if changed % 200 == 0:
-            wconn.commit()
-
-    removed = 0
-    for gone in set(existing) - seen:
-        row = wconn.execute("SELECT id FROM documents WHERE path=?", (gone,)).fetchone()
-        if row:
-            wconn.execute("DELETE FROM docs_fts WHERE rowid=?", (row["id"],))
-        wconn.execute("DELETE FROM documents WHERE path=?", (gone,))
-        removed += 1
-
-    wconn.commit()
-    # 新增的「材料」题需要补材料指纹（legacy 下 init_db 建列时会回填，split 下
-    # documents 是视图，必须显式在题库连接上补）
-    if wconn is not conn:
-        _ensure_content_columns(wconn)
-        wconn.commit()
-        wconn.close()
-    conn.close()
-    # 对新增/变更且未标难度的题目做启发式打标
-    try:
-        tag_difficulty_batch(progress)
-    except Exception as e:
-        log.warning("启发式难度打标失败：%s", e)
     return {
         "ok": True,
         "total": total,
@@ -2261,44 +2271,109 @@ def add_answer(doc_id: int, selected: str, correct: bool | None, ms: int,
     return {"annihilated": annihilated, "graded": graded}
 
 
+def _resolved_doc_sql(record: str) -> str:
+    """个人记录对应的当前题目 id；失联的非空 qid 不回退到数字 id。"""
+    return f"""CASE WHEN COALESCE({record}.qid,'')='' THEN {record}.doc_id
+        ELSE COALESCE(
+            (SELECT id FROM documents WHERE id={record}.doc_id AND qid={record}.qid),
+            (SELECT MIN(id) FROM documents WHERE qid={record}.qid)) END"""
+
+
+def _progress_key_sql(table: str, document: str = "d") -> str:
+    """当前题目的个人记录键：稳定题号优先，空题号旧记录才按数字 id 兼容。"""
+    if table not in {"review_plan", "mastery"}:
+        raise ValueError(table)
+    return f"""COALESCE(
+        (SELECT p.doc_id FROM {table} p
+         WHERE p.doc_id={document}.id AND p.qid={document}.qid AND p.qid<>''),
+        (SELECT p.doc_id FROM {table} p
+         WHERE p.qid={document}.qid AND p.qid<>''
+         ORDER BY p.doc_id LIMIT 1),
+        (SELECT p.doc_id FROM {table} p
+         WHERE p.doc_id={document}.id AND COALESCE(p.qid,'')=''))"""
+
+
+def _progress_target(conn: sqlite3.Connection, table: str,
+                     doc_id: int) -> tuple[int, str, sqlite3.Row | None]:
+    """在写事务内解析记录；数字键冲突时保留旧题进度，分配空闲负数键。
+
+    doc_id 仍是兼容存储键；非空 qid 才决定记录归属。负数键仅在旧 id
+    被另一题占用时使用，读取时必须解析成当前 documents.id，不能直接返回。
+    """
+    key_sql = _progress_key_sql(table)
+    doc = conn.execute("SELECT qid FROM documents WHERE id=?", (doc_id,)).fetchone()
+    qid = str(doc["qid"] or "") if doc else ""
+    row = conn.execute(
+        f"SELECT * FROM {table} WHERE doc_id=(SELECT {key_sql} "
+        "FROM documents d WHERE d.id=?)", (doc_id,)).fetchone()
+    if row is None and not doc:
+        # 兼容尚未导入题库的旧空题号记录；非空题号绝不能串给不存在的题。
+        row = conn.execute(
+            f"SELECT * FROM {table} WHERE doc_id=? AND COALESCE(qid,'')=''",
+            (doc_id,)).fetchone()
+    if row is not None:
+        return int(row["doc_id"]), qid, row
+    occupied = conn.execute(
+        f"SELECT 1 FROM {table} WHERE doc_id=?", (doc_id,)).fetchone()
+    key = doc_id
+    if occupied:
+        key = conn.execute(
+            f"SELECT MIN(-1, COALESCE(MIN(doc_id), 0)-1) FROM {table}"
+        ).fetchone()[0]
+    return int(key), qid, None
+
+
 def _schedule_review(doc_id: int, correct: bool) -> None:
     """艾宾浩斯间隔复习：答错回 1 天档；答对升档 1→2→4→7→15→30 天，毕业出计划。"""
     DAY = 86400.0
     conn = connect()
-    r = conn.execute("SELECT stage FROM review_plan WHERE doc_id=?", (doc_id,)).fetchone()
-    if correct:
-        if r:
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        key, qid, r = _progress_target(conn, "review_plan", doc_id)
+        if correct and r:
             stage = r["stage"] + 1
             if stage > len(EBBINGHAUS_DAYS):
-                conn.execute("DELETE FROM review_plan WHERE doc_id=?", (doc_id,))
+                conn.execute("DELETE FROM review_plan WHERE doc_id=?", (key,))
             else:
                 due = time.time() + EBBINGHAUS_DAYS[stage - 1] * DAY
                 conn.execute(
-                    f"UPDATE review_plan SET stage=?, due_at=?, qid={_QID_OF_DOC}"
-                    " WHERE doc_id=?", (stage, due, doc_id, doc_id))
-    else:
-        conn.execute(
-            f"INSERT OR REPLACE INTO review_plan(doc_id,qid,stage,due_at)"
-            f" VALUES(?,{_QID_OF_DOC},?,?)",
-            (doc_id, doc_id, 1, time.time() + EBBINGHAUS_DAYS[0] * DAY),
-        )
-    conn.commit()
+                    "UPDATE review_plan SET stage=?, due_at=?, qid=? WHERE doc_id=?",
+                    (stage, due, qid, key))
+        elif not correct:
+            conn.execute(
+                "INSERT OR REPLACE INTO review_plan(doc_id,qid,stage,due_at) VALUES(?,?,?,?)",
+                (key, qid, 1, time.time() + EBBINGHAUS_DAYS[0] * DAY))
+        conn.commit()
+    finally:
+        conn.close()
     # 顺手重算本题难度
     _recompute_difficulty(doc_id)
-    conn.close()
 
 
 def due_reviews() -> list[dict]:
     """今日到期待复习的真题。"""
     conn = connect()
-    rows = conn.execute(
-        f"""SELECT {_LIST_COLS}, p.stage FROM review_plan p
-            JOIN documents d ON d.id = p.doc_id
-            WHERE p.due_at <= ? ORDER BY p.due_at""",
-        (time.time(),),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    cols = ",".join("d." + c for c in _LIST_COLS.split(","))
+    try:
+        # 重建题库后数字 id 可能被别题复用；有 qid 时只按稳定题号找回。
+        # 重复 qid 优先保留原行，否则选最小 id，避免一条计划展开成多题。
+        rows = conn.execute(
+            f"""SELECT {cols}, p.stage FROM review_plan p
+                JOIN documents d ON d.id={_resolved_doc_sql('p')}
+                WHERE p.due_at <= ? ORDER BY p.due_at, p.doc_id""",
+            (time.time(),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _due_review_count(conn: sqlite3.Connection, now: float) -> int:
+    """统计与复习列表同口径，失联记录保留在库中但不计入可复习题数。"""
+    return conn.execute(
+        f"SELECT COUNT(*) FROM review_plan p "
+        f"JOIN documents d ON d.id={_resolved_doc_sql('p')} WHERE p.due_at<=?",
+        (now,)).fetchone()[0]
 
 
 def set_wrong_reason(doc_id: int, reason: str) -> None:
@@ -2750,27 +2825,26 @@ def _ensure_mastery(conn: sqlite3.Connection) -> None:
 def update_mastery(doc_id: int, is_correct: bool) -> float:
     """更新单题掌握度：答对 +0.15（连对加成，最多再 +0.1），答错 -0.25，夹在 0~1。"""
     conn = connect()
-    _ensure_mastery(conn)
-    row = conn.execute(
-        "SELECT score, correct_streak FROM mastery WHERE doc_id=?", (doc_id,)
-    ).fetchone()
-    score = float(row["score"]) if row else MASTERY_DEFAULT
-    streak = int(row["correct_streak"]) if row else 0
-    if is_correct:
-        streak += 1
-        bonus = 0.02 * min(streak - 1, 5)          # 连对 2..6 次，每次 +0.02，封顶 +0.1
-        score = min(1.0, score + MASTERY_UP + bonus)
-    else:
-        streak = 0
-        score = max(0.0, score - MASTERY_DOWN)
-    conn.execute(
-        f"""INSERT OR REPLACE INTO mastery(doc_id, qid, score, updated_at, correct_streak)
-           VALUES(?,{_QID_OF_DOC},?,?,?)""",
-        (int(doc_id), int(doc_id), score, time.time(), streak),
-    )
-    conn.commit()
-    conn.close()
-    return score
+    try:
+        _ensure_mastery(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        key, qid, row = _progress_target(conn, "mastery", int(doc_id))
+        score = float(row["score"]) if row else MASTERY_DEFAULT
+        streak = int(row["correct_streak"]) if row else 0
+        if is_correct:
+            streak += 1
+            bonus = 0.02 * min(streak - 1, 5)
+            score = min(1.0, score + MASTERY_UP + bonus)
+        else:
+            streak = 0
+            score = max(0.0, score - MASTERY_DOWN)
+        conn.execute(
+            "INSERT OR REPLACE INTO mastery(doc_id,qid,score,updated_at,correct_streak) "
+            "VALUES(?,?,?,?,?)", (key, qid, score, time.time(), streak))
+        conn.commit()
+        return score
+    finally:
+        conn.close()
 
 
 _last_decay_at = 0.0
@@ -2794,11 +2868,12 @@ def _decay_rows(conn: sqlite3.Connection, rows: list, now: float,
             eff = min(days - MASTERY_DECAY_AFTER_DAYS, 60)  # 封顶，避免一次衰减到底
             new_score = max(0.0, float(r["score"]) - eff * MASTERY_DECAY_PER_DAY)
             if abs(new_score - float(r["score"])) >= 1e-9:
-                conn.execute(
-                    "UPDATE mastery SET score=?, updated_at=? WHERE doc_id=?",
-                    (new_score, now, r["doc_id"]),
+                result = conn.execute(
+                    "UPDATE mastery SET score=?, updated_at=? WHERE doc_id=? "
+                    "AND score=? AND updated_at IS ?",
+                    (new_score, now, r["doc_id"], r["score"], r["updated_at"]),
                 )
-                changed += 1
+                changed += result.rowcount
         done += 1
         if deadline is not None and time.perf_counter() > deadline:
             break
@@ -2941,10 +3016,18 @@ def decay_mastery(force: bool = False, min_interval: float = 3600.0,
 def mastery_map() -> dict[int, float]:
     """doc_id -> 掌握度。"""
     conn = connect()
-    _ensure_mastery(conn)
-    rows = conn.execute("SELECT doc_id, score FROM mastery").fetchall()
-    conn.close()
-    return {int(r["doc_id"]): float(r["score"]) for r in rows}
+    try:
+        _ensure_mastery(conn)
+        rows = conn.execute(
+            f"""SELECT d.id AS doc_id,m.score FROM documents d
+                JOIN mastery m ON m.doc_id={_progress_key_sql('mastery')}
+                UNION ALL
+                SELECT doc_id,score FROM mastery m WHERE COALESCE(qid,'')=''
+                AND NOT EXISTS(SELECT 1 FROM documents d WHERE d.id=m.doc_id)"""
+        ).fetchall()
+        return {int(r["doc_id"]): float(r["score"]) for r in rows}
+    finally:
+        conn.close()
 
 
 def adaptive_pool(module: str = "", kaodian: str = "") -> list[tuple[int, float]]:
@@ -2967,13 +3050,13 @@ def adaptive_pool(module: str = "", kaodian: str = "") -> list[tuple[int, float]
             args.append(kaodian)
         rows = conn.execute(
             f"""SELECT d.id AS id, COALESCE(m.score, ?) AS score
-                FROM documents d LEFT JOIN mastery m ON m.doc_id = d.id
+                FROM documents d LEFT JOIN mastery m ON m.doc_id={_progress_key_sql('mastery')}
                 WHERE {' AND '.join(where)}""",
             args,
         ).fetchall()
     finally:
         conn.close()
-    return [(int(r["id"]), float(r["score"] or MASTERY_DEFAULT)) for r in rows]
+    return [(int(r["id"]), float(r["score"])) for r in rows]
 
 
 def weighted_sample(pool: list[tuple[int, float]], n: int,
@@ -3030,7 +3113,7 @@ def _kaodian_mastery_all(module: str = "") -> list[dict]:
                    SUM(CASE WHEN a.correct IS NOT NULL THEN 1 ELSE 0 END) n,
                    SUM(CASE WHEN a.correct=1 THEN 1 ELSE 0 END) ok,
                    MAX(a.created_at) last_at
-            FROM answers a JOIN documents d ON d.id=a.doc_id
+            FROM answers a JOIN documents d ON d.id={_resolved_doc_sql('a')}
             WHERE d.kind='真题' AND d.kaodian!='' {mod_where}
             GROUP BY d.module, d.kaodian""",
         args,
@@ -3042,7 +3125,7 @@ def _kaodian_mastery_all(module: str = "") -> list[dict]:
     for r in conn.execute(
         f"""SELECT d.module, d.kaodian, COUNT(*) q,
                    AVG(COALESCE(m.score, {MASTERY_DEFAULT})) am
-            FROM documents d LEFT JOIN mastery m ON m.doc_id=d.id
+            FROM documents d LEFT JOIN mastery m ON m.doc_id={_progress_key_sql('mastery')}
             WHERE d.kind='真题' AND d.kaodian!='' {mod_where}
             GROUP BY d.module, d.kaodian""",
         args,
@@ -3056,7 +3139,7 @@ def _kaodian_mastery_all(module: str = "") -> list[dict]:
         n = s["n"] if s else 0
         ok = s["ok"] if s else 0
         rate = round(ok / n * 100) if n else None
-        avg_m = round(float(t["am"] or MASTERY_DEFAULT), 2)
+        avg_m = round(float(t["am"] if t["am"] is not None else MASTERY_DEFAULT), 2)
         if rate is None:
             level = "red"                      # 未练 → 红
         elif rate >= 80:
@@ -3125,7 +3208,7 @@ def review_dashboard() -> dict:
     """复习驾驶舱聚合数据，避免前端为同一批错题重复请求。"""
     conn = connect()
     now = time.time()
-    due = conn.execute("SELECT COUNT(*) c FROM review_plan WHERE due_at<=?", (now,)).fetchone()["c"]
+    due = _due_review_count(conn, now)
     rows = conn.execute(
         """SELECT d.id, d.title, d.module, d.kaodian, d.data,
                   a.selected last_selected, a.created_at last_at,
@@ -3527,9 +3610,7 @@ def stats_overview(goal_questions: int = 0, goal_minutes: int = 0) -> dict:
     ):
         top_wrong.append(dict(r))
 
-    review_due = conn.execute(
-        "SELECT COUNT(*) c FROM review_plan WHERE due_at<=?", (time.time(),)
-    ).fetchone()["c"]
+    review_due = _due_review_count(conn, time.time())
     card_due = conn.execute(
         "SELECT COUNT(*) c FROM card_plan WHERE due_at<=?", (time.time(),)
     ).fetchone()["c"]
@@ -3720,8 +3801,7 @@ def weekly_report() -> dict:
         if r["correct"] and r["ms"] > slow_threshold(r["module"] or "") * 1000)
 
     # 复习到期
-    review_due = conn.execute(
-        "SELECT COUNT(*) c FROM review_plan WHERE due_at<=?", (now,)).fetchone()["c"]
+    review_due = _due_review_count(conn, now)
 
     # 高频错因 Top3（本周错题；错因 2.0：优先手填，其次 AI 分类）
     reason_top = [

@@ -1,4 +1,4 @@
-/* GOSHORE Service Worker —— PWA 离线应用壳（功能 3.1）
+﻿/* GOSHORE Service Worker —— PWA 离线应用壳（功能 3.1）
  *
  * 设计原则：
  *  - 只缓存「应用壳」（HTML/CSS/JS/图标），绝不缓存 /api/ 接口与题库数据；
@@ -12,7 +12,7 @@
  *   响应请求，用户看到的是上一版界面（stale-while-revalidate 的固有代价）。
  *   建议直接复用 index.html 里的 ?v= 日期号。
  */
-const VERSION = "goshore-20261101-grade2";
+const VERSION = "goshore-20261103-sl1";
 const SHELL_CACHE = VERSION + "-shell";
 const RUNTIME_CACHE = VERSION + "-runtime";
 const OFFLINE_URL = "/offline.html";

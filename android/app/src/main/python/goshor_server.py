@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, knowledge, planner, print_export, share, speedcalc, sync_webdav, variant, wordfill, xingce_notes, zy_notes
+from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, kb, knowledge, planner, print_export, share, shenlun_notes, speedcalc, sync_webdav, variant, wordfill, xingce_notes, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -729,6 +729,7 @@ def configure(db_path: str, img_dir: str, web_dir: str) -> None:
     db.enable_mobile()
     db.DB_PATH = _DB_PATH  # db.connect() 读这个模块级变量
     db.MOBILE_CARDS_DIR = str(_WEB_DIR / "cards")
+    kb.configure(_WEB_DIR / "kb.json")
 
 
 # ---------------- 综应：时政期次 / 真题库 ----------------
@@ -1017,6 +1018,23 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/xc/notes":
                 # O2 行测速查手册：与桌面端共用同一份静态数据
                 self._json({"ok": True, "data": xingce_notes.NOTES})
+            elif path == "/api/sl/notes":
+                # 申论速查手册：与桌面端共用同一份静态数据
+                self._json({"ok": True, "data": shenlun_notes.NOTES})
+            elif path == "/api/kb/modules":
+                # 知识点综合：PDF 批量整理成果，与桌面端 /api/kb/* 同构
+                self._json({"ok": True, "items": kb.modules()})
+            elif path == "/api/kb/list":
+                page = int(q("page") or 1)
+                items, total = kb.query(q=q("q"), module=q("module"), page=page,
+                                        size=int(q("size") or 20))
+                self._json({"ok": True, "items": items, "total": total, "page": page})
+            elif path.startswith("/api/kb/item/"):
+                it = kb.get(path[len("/api/kb/item/"):])
+                if not it:
+                    self._err(404)
+                else:
+                    self._json({"ok": True, "data": it})
             elif path == "/api/wrong-book":
                 self._json({"items": db.list_wrong_book()})
             elif path == "/api/marks":

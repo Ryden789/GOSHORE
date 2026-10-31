@@ -42,10 +42,12 @@ from . import (
     formula_drill,
     importer,
     interview,
+    kb,
     knowledge,
     logging_setup,
     planner,
     share,
+    shenlun_notes,
     speedcalc,
     sync_webdav,
     variant,
@@ -1169,6 +1171,33 @@ def api_zy_notes():
 def api_xc_notes():
     """O2 行测速查手册：公式 / 规律 / 速算技巧静态数据（与移动端同源）。"""
     return {"ok": True, "data": xingce_notes.NOTES}
+
+
+@app.get("/api/sl/notes")
+def api_sl_notes():
+    """申论速查手册：五大题型方法与答题框架静态数据（与移动端同源）。"""
+    return {"ok": True, "data": shenlun_notes.NOTES}
+
+
+@app.get("/api/kb/modules")
+def api_kb_modules():
+    """知识点综合：模块列表（政治理论 / 常识·法律 / 常识·文史 …）。"""
+    return {"ok": True, "items": kb.modules()}
+
+
+@app.get("/api/kb/list")
+def api_kb_list(q: str = "", module: str = "", page: int = 1, size: int = 20):
+    """知识点列表/搜索：标题命中权重高于正文。"""
+    items, total = kb.query(q=q, module=module, page=page, size=size)
+    return {"ok": True, "items": items, "total": total, "page": page}
+
+
+@app.get("/api/kb/item/{item_id}")
+def api_kb_item(item_id: str):
+    it = kb.get(item_id)
+    if not it:
+        raise HTTPException(404)
+    return {"ok": True, "data": it}
 
 
 class PaperIn(BaseModel):

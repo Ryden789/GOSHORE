@@ -442,6 +442,7 @@ function route() {
   else if (name === "wenxian") dispatch(renderWenxian);
   else if (name === "zy-notes") dispatch(renderZyNotes);
   else if (name === "xc-notes") dispatch(renderXcNotes);
+  else if (name === "sl-notes") dispatch(renderSlNotes);
   else if (name === "report") dispatch(renderReport);
   else if (name === "time") dispatch(renderTimeAnalysis);
   else if (name === "history") dispatch(renderHistory);
@@ -3991,6 +3992,11 @@ async function renderSettings() {
         <div class="hint">作用于全站文字：题目、长文与界面元素一起缩放，四档差距明显（小 ↔ 特大约 1.6 倍）。</div>
       </div>
       <div class="field">
+        <label>字体</label>
+        <div class="type-checks" id="fontFacePick">${FontFace.pickerHtml()}</div>
+        <div class="hint">均为系统自带字体，不联网下载：宋体、黑体、楷体在 Windows 上最稳；手机缺字体会自动回退到系统默认，不会显示空白。</div>
+      </div>
+      <div class="field">
         <label class="cb"><input type="checkbox" id="fontLoose" ${FontSize.loose() ? "checked" : ""}/> 行高宽松</label>
         <div class="hint">长文阅读更透气（行距加大）。</div>
       </div>
@@ -4102,6 +4108,7 @@ async function renderSettings() {
 
   Theme.bindPicker($("#themePick"));
   FontSize.bindPicker($("#fontPick"));
+  FontFace.bindPicker($("#fontFacePick"));
   $("#fontLoose").onchange = e => FontSize.setLoose(e.target.checked);
 
   $("#expGo").onclick = () => {
@@ -6558,7 +6565,7 @@ async function renderXcNotes() {
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">行测速查</h1>
-      <p class="page-desc">公式 · 规律 · 速算技巧，碎片时间快速回顾：资料分析 · 数量关系 · 判断推理 · 言语理解 · 常识判断</p>
+      <p class="page-desc">行测 · 六个模块：点上方大框按钮进入对应模块；模块内按分类分层，点考点展开</p>
     </div>
     <div class="panel" style="padding:10px 14px;margin-bottom:14px">
       <input id="xcQ" type="search" placeholder="搜索考点标题、公式或正文（如「增长率」「容斥」）…" style="width:100%">
@@ -6567,6 +6574,9 @@ async function renderXcNotes() {
     <div id="xcBody"></div>`;
   const body = $("#xcBody");
   const toc = $("#xcToc");
+  // N10：模块专属线图标（墨线勾形 + 朱砂点睛）；未知 key 回退到原单字
+  const MI = (g, s) => ModuleIcon.html(g.key, s)
+    || `<b style="color:var(--cinnabar);margin-right:6px">${esc(g.icon)}</b>`;
 
   let notes;
   try {
@@ -6584,20 +6594,267 @@ async function renderXcNotes() {
   }
   const groups = (notes && notes.groups) || [];
 
-  // 目录：点一下跳到对应模块（搜索时目录同步收窄）
-  const drawToc = shown => {
-    if (!shown.length) { toc.innerHTML = ""; return; }
-    toc.innerHTML = `<div style="font-size:calc(12px * var(--fs));color:var(--ink-3);margin-bottom:6px">目录 · 共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
-        ${shown.map(g => `<a href="javascript:void(0)" class="xc-toc" data-g="${esc(g.key)}"
-          style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--line-soft);border-radius:14px;font-size:calc(12.5px * var(--fs));color:var(--ink-2);text-decoration:none">
-          <b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>${esc(g.name)}
-          <span style="color:var(--ink-3)">${g.points.length}</span></a>`).join("")}
+  // 分层：小模块内部按「分类」聚合考点；没有登记分类的小模块保持平铺。
+  const sectionsOf = g => {
+    if (!g.sections || !g.sections.length) return [{ key: "", name: "", desc: "", points: g.points }];
+    const map = new Map(g.sections.map(s => [s.key, { ...s, points: [] }]));
+    g.points.forEach(p => {
+      const s = map.get(p.section);
+      if (s) s.points.push(p);
+    });
+    return [...map.values()].filter(s => s.points.length);
+  };
+
+  // 每个考点可配多道题：题干与选项常显，答案与解析默认折叠
+  const quizzesHtml = qs => !qs || !qs.length ? "" : qs.map((q, qi) => `
+    <div class="xc-quiz" style="margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px">
+      ${qs.length > 1 ? `<div style="font-size:calc(11.5px * var(--fs));color:var(--ink-3);margin-bottom:2px">题目 ${qi + 1} / ${qs.length}</div>` : ""}
+      <div style="font-size:calc(13.5px * var(--fs));font-weight:600;line-height:1.7">${esc(q.q)}</div>
+      <div style="margin:6px 0 0;display:flex;flex-direction:column;gap:4px;font-size:calc(13px * var(--fs));line-height:1.7">
+        ${(q.options || []).map((o, i) => `<div><b style="color:var(--cinnabar);margin-right:5px">${"ABCD"[i]}</b>${esc(o)}</div>`).join("")}
+      </div>
+      <button type="button" class="btn btn-ghost xc-quiz-btn" style="margin-top:8px;font-size:calc(12.5px * var(--fs));padding:3px 12px">查看答案与解析</button>
+      <div class="xc-quiz-ans" hidden style="margin-top:8px;padding:8px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar);font-size:calc(13px * var(--fs));line-height:1.7">
+        <b>答案：${esc(q.answer)}</b>
+        <div style="margin-top:2px;color:var(--ink-2)">${esc(q.explain)}</div>
+      </div>
+    </div>`).join("");
+
+  // 目录：六个大框按钮常驻顶部（两列三行），点一次进入该模块，再点一次返回入口页（搜索时显示命中数）
+  let xcSel = "";
+  const TOC_BTN = "display:flex;flex-direction:column;gap:4px;text-align:left;padding:14px 16px;border:1px solid var(--line);"
+    + "border-radius:14px;background:transparent;cursor:pointer;min-height:96px";
+  const TOC_ON = TOC_BTN + ";border-color:var(--cinnabar);background:rgba(178,58,48,.07)";
+  const drawToc = counts => {
+    if (!groups.length) { toc.innerHTML = ""; return; }
+    const total = groups.reduce((s, g) => s + (counts[g.key] === undefined ? g.points.length : counts[g.key]), 0);
+    toc.innerHTML = `<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">
+        <b style="font-size:calc(13px * var(--fs))">六个模块</b>
+        <span style="font-size:calc(12px * var(--fs));color:var(--ink-3)">点大框进入该模块，再点一次返回入口页 · 共 ${total} 个考点</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+        ${groups.map(g => {
+          const n = counts[g.key] === undefined ? g.points.length : counts[g.key];
+          const on = g.key === xcSel;
+          return `<button type="button" class="xc-toc" data-g="${esc(g.key)}" aria-pressed="${on ? "true" : "false"}"
+            style="${on ? TOC_ON : TOC_BTN}">
+            <span style="font-size:calc(15px * var(--fs));font-weight:600;color:${on ? "var(--cinnabar)" : "var(--ink)"}">
+              ${MI(g, 24)}${esc(g.name)}
+              <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-weight:400;margin-left:6px">${n}</span>
+            </span>
+            <span style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);line-height:1.55">${esc(g.desc)}</span></button>`;
+        }).join("")}
       </div>`;
     toc.querySelectorAll(".xc-toc").forEach(a => {
       a.onclick = () => {
-        const el = document.getElementById("xc-" + a.dataset.g);
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        const key = a.dataset.g;
+        if (key === xcSel && !$("#xcQ").value.trim()) xcSel = "";
+        else { xcSel = key; $("#xcQ").value = ""; }
+        draw("");
+        body.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    });
+  };
+
+  const draw = kw => {
+    const k = (kw || "").trim().toLowerCase();
+    const shown = groups.map(g => ({
+      ...g,
+      points: g.points.filter(p =>
+        !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)
+          || (p.quizzes || []).some(q => (q.q || "").toLowerCase().includes(k))),
+    })).filter(g => g.points.length);
+    const counts = {};
+    groups.forEach(g => {
+      const m = shown.find(s => s.key === g.key);
+      counts[g.key] = m ? m.points.length : 0;
+    });
+    drawToc(counts);
+    if (!shown.length) {
+      body.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">没有匹配「${esc(kw)}」的考点</div></div>`;
+      return;
+    }
+    if (!k && !xcSel) {
+      const total = groups.reduce((s, g) => s + g.points.length, 0);
+      body.innerHTML = `<div class="panel rise rise-1">
+        <h3 style="margin:0 0 6px">行测速查 · 六个模块</h3>
+        <p style="color:var(--ink-2);font-size:calc(13.5px * var(--fs));margin:0 0 4px">
+          共 ${groups.length} 个模块、${total} 个考点。点上方大框按钮进入对应模块；再点一次同一模块可回到本页。</p>
+        ${groups.map(g => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line-soft);font-size:calc(13px * var(--fs))">
+          ${MI(g, 22)}<b>${esc(g.name)}</b>
+          <span style="color:var(--ink-3)">${esc(g.desc)}</span>
+          <span style="margin-left:auto;color:var(--ink-3);white-space:nowrap">${(g.sections || []).length} 分类 · ${g.points.length} 考点</span>
+        </div>`).join("")}
+      </div>`;
+      return;
+    }
+    const sel = k ? null : groups.find(g => g.key === xcSel);
+    if (!k && !sel) { xcSel = ""; draw(""); return; }
+    const list = k ? shown : [sel];
+    const prefix = k ? "" : `<div style="margin:0 0 10px"><button class="btn btn-ghost xc-back" style="font-size:calc(12.5px * var(--fs));padding:4px 12px">← 返回六个模块</button></div>`;
+    body.innerHTML = prefix + list.map((g, gi) => {
+      const secs = sectionsOf(g);
+      return `
+      <div class="panel rise rise-${Math.min(gi + 1, 3)}" id="xc-${esc(g.key)}">
+        <h3 style="margin:0 0 2px">${MI(g, 24)}${esc(g.name)}
+          <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-weight:400;margin-left:8px">${g.points.length} 个考点${secs.filter(s => s.name).length ? ` · ${secs.filter(s => s.name).length} 个分类` : ""}</span>
+          <button class="btn btn-ghost xc-toggle" style="float:right;font-size:calc(12px * var(--fs));padding:2px 10px">展开全部</button></h3>
+        <p style="color:var(--ink-2);font-size:calc(13px * var(--fs));margin:0 0 6px">${esc(g.desc)}</p>
+        ${secs.map(s => `
+          <div class="xc-sec" id="xc-${esc(g.key)}-${esc(s.key)}">
+            ${s.name ? `
+            <div class="xc-sec-head" style="display:flex;align-items:center;gap:8px;margin:12px 0 0;padding:6px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar);cursor:pointer">
+              <b style="font-size:calc(13.5px * var(--fs))">${esc(s.name)}</b>
+              <span style="font-size:calc(12px * var(--fs));color:var(--ink-3)">${s.points.length} 个考点</span>
+              <span class="xc-sec-arrow" style="margin-left:auto;color:var(--ink-3)">${k ? "▴" : "▾"}</span>
+            </div>
+            <p class="xc-sec-desc"${k ? "" : " hidden"} style="margin:0;padding:2px 2px 2px 10px;font-size:calc(12.5px * var(--fs));color:var(--ink-3)">${esc(s.desc)}</p>` : ""}
+            <div class="xc-sec-body"${k ? "" : " hidden"}>
+              ${s.points.map(p => `
+                <div class="zy-item">
+                  <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--line-soft);cursor:pointer">
+                    <b style="font-size:calc(14px * var(--fs))">${esc(p.title)}</b><span style="color:var(--ink-3)">▾</span>
+                  </div>
+                  <div class="zy-body" hidden style="padding:0 2px 12px">
+                    <div style="font-size:calc(13.5px * var(--fs));line-height:1.75">${md(p.body)}</div>
+                    ${p.tips && p.tips.length ? `
+                      <div style="margin-top:8px;padding:8px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar)">
+                        <b style="font-size:calc(13px * var(--fs))">⚠ 易错提醒</b>
+                        <ul style="margin:4px 0 0;padding-left:18px;font-size:calc(13px * var(--fs));color:var(--ink-2);line-height:1.7">
+                          ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
+                        </ul>
+                      </div>` : ""}
+                    ${quizzesHtml(p.quizzes)}
+                  </div>
+                </div>`).join("")}
+            </div>
+          </div>`).join("")}
+      </div>`;
+    }).join("");
+    const back = body.querySelector(".xc-back");
+    if (back) back.onclick = () => { xcSel = ""; draw(""); body.scrollIntoView({ behavior: "smooth", block: "start" }); };
+    body.querySelectorAll(".xc-sec-head").forEach(h => {
+      h.onclick = () => {
+        const sec = h.closest(".xc-sec");
+        const b = sec.querySelector(".xc-sec-body");
+        const desc = sec.querySelector(".xc-sec-desc");
+        b.hidden = !b.hidden;
+        if (desc) desc.hidden = b.hidden;
+        const ar = h.querySelector(".xc-sec-arrow");
+        if (ar) ar.textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+    body.querySelectorAll(".zy-head").forEach(h => {
+      h.onclick = () => {
+        const item = h.closest(".zy-item");
+        const b = item.querySelector(".zy-body");
+        b.hidden = !b.hidden;
+        item.querySelector(".zy-head span").textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+    body.querySelectorAll(".xc-quiz-btn").forEach(btn => {
+      btn.onclick = () => {
+        const box = btn.closest(".xc-quiz");
+        const ans = box.querySelector(".xc-quiz-ans");
+        ans.hidden = !ans.hidden;
+        btn.textContent = ans.hidden ? "查看答案与解析" : "收起答案与解析";
+      };
+    });
+    body.querySelectorAll(".xc-toggle").forEach(btn => {
+      btn.onclick = () => {
+        const panel = btn.closest(".panel");
+        const items = [...panel.querySelectorAll(".zy-body")];
+        const secs = [...panel.querySelectorAll(".xc-sec-body")];
+        const expand = items.some(b => b.hidden);
+        items.forEach(b => { b.hidden = !expand; });
+        secs.forEach(b => { b.hidden = !expand; });
+        panel.querySelectorAll(".xc-sec-desc").forEach(d => { d.hidden = !expand; });
+        panel.querySelectorAll(".xc-sec-arrow").forEach(a => { a.textContent = expand ? "▴" : "▾"; });
+        panel.querySelectorAll(".zy-head span").forEach(s => { if (s.textContent !== "▾" && s.textContent !== "▴") return; s.textContent = expand ? "▴" : "▾"; });
+        btn.textContent = expand ? "收起全部" : "展开全部";
+      };
+    });
+  };
+
+  $("#xcQ").oninput = e => draw(e.target.value);
+  draw("");
+}
+
+/* ---------- 申论速查手册（与行测速查同构，去掉选择题） ---------- */
+
+async function renderSlNotes() {
+  view.innerHTML = `
+    <div class="page-head rise">
+      <h1 class="page-title">申论速查</h1>
+      <p class="page-desc">申论 · 六个模块：点上方大框按钮进入对应模块；模块内按分类分层，点考点展开</p>
+    </div>
+    <div class="panel" style="padding:10px 14px;margin-bottom:14px">
+      <input id="slQ" type="search" placeholder="搜索考点标题或正文（如「概括做法」「分论点」「倡议书」）…" style="width:100%">
+    </div>
+    <div id="slToc" class="panel" style="padding:10px 14px;margin-bottom:14px"></div>
+    <div id="slBody"></div>`;
+  const body = $("#slBody");
+  const toc = $("#slToc");
+  const MI = (g, s) => ModuleIcon.html(g.key, s)
+    || `<b style="color:var(--cinnabar);margin-right:6px">${esc(g.icon)}</b>`;
+
+  let notes;
+  try {
+    const r = await api("/api/sl/notes");
+    notes = r.data;
+  } catch (e) {
+    body.innerHTML = `<div class="panel">
+      <h3>申论速查加载失败</h3>
+      <p style="color:var(--ink-2);font-size:calc(14px * var(--fs))">${esc(String((e && e.message) || e))}</p>
+      <button class="btn btn-primary" id="slRetry">重试</button>
+    </div>`;
+    toc.innerHTML = "";
+    $("#slRetry").onclick = () => renderSlNotes();
+    return;
+  }
+  const groups = (notes && notes.groups) || [];
+
+  const sectionsOf = g => {
+    if (!g.sections || !g.sections.length) return [{ key: "", name: "", desc: "", points: g.points }];
+    const map = new Map(g.sections.map(s => [s.key, { ...s, points: [] }]));
+    g.points.forEach(p => {
+      const s = map.get(p.section);
+      if (s) s.points.push(p);
+    });
+    return [...map.values()].filter(s => s.points.length);
+  };
+
+  let slSel = "";
+  const TOC_BTN = "display:flex;flex-direction:column;gap:4px;text-align:left;padding:14px 16px;border:1px solid var(--line);"
+    + "border-radius:14px;background:transparent;cursor:pointer;min-height:96px";
+  const TOC_ON = TOC_BTN + ";border-color:var(--cinnabar);background:rgba(178,58,48,.07)";
+  const drawToc = counts => {
+    if (!groups.length) { toc.innerHTML = ""; return; }
+    const total = groups.reduce((s, g) => s + (counts[g.key] === undefined ? g.points.length : counts[g.key]), 0);
+    toc.innerHTML = `<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">
+        <b style="font-size:calc(13px * var(--fs))">六个模块</b>
+        <span style="font-size:calc(12px * var(--fs));color:var(--ink-3)">点大框进入该模块，再点一次返回入口页 · 共 ${total} 个考点</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+        ${groups.map(g => {
+          const n = counts[g.key] === undefined ? g.points.length : counts[g.key];
+          const on = g.key === slSel;
+          return `<button type="button" class="sl-toc" data-g="${esc(g.key)}" aria-pressed="${on ? "true" : "false"}"
+            style="${on ? TOC_ON : TOC_BTN}">
+            <span style="font-size:calc(15px * var(--fs));font-weight:600;color:${on ? "var(--cinnabar)" : "var(--ink)"}">
+              ${MI(g, 24)}${esc(g.name)}
+              <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-weight:400;margin-left:6px">${n}</span>
+            </span>
+            <span style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);line-height:1.55">${esc(g.desc)}</span></button>`;
+        }).join("")}
+      </div>`;
+    toc.querySelectorAll(".sl-toc").forEach(a => {
+      a.onclick = () => {
+        const key = a.dataset.g;
+        if (key === slSel && !$("#slQ").value.trim()) slSel = "";
+        else { slSel = key; $("#slQ").value = ""; }
+        draw("");
+        body.scrollIntoView({ behavior: "smooth", block: "start" });
       };
     });
   };
@@ -6609,44 +6866,110 @@ async function renderXcNotes() {
       points: g.points.filter(p =>
         !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)),
     })).filter(g => g.points.length);
-    drawToc(shown);
+    const counts = {};
+    groups.forEach(g => {
+      const m = shown.find(s => s.key === g.key);
+      counts[g.key] = m ? m.points.length : 0;
+    });
+    drawToc(counts);
     if (!shown.length) {
       body.innerHTML = `<div class="panel"><div class="empty" style="padding:20px">没有匹配「${esc(kw)}」的考点</div></div>`;
       return;
     }
-    body.innerHTML = shown.map((g, gi) => `
-      <div class="panel rise rise-${Math.min(gi + 1, 3)}" id="xc-${esc(g.key)}">
-        <h3 style="margin:0 0 2px"><span style="color:var(--cinnabar);margin-right:6px">${esc(g.icon)}</span>${esc(g.name)}
-          <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-weight:400;margin-left:8px">${g.points.length} 个考点</span></h3>
+    if (!k && !slSel) {
+      const total = groups.reduce((s, g) => s + g.points.length, 0);
+      body.innerHTML = `<div class="panel rise rise-1">
+        <h3 style="margin:0 0 6px">申论速查 · 六个模块</h3>
+        <p style="color:var(--ink-2);font-size:calc(13.5px * var(--fs));margin:0 0 4px">
+          共 ${groups.length} 个模块、${total} 个考点。点上方大框按钮进入对应模块；再点一次同一模块可回到本页。</p>
+        ${groups.map(g => `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line-soft);font-size:calc(13px * var(--fs))">
+          ${MI(g, 22)}<b>${esc(g.name)}</b>
+          <span style="color:var(--ink-3)">${esc(g.desc)}</span>
+          <span style="margin-left:auto;color:var(--ink-3);white-space:nowrap">${(g.sections || []).length} 分类 · ${g.points.length} 考点</span>
+        </div>`).join("")}
+      </div>`;
+      return;
+    }
+    const sel = k ? null : groups.find(g => g.key === slSel);
+    if (!k && !sel) { slSel = ""; draw(""); return; }
+    const list = k ? shown : [sel];
+    const prefix = k ? "" : `<div style="margin:0 0 10px"><button class="btn btn-ghost sl-back" style="font-size:calc(12.5px * var(--fs));padding:4px 12px">← 返回六个模块</button></div>`;
+    body.innerHTML = prefix + list.map((g, gi) => {
+      const secs = sectionsOf(g);
+      return `
+      <div class="panel rise rise-${Math.min(gi + 1, 3)}" id="sl-${esc(g.key)}">
+        <h3 style="margin:0 0 2px">${MI(g, 24)}${esc(g.name)}
+          <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-weight:400;margin-left:8px">${g.points.length} 个考点${secs.filter(s => s.name).length ? ` · ${secs.filter(s => s.name).length} 个分类` : ""}</span>
+          <button class="btn btn-ghost sl-toggle" style="float:right;font-size:calc(12px * var(--fs));padding:2px 10px">展开全部</button></h3>
         <p style="color:var(--ink-2);font-size:calc(13px * var(--fs));margin:0 0 6px">${esc(g.desc)}</p>
-        ${g.points.map(p => `
-          <div class="zy-item">
-            <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--line-soft);cursor:pointer">
-              <b style="font-size:calc(14px * var(--fs))">${esc(p.title)}</b><span style="color:var(--ink-3)">▾</span>
+        ${secs.map(s => `
+          <div class="sl-sec" id="sl-${esc(g.key)}-${esc(s.key)}">
+            ${s.name ? `
+            <div class="sl-sec-head" style="display:flex;align-items:center;gap:8px;margin:12px 0 0;padding:6px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar);cursor:pointer">
+              <b style="font-size:calc(13.5px * var(--fs))">${esc(s.name)}</b>
+              <span style="font-size:calc(12px * var(--fs));color:var(--ink-3)">${s.points.length} 个考点</span>
+              <span class="sl-sec-arrow" style="margin-left:auto;color:var(--ink-3)">${k ? "▴" : "▾"}</span>
             </div>
-            <div class="zy-body" hidden style="padding:0 2px 12px">
-              <div style="font-size:calc(13.5px * var(--fs));line-height:1.75">${md(p.body)}</div>
-              ${p.tips && p.tips.length ? `
-                <div style="margin-top:8px;padding:8px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar)">
-                  <b style="font-size:calc(13px * var(--fs))">⚠ 易错提醒</b>
-                  <ul style="margin:4px 0 0;padding-left:18px;font-size:calc(13px * var(--fs));color:var(--ink-2);line-height:1.7">
-                    ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
-                  </ul>
-                </div>` : ""}
+            <p class="sl-sec-desc"${k ? "" : " hidden"} style="margin:0;padding:2px 2px 2px 10px;font-size:calc(12.5px * var(--fs));color:var(--ink-3)">${esc(s.desc)}</p>` : ""}
+            <div class="sl-sec-body"${k ? "" : " hidden"}>
+              ${s.points.map(p => `
+                <div class="sl-item">
+                  <div class="sl-head" style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-top:1px solid var(--line-soft);cursor:pointer">
+                    <b style="font-size:calc(14px * var(--fs))">${esc(p.title)}</b><span style="color:var(--ink-3)">▾</span>
+                  </div>
+                  <div class="sl-body" hidden style="padding:0 2px 12px">
+                    <div style="font-size:calc(13.5px * var(--fs));line-height:1.75">${md(p.body)}</div>
+                    ${p.tips && p.tips.length ? `
+                      <div style="margin-top:8px;padding:8px 10px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar)">
+                        <b style="font-size:calc(13px * var(--fs))">⚠ 答题提示</b>
+                        <ul style="margin:4px 0 0;padding-left:18px;font-size:calc(13px * var(--fs));color:var(--ink-2);line-height:1.7">
+                          ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
+                        </ul>
+                      </div>` : ""}
+                  </div>
+                </div>`).join("")}
             </div>
           </div>`).join("")}
-      </div>`).join("");
-    body.querySelectorAll(".zy-head").forEach(h => {
+      </div>`;
+    }).join("");
+    const back = body.querySelector(".sl-back");
+    if (back) back.onclick = () => { slSel = ""; draw(""); body.scrollIntoView({ behavior: "smooth", block: "start" }); };
+    body.querySelectorAll(".sl-sec-head").forEach(h => {
       h.onclick = () => {
-        const item = h.closest(".zy-item");
-        const b = item.querySelector(".zy-body");
+        const sec = h.closest(".sl-sec");
+        const b = sec.querySelector(".sl-sec-body");
+        const desc = sec.querySelector(".sl-sec-desc");
         b.hidden = !b.hidden;
-        item.querySelector(".zy-head span").textContent = b.hidden ? "▾" : "▴";
+        if (desc) desc.hidden = b.hidden;
+        const ar = h.querySelector(".sl-sec-arrow");
+        if (ar) ar.textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+    body.querySelectorAll(".sl-head").forEach(h => {
+      h.onclick = () => {
+        const item = h.closest(".sl-item");
+        const b = item.querySelector(".sl-body");
+        b.hidden = !b.hidden;
+        item.querySelector(".sl-head span").textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+    body.querySelectorAll(".sl-toggle").forEach(btn => {
+      btn.onclick = () => {
+        const panel = btn.closest(".panel");
+        const items = [...panel.querySelectorAll(".sl-body")];
+        const secs = [...panel.querySelectorAll(".sl-sec-body")];
+        const expand = items.some(b => b.hidden);
+        items.forEach(b => { b.hidden = !expand; });
+        secs.forEach(b => { b.hidden = !expand; });
+        panel.querySelectorAll(".sl-sec-desc").forEach(d => { d.hidden = !expand; });
+        panel.querySelectorAll(".sl-sec-arrow").forEach(a => { a.textContent = expand ? "▴" : "▾"; });
+        panel.querySelectorAll(".sl-head span").forEach(s => { if (s.textContent !== "▾" && s.textContent !== "▴") return; s.textContent = expand ? "▴" : "▾"; });
+        btn.textContent = expand ? "收起全部" : "展开全部";
       };
     });
   };
 
-  $("#xcQ").oninput = e => draw(e.target.value);
+  $("#slQ").oninput = e => draw(e.target.value);
   draw("");
 }
 
@@ -7081,6 +7404,7 @@ async function renderInterview() {
 hydrateReminderPref().catch(() => {}).then(() => ReminderWeb.start());
 Theme.init();   // N5：把主题落到 <html>（<head> 内联脚本已先跑一次，这里是兜底 + 订阅系统切换）
 FontSize.init();   // N4：把字号/行高偏好落到 <html>（<head> 内联脚本已先跑一次）
+FontFace.init();   // N9：把字体偏好落到 <html>（<head> 内联脚本已先跑一次）
 route();
 
 /* ---------- 功能排版：首页聚焦行动，完整旧总览保留在学习报告 ---------- */
@@ -7105,7 +7429,7 @@ async function renderHome() {
     </section><aside><section class="panel"><div class="study-section-head"><h2>今日概况</h2><a href="#/reports">完整报告 →</a></div>
       <div class="study-home-stats"><div><b>${s.today_answers}<small>题</small></b><span>今日作答 · 对 ${s.today_correct}</span></div><div><b>${st.today_minutes}<small>分钟</small></b><span>今日学习时长</span></div></div>
       <p class="study-muted">连续学习 ${s.streak} 天 · 待处理错题 ${s.wrong_count} 道</p></section>
-      <div data-slot="goal"></div><section class="panel"><h2>常用工具</h2><div class="study-quick-grid"><a href="#/xc-notes"><b>行测速查</b><small>公式与解题方法</small></a><a href="#/ai-ask"><b>AI 答疑</b><small>文字与图片提问</small></a></div></section>
+      <div data-slot="goal"></div><section class="panel"><h2>常用工具</h2><div class="study-quick-grid"><a href="#/xc-notes"><b>行测速查</b><small>公式与解题方法</small></a><a href="#/sl-notes"><b>申论速查</b><small>题型方法与答题框架</small></a><a href="#/ai-ask"><b>AI 答疑</b><small>文字与图片提问</small></a></div></section>
     </aside></div><section class="panel"><div class="study-section-head"><h2>最近学习</h2><a href="#/history">全部记录 →</a></div>${recent.items.length ? recent.items.map(it=>`<a class="study-recent-row" href="#/doc/${Number(it.doc_id)}"><span><b>${esc(it.title)}</b><small>${esc(it.module || "")} · ${it.correct ? "答对" : "答错"}</small></span><span>回顾解析 →</span></a>`).join("") : `<p class="study-muted">还没有作答记录，完成练习后可在这里回顾。</p>`}<a class="study-more" href="#/overview">详细学习总览：趋势、模块正确率与高频错题 →</a></section><div data-slot="setup"></div>`;
   const slot = key => frame.querySelector(`[data-slot="${key}"]`);
   if (setup) slot("setup").append(setup);

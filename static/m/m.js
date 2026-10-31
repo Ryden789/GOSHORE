@@ -289,6 +289,8 @@ const TITLES = { training: "练习中心", "review-center": "复习巩固", know
   essay: "申论综应", wenxian: "科技文献", shizheng: "时政", grade: "AI 批改",
   "zy-notes": "综应考点",
   "xc-notes": "行测速查",
+  "sl-notes": "申论速查",
+  kb: "知识点综合",
   argument: "论证评价", "argument-quiz": "辨析快练", "ai-ask": "AI 答疑",
   wrong: "错题本", marks: "收藏", cards: "辨析卡", notes: "我的笔记",
   search: "搜题", doubts: "疑点", import: "导入", settings: "设置",
@@ -298,6 +300,7 @@ const TITLES = { training: "练习中心", "review-center": "复习巩固", know
   interview: "面试模拟",
   guide: "引导讲题",
   share: "分享 PK",
+  help: "使用指南",
 };
 const AUTH_PAGES = ["login", "register"];
 
@@ -440,6 +443,7 @@ function dailyDoorPrompt() {
 }
 
 function route() {
+  closeGuide(true);   // 引导蒙层只服务首页，切换页面即收起
   inRun = false;
   DraftPaper.leave();   // N1：切页前把草稿强制落盘（放在 clearAllTimers 之前）
   clearAllTimers();   // 先清旧页面遗留的定时器，再渲染新页面
@@ -506,6 +510,7 @@ async function boot() {
   applyFontSize();
   Theme.init();   // N5：把主题落到 <html>（<head> 内联脚本已先跑一次，这里是兜底 + 订阅系统切换）
   FontSize.init();   // N4：把字号/行高偏好落到 <html>
+  FontFace.init();   // N9：把字体偏好落到 <html>
   mountHintBar();
   // N2 学习提醒：先水合偏好再启动网页版轮询（APP 内 start() 会自动让位原生）
   await hydrateReminderPref();
@@ -1256,6 +1261,8 @@ const ROUTES = {
   essay: renderEssay, wenxian: renderWenxian,
   "zy-notes": renderZyNotes,
   "xc-notes": renderXcNotes,
+  "sl-notes": renderSlNotes,
+  kb: renderKb,
   argument: renderArgument, "argument-quiz": renderArgumentQuiz,
   "ai-ask": renderAiAsk,
   shizheng: renderShizheng, grade: renderGrade,
@@ -1267,6 +1274,7 @@ const ROUTES = {
   plan: renderPlan,
   interview: renderInterview,
   guide: renderGuide,
+  help: renderHelp,
   share: renderShare,
   import: renderImport, settings: renderSettings,
   history: renderHistory,
@@ -1321,6 +1329,140 @@ function setupCard(s, cfg) {
   </div>`;
 }
 
+/* ---------- 新手引导：首次分步蒙层 + 可随时重看 ---------- */
+
+const GUIDE_STEPS = [
+  { sel: "", title: "欢迎使用上岸自习室",
+    desc: "三步就能上手：选一个入口开始 → 做完及时复盘 → 每周看一次数据。这个引导只出现一次，之后可在「使用指南」重看。" },
+  { sel: "#recGo", title: "从今日推荐开始",
+    desc: "不知道先做什么，就点这里。系统按掌握度组 15 题，弱项优先。" },
+  { sel: "#entryReview", title: "错题与到期复习",
+    desc: "做完题先来这里。答错的题会自动进错题本，到期复习也会排好。" },
+  { sel: "#entryAi", title: "卡住了就问 AI",
+    desc: "没思路、看不懂解析都可以直接问；也支持上传题目图片。" },
+  { sel: "#dataCard", title: "学习数据与目标",
+    desc: "展开明细可看正确率、连续学习与称号进度。随时点「使用指南」可重看这轮引导。" },
+];
+
+let guideState = null;
+
+function closeGuide(mark) {
+  const mask = document.querySelector(".guide-mask");
+  if (!mask) return;
+  if (guideState) {
+    window.removeEventListener("resize", guideState.reposition);
+    window.removeEventListener("scroll", guideState.reposition, true);
+  }
+  guideState = null;
+  mask.remove();
+  document.body.style.overflow = "";
+  if (mark) Pref.set("onboard_done", true);
+}
+
+function openGuide() {
+  if (document.querySelector(".guide-mask")) return;
+  const steps = GUIDE_STEPS.filter(st => !st.sel || document.querySelector(st.sel));
+  if (!steps.length) return;
+  let i = 0;
+  const mask = document.createElement("div");
+  mask.className = "guide-mask";
+  mask.innerHTML = `
+    <div class="guide-spot" id="gSpot" aria-hidden="true"></div>
+    <div class="guide-tip" id="gTip" role="dialog" aria-modal="true" aria-labelledby="gTitle">
+      <div class="guide-count" id="gStep"></div>
+      <h3 id="gTitle"></h3>
+      <p id="gDesc"></p>
+      <div class="guide-actions">
+        <button class="btn btn-ghost btn-sm" id="gSkip" type="button">跳过</button>
+        <button class="btn btn-sm" id="gPrev" type="button">上一步</button>
+        <button class="btn btn-primary btn-sm" id="gNext" type="button">下一步</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  document.body.style.overflow = "hidden";
+  const tip = $("#gTip", mask), spot = $("#gSpot", mask);
+
+  /* 只更新高亮位置：滚动/旋转时调用，绝不再次 scrollIntoView，避免抖动 */
+  function geometry() {
+    const st = steps[i];
+    const el = st.sel ? document.querySelector(st.sel) : null;
+    if (!el) {
+      mask.classList.add("dim");
+      spot.style.display = "none";
+      tip.classList.add("center");
+      tip.style.top = "";
+      return;
+    }
+    mask.classList.remove("dim");
+    tip.classList.remove("center");
+    const r = el.getBoundingClientRect(), pad = 5;
+    spot.style.display = "block";
+    spot.style.top = `${Math.max(6, r.top - pad)}px`;
+    spot.style.left = `${Math.max(6, r.left - pad)}px`;
+    spot.style.width = `${Math.min(window.innerWidth - 12, r.width + pad * 2)}px`;
+    spot.style.height = `${r.height + pad * 2}px`;
+    const tipH = tip.offsetHeight || 180;
+    let top = r.bottom + 12;
+    if (top + tipH > window.innerHeight - 16) top = Math.max(16, r.top - tipH - 12);
+    tip.style.top = `${top}px`;
+  }
+
+  function show(n, scroll) {
+    i = Math.max(0, Math.min(steps.length - 1, n));
+    const st = steps[i];
+    $("#gStep").textContent = `${i + 1} / ${steps.length}`;
+    $("#gTitle").textContent = st.title;
+    $("#gDesc").textContent = st.desc;
+    $("#gPrev").disabled = i === 0;
+    $("#gNext").textContent = i === steps.length - 1 ? "完成" : "下一步";
+    const el = st.sel ? document.querySelector(st.sel) : null;
+    if (el && scroll) {
+      try { el.scrollIntoView({ block: "center", behavior: "smooth" }); }
+      catch (e) { el.scrollIntoView(); }
+    }
+    if (scroll) setTimeout(geometry, 300);
+    else geometry();
+  }
+
+  $("#gPrev", mask).onclick = () => show(i - 1, true);
+  $("#gNext", mask).onclick = () => {
+    if (i >= steps.length - 1) closeGuide(true);
+    else show(i + 1, true);
+  };
+  $("#gSkip", mask).onclick = () => closeGuide(true);
+  mask.addEventListener("click", e => { if (e.target === mask) closeGuide(true); });
+  function onKey(e) {
+    if (!document.querySelector(".guide-mask")) {
+      document.removeEventListener("keydown", onKey);
+      return;
+    }
+    if (e.key === "Escape") closeGuide(true);
+    else if (e.key === "ArrowRight") { if (i >= steps.length - 1) closeGuide(true); else show(i + 1, true); }
+    else if (e.key === "ArrowLeft") show(i - 1, true);
+  }
+  document.addEventListener("keydown", onKey);
+  guideState = { reposition: geometry };
+  window.addEventListener("resize", geometry);
+  window.addEventListener("scroll", geometry, true);
+  show(0, false);
+  setTimeout(() => { const b = $("#gNext", mask); if (b) b.focus(); }, 50);
+}
+
+/* 首次进首页自动播放；从「使用指南」点重播则走 guide_replay 标记 */
+function maybeOnboard() {
+  if (Pref.get("guide_replay", false)) {
+    Pref.set("guide_replay", false);
+    setTimeout(() => openGuide(), 500);
+    return;
+  }
+  if (Pref.get("onboard_done", false)) return;
+  if (DAILY_DONE === false) return;   // 先完成开门题，避免引导指向被锁入口
+  setTimeout(() => {
+    if ((location.hash || "#/home") !== "#/home") return;
+    if (!document.querySelector(".guide-mask")) openGuide();
+  }, 800);
+}
+
 async function renderLearningSummary() {
   const [s, pl, drafts, cfg] = await Promise.all([
     api("/api/stats"), api("/api/study-plan"), DraftPaper.list(),
@@ -1345,16 +1487,6 @@ async function renderLearningSummary() {
     ${setupCard(s, cfg)}
     ${countdownBanner(s.exam_date, s.days_left)}
     ${draftCardHtml(drafts)}
-    <div class="card rank-badge">
-      <div class="rank-line">
-        <span class="rank-name">🏅 ${esc(rank)}</span>
-        <span class="muted">累计作答 ${s.answers_total} 题</span>
-      </div>
-      ${nextAt ? `
-      <div class="rank-track"><span style="width:${rankPct}%"></span></div>
-      <div class="muted" style="font-size:calc(12px * var(--fs))">距「${gameRank(nextAt)}」还差 ${nextAt - totalGraded} 题</div>
-      ` : `<div class="muted" style="font-size:calc(12px * var(--fs));margin-top:6px">已登顶称号榜</div>`}
-    </div>
 
     ${DAILY_DONE ? "" : `
     <div class="card daily-door">
@@ -1363,37 +1495,60 @@ async function renderLearningSummary() {
       <button class="btn btn-primary btn-block" id="dailyGo" style="margin-top:10px">抽今日一题</button>
     </div>`}
 
-    <!-- PAGE-01：常用学习入口前移到统计网格与每日目标之前。节点原样搬移——
-         标签、路由、题量、条件显示与点击动作全部未改，仅调整所在位置。 -->
+    <!-- 首页信息层级：1 个主入口 → 4 个常用入口 → 3 个次级链接 → 可折叠数据。
+         节点 id / 路由 / 点击动作保持不变（PAGE-01 / 新手引导依赖这些锚点）。 -->
     <h2 class="sec">开始学习</h2>
-    <a class="entry" id="recGo" style="cursor:pointer"><span class="ei">🎯</span>
+    <a class="entry entry-hero" id="recGo" style="cursor:pointer"><span class="ei">🎯</span>
       <span class="et"><b>今日推荐练习</b><small>按掌握度智能组卷 15 题 · 弱项优先</small></span><span class="go">›</span></a>
-    <a class="entry" href="#/practice"><span class="ei">✎</span>
-      <span class="et"><b>去刷题</b><small>组卷 · 判断专项 · 列式</small></span><span class="go">›</span></a>
-    <a class="entry" href="#/plan"><span class="ei">📋</span>
-      <span class="et"><b>今日学习计划</b><small>${(pl.summary.today || []).length
-        ? pl.summary.today.map(t => `${esc(t.module)} ${t.n}题`).join(" · ")
-        : "按能力雷达生成 14 天弱项加权路径"}</small></span><span class="go">›</span></a>
-    <a class="entry" href="#/review"><span class="ei">◌</span>
-      <span class="et"><b>复习巩固</b><small>错题 ${s.wrong_count} · 待复习 ${s.review_due}</small></span><span class="go">›</span></a>
-    <a class="entry" href="#/ai-ask"><span class="ei">智</span>
-      <span class="et"><b>AI 答疑</b><small>不做题也能问：考点·技巧·规划</small></span><span class="go">›</span></a>
-    <a class="entry" href="#/me"><span class="ei">报</span>
-      <span class="et"><b>本周诊断</b><small>正确率涨跌与建议</small></span><span class="go">›</span></a>
-    <a class="entry" id="exportToday" style="margin-top:12px;cursor:pointer"><span class="ei">📤</span>
-      <span class="et"><b>导出今日学习报告</b><small>保存或分享今日学习成果</small></span><span class="go">›</span></a>
 
-    <div class="stat-grid">
-      <div class="stat"><b>${s.today_answers}</b><span>今日作答 · 对 ${s.today_correct}</span></div>
-      <div class="stat"><b>${s.streak} 天</b><span>连续学习</span></div>
-      <div class="stat"><b>${totalRate}%</b><span>总正确率 · 共 ${s.answers_total} 题</span></div>
-      <div class="stat"><b>${s.wrong_count}</b><span>待消灭错题</span></div>
-      <div class="stat"><b>${focusMin} 分</b><span>今日专注</span></div>
-      <div class="stat"><b>🔥 ${Streak.n}</b><span>今日连对</span></div>
-      <div class="stat"><b>${s.annihilated || 0}</b><span>累计歼灭错题</span></div>
-      <div class="stat"><b>${s.today_guessed || 0}</b><span>今日蒙题</span></div>
+    <div class="entry-grid">
+      <a class="entry" id="entryPractice" href="#/practice"><span class="ei">✎</span>
+        <span class="et"><b>去刷题</b><small>组卷 · 专项训练</small></span></a>
+      <a class="entry" id="entryReview" href="#/review"><span class="ei">◌</span>
+        <span class="et"><b>复习巩固</b><small>错题 ${s.wrong_count} · 待复习 ${s.review_due}</small></span></a>
+      <a class="entry" id="entryAi" href="#/ai-ask"><span class="ei">智</span>
+        <span class="et"><b>AI 答疑</b><small>考点 · 技巧 · 规划</small></span></a>
+      <a class="entry" id="entryCards" href="#/cards"><span class="ei">🃏</span>
+        <span class="et"><b>辨析卡记忆</b><small>${s.card_due || 0} 张词卡到期</small></span></a>
     </div>
-    ${GoalRing.panel(s.goal)}`;
+
+    <div class="home-links">
+      <a class="home-link" href="#/me">本周诊断</a>
+      <a class="home-link" id="exportToday">导出今日报告</a>
+      <a class="home-link" href="#/help">使用指南</a>
+    </div>
+
+    ${GoalRing.panel(s.goal)}
+
+    <details class="card data-card" id="dataCard">
+      <summary>
+        <b>学习数据</b>
+        <small>今日 ${s.today_answers} 题 · 正确率 ${rate}%</small>
+        <span class="dc-arrow" aria-hidden="true">›</span>
+      </summary>
+      <div class="dc-body">
+        <div class="rank-badge">
+          <div class="rank-line">
+            <span class="rank-name">🏅 ${esc(rank)}</span>
+            <span class="muted">累计作答 ${s.answers_total} 题</span>
+          </div>
+          ${nextAt ? `
+          <div class="rank-track"><span style="width:${rankPct}%"></span></div>
+          <div class="muted" style="font-size:calc(12px * var(--fs))">距「${gameRank(nextAt)}」还差 ${nextAt - totalGraded} 题</div>
+          ` : `<div class="muted" style="font-size:calc(12px * var(--fs));margin-top:6px">已登顶称号榜</div>`}
+        </div>
+        <div class="stat-grid" style="margin-top:12px">
+          <div class="stat"><b>${s.today_answers}</b><span>今日作答 · 对 ${s.today_correct}</span></div>
+          <div class="stat"><b>${s.streak} 天</b><span>连续学习</span></div>
+          <div class="stat"><b>${totalRate}%</b><span>总正确率 · 共 ${s.answers_total} 题</span></div>
+          <div class="stat"><b>${s.wrong_count}</b><span>待消灭错题</span></div>
+          <div class="stat"><b>${focusMin} 分</b><span>今日专注</span></div>
+          <div class="stat"><b>🔥 ${Streak.n}</b><span>今日连对</span></div>
+          <div class="stat"><b>${s.annihilated || 0}</b><span>累计歼灭错题</span></div>
+          <div class="stat"><b>${s.today_guessed || 0}</b><span>今日蒙题</span></div>
+        </div>
+      </div>
+    </details>`;
 
   const sx = $("#setupX");   // UX-02：关闭首次使用提示（当天不再显示）
   if (sx) sx.onclick = () => {
@@ -1424,6 +1579,7 @@ async function renderLearningSummary() {
     finally { recBusy = false; }
   };
   maybeBackupGuide(s);
+  maybeOnboard();   // 首次进首页自动分步引导；#/help 重播走 guide_replay 标记
   return {s,pl};
 }
 
@@ -3865,6 +4021,9 @@ async function renderSettings() {
       <div class="cfg-label">字号</div>
       <div class="type-checks" id="fontPick">${FontSize.pickerHtml()}</div>
       <div class="muted" style="margin:6px 0 0">作用于全站文字：题目、长文与界面元素一起缩放，四档差距明显。</div>
+      <div class="cfg-label" style="margin-top:14px">字体</div>
+      <div class="type-checks" id="fontFacePick">${FontFace.pickerHtml()}</div>
+      <div class="muted" style="margin:6px 0 0">系统自带字体，不联网下载；手机缺该字体会自动回退，不会空白。</div>
       <label class="check" style="margin-top:12px"><input type="checkbox" id="prefLoose"
         ${FontSize.loose() ? "checked" : ""}/> 行高宽松（长文更透气）</label>
       <label class="check" style="margin-top:12px"><input type="checkbox" id="prefSound"
@@ -4094,6 +4253,7 @@ async function renderSettings() {
 
   Theme.bindPicker($("#themePick"));
   FontSize.bindPicker($("#fontPick"));
+  FontFace.bindPicker($("#fontFacePick"));
   $("#prefLoose").onchange = e => FontSize.setLoose(e.target.checked);
   $("#prefSound").onchange = e => Pref.set("sound", e.target.checked);
   $("#prefPomo").onchange = e => {
@@ -4887,7 +5047,7 @@ async function renderMe() {
     </div>`;
   view.innerHTML = `
     ${accountCard}
-    <section class="card study-me-links"><h3>学习与数据</h3><div class="study-quick-grid"><a href="#/reports"><b>学习报告</b><small>周报、时长与做题记录</small></a><a href="#/summary"><b>学习总览</b><small>称号、连对与今日报告导出</small></a><a href="#/manage"><b>题库管理</b><small>检索、导入、疑点与私有题目</small></a><a href="#/settings"><b>设置与数据</b><small>外观、提醒、同步与备份</small></a><a href="#/all"><b>全部功能</b><small>完整功能目录</small></a><a href="#/plan"><b>学习计划</b><small>每日安排与能力雷达</small></a></div></section>
+    <section class="card study-me-links"><h3>学习与数据</h3><div class="study-quick-grid"><a href="#/reports"><b>学习报告</b><small>周报、时长与做题记录</small></a><a href="#/summary"><b>学习总览</b><small>称号、连对与今日报告导出</small></a><a href="#/manage"><b>题库管理</b><small>检索、导入、疑点与私有题目</small></a><a href="#/settings"><b>设置与数据</b><small>外观、提醒、同步与备份</small></a><a href="#/all"><b>全部功能</b><small>完整功能目录</small></a><a href="#/plan"><b>学习计划</b><small>每日安排与能力雷达</small></a><a href="#/help"><b>使用指南</b><small>三步上手与重看新手引导</small></a></div></section>
     ${mode === "lan" ? `
     <div class="card">
       <h3>App 服务器设置</h3>
@@ -6076,6 +6236,41 @@ async function renderAiAsk() {
   };
 }
 
+/* ---------- 使用指南（常驻入口：三步上手 + 重播新手引导） ---------- */
+
+function renderHelp() {
+  const done = Pref.get("onboard_done", false);
+  view.innerHTML = `
+    <div class="card">
+      <h3>三步上手</h3>
+      <ol class="help-steps">
+        <li><b>选一局开始</b><p>首页点「今日推荐练习」，系统按掌握度组 15 题，弱项优先；也可以进「去刷题」按模块组卷。</p></li>
+        <li><b>做完马上复盘</b><p>答错的题自动进错题本。到「复习巩固」做到期复习，连续答对几次后错题才算真正消灭。</p></li>
+        <li><b>卡住就问 AI</b><p>没思路、看不懂解析，直接在「AI 答疑」提问，支持拍照上传题目；不配置 Key 也能正常刷题。</p></li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>新手引导</h3>
+      <p class="muted" style="margin:0 0 12px">首次进入首页会自动播放分步引导，跟着高亮走一遍即可；之后可随时点下面的按钮重看。</p>
+      <button class="btn btn-primary btn-block" id="guideReplay">${done ? "重新播放新手引导" : "播放新手引导"}</button>
+    </div>
+    <div class="card">
+      <h3>常用入口</h3>
+      <div class="home-links" style="margin:0">
+        <a class="home-link" href="#/plan">学习计划</a>
+        <a class="home-link" href="#/reports">学习报告</a>
+        <a class="home-link" href="#/settings">设置与数据</a>
+        <a class="home-link" href="#/all">全部功能</a>
+      </div>
+    </div>`;
+  const btn = $("#guideReplay");
+  if (btn) btn.onclick = () => {
+    Pref.set("guide_replay", true);
+    if ((location.hash || "#/home") === "#/home") maybeOnboard();
+    else location.hash = "#/home";
+  };
+}
+
 /* ---------- AI 多轮追问式讲题（功能 2.5 · 苏格拉底式） ---------- */
 
 async function renderGuide(arg) {
@@ -6270,7 +6465,7 @@ async function renderXcNotes() {
   view.innerHTML = `
     <div class="page-head">
       <h2>行测速查</h2>
-      <p class="muted">公式 · 规律 · 速算技巧 · 点标题展开，可搜索</p>
+      <p class="muted">行测六个模块 · 点按钮跳到对应模块，模块内按分类分层</p>
     </div>
     <div class="card"><input id="xcQ" type="search" placeholder="搜索考点标题、公式或正文…" style="width:100%"></div>
     <div class="card" id="xcToc" style="padding:10px 12px"></div>
@@ -6292,22 +6487,225 @@ async function renderXcNotes() {
     return;
   }
   const groups = (notes && notes.groups) || [];
+  // N10：模块专属线图标（墨线勾形 + 朱砂点睛）；未知 key 回退到原单字
+  const MI = (g, s) => ModuleIcon.html(g.key, s)
+    || `<b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>`;
 
-  // 目录：点一下跳到对应模块（搜 keyword 时目录同步收窄）
+  // 分层：小模块内部按「分类」聚合考点；没有登记分类的小模块保持平铺。
+  const sectionsOf = g => {
+    if (!g.sections || !g.sections.length) return [{ key: "", name: "", desc: "", points: g.points }];
+    const map = new Map(g.sections.map(s => [s.key, { ...s, points: [] }]));
+    g.points.forEach(p => {
+      const s = map.get(p.section);
+      if (s) s.points.push(p);
+    });
+    return [...map.values()].filter(s => s.points.length);
+  };
+
+  // 每个考点可配多道题：题干与选项常显，答案与解析默认折叠
+  const quizzesHtml = qs => !qs || !qs.length ? "" : qs.map((q, qi) => `
+    <div class="xc-quiz" style="margin-top:9px;padding:9px 10px;border:1px solid var(--line-soft);border-radius:9px">
+      ${qs.length > 1 ? `<div class="muted" style="font-size:calc(11px * var(--fs));margin-bottom:2px">题目 ${qi + 1} / ${qs.length}</div>` : ""}
+      <div style="font-size:calc(13px * var(--fs));font-weight:600;line-height:1.7">${esc(q.q)}</div>
+      <div style="margin:5px 0 0;display:flex;flex-direction:column;gap:3px;font-size:calc(12.5px * var(--fs));line-height:1.7">
+        ${(q.options || []).map((o, i) => `<div><b style="color:var(--cinnabar);margin-right:4px">${"ABCD"[i]}</b>${esc(o)}</div>`).join("")}
+      </div>
+      <button type="button" class="btn btn-ghost xc-quiz-btn" style="margin-top:7px;font-size:calc(12px * var(--fs));padding:2px 10px">查看答案与解析</button>
+      <div class="xc-quiz-ans" hidden style="margin-top:7px;padding:7px 9px;background:#fbf6ec;border-left:3px solid var(--cinnabar);font-size:calc(12.5px * var(--fs));line-height:1.7">
+        <b>答案：${esc(q.answer)}</b>
+        <div style="margin-top:2px;color:var(--ink-2)">${esc(q.explain)}</div>
+      </div>
+    </div>`).join("");
+
+  // 目录：只保留六个模块按钮，按下才跳到对应模块的位置（搜索时按钮同步收窄）
+  const TOC_BTN = "display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border:1px solid var(--line-soft);"
+    + "border-radius:15px;background:transparent;font-size:calc(12.5px * var(--fs));color:var(--ink-2);cursor:pointer";
   const drawToc = shown => {
     const el = $("#xcToc");
     if (!shown.length) { el.innerHTML = ""; return; }
-    el.innerHTML = `<div class="muted" style="font-size:calc(12px * var(--fs));margin-bottom:6px">目录 · 共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
-        ${shown.map(g => `<a href="javascript:void(0)" class="xc-toc" data-g="${esc(g.key)}"
-          style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--line-soft);border-radius:14px;font-size:calc(12.5px * var(--fs));color:var(--ink-2);text-decoration:none">
-          <b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>${esc(g.name)}
-          <span class="muted">${g.points.length}</span></a>`).join("")}
+    el.innerHTML = `<div class="muted" style="font-size:calc(12px * var(--fs));margin-bottom:8px">模块 · 点按钮跳到该模块（共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点）</div>
+      <div style="display:flex;flex-wrap:wrap;gap:7px">
+        ${shown.map(g => `<button type="button" class="xc-toc" data-g="${esc(g.key)}" aria-pressed="false"
+          style="${TOC_BTN}">
+          ${MI(g, 20)}${esc(g.name)}
+          <span class="muted">${g.points.length}</span></button>`).join("")}
       </div>`;
     [...el.querySelectorAll(".xc-toc")].forEach(a => {
       a.onclick = () => {
         const t = document.getElementById("xc-" + a.dataset.g);
-        if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
+        if (!t) return;
+        t.scrollIntoView({ behavior: "smooth", block: "start" });
+        [...el.querySelectorAll(".xc-toc")].forEach(b => {
+          b.style.cssText = TOC_BTN;
+          b.setAttribute("aria-pressed", "false");
+        });
+        a.style.cssText = TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)";
+        a.setAttribute("aria-pressed", "true");
+      };
+    });
+  };
+
+  const draw = kw => {
+    const k = (kw || "").trim().toLowerCase();
+    const shown = groups.map(g => ({
+      ...g,
+      points: g.points.filter(p =>
+        !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)
+          || (p.quizzes || []).some(q => (q.q || "").toLowerCase().includes(k))),
+    })).filter(g => g.points.length);
+    drawToc(shown);
+    const el = $("#xcBody");
+    el.innerHTML = shown.length ? shown.map(g => {
+      const secs = sectionsOf(g);
+      return `
+      <div class="card" id="xc-${esc(g.key)}">
+        <h3 class="sec">${MI(g, 22)} ${esc(g.name)} · ${g.points.length} 点
+          <button class="btn btn-ghost xc-toggle" style="float:right;font-size:calc(12px * var(--fs));padding:1px 9px">展开全部</button></h3>
+        <p class="muted" style="margin:0 0 4px;font-size:calc(12.5px * var(--fs))">${esc(g.desc)}</p>
+        ${secs.map(s => `
+          <div class="xc-sec" id="xc-${esc(g.key)}-${esc(s.key)}">
+            ${s.name ? `
+            <div class="xc-sec-head" style="display:flex;align-items:center;gap:8px;margin:10px 0 0;padding:6px 9px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar);cursor:pointer">
+              <b style="font-size:calc(13px * var(--fs))">${esc(s.name)}</b>
+              <span class="muted" style="font-size:calc(11.5px * var(--fs))">${s.points.length} 点</span>
+              <span class="xc-sec-arrow muted" style="margin-left:auto">${k ? "▴" : "▾"}</span>
+            </div>
+            <p class="xc-sec-desc muted"${k ? "" : " hidden"} style="margin:0;padding:2px 2px 2px 9px;font-size:calc(11.5px * var(--fs))">${esc(s.desc)}</p>` : ""}
+            <div class="xc-sec-body"${k ? "" : " hidden"}>
+              ${s.points.map(p => `
+                <div class="zy-item">
+                  <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--line-soft);cursor:pointer">
+                    <b style="font-size:calc(14.5px * var(--fs));line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
+                  </div>
+                  <div class="zy-body" hidden style="padding-bottom:12px">
+                    ${md(p.body)}
+                    ${p.tips && p.tips.length ? `
+                      <div style="margin-top:8px;padding:8px 10px;background:#fbf6ec;border-left:3px solid var(--cinnabar)">
+                        <b style="font-size:calc(13px * var(--fs))">⚠ 易错提醒</b>
+                        <ul class="md-list" style="margin:4px 0 0;font-size:calc(12.5px * var(--fs));color:var(--ink-2)">
+                          ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
+                        </ul>
+                      </div>` : ""}
+                    ${quizzesHtml(p.quizzes)}
+                  </div>
+                </div>`).join("")}
+            </div>
+          </div>`).join("")}
+      </div>`;
+    }).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点</div>`;
+    [...el.querySelectorAll(".xc-sec-head")].forEach(h => {
+      h.onclick = () => {
+        const sec = h.closest(".xc-sec");
+        const b = sec.querySelector(".xc-sec-body");
+        const desc = sec.querySelector(".xc-sec-desc");
+        b.hidden = !b.hidden;
+        if (desc) desc.hidden = b.hidden;
+        const ar = h.querySelector(".xc-sec-arrow");
+        if (ar) ar.textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+    [...el.querySelectorAll(".zy-head")].forEach(h => {
+      h.onclick = () => {
+        const item = h.closest(".zy-item");
+        const b = item.querySelector(".zy-body");
+        b.hidden = !b.hidden;
+        h.querySelector("span").textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+    [...el.querySelectorAll(".xc-quiz-btn")].forEach(btn => {
+      btn.onclick = () => {
+        const box = btn.closest(".xc-quiz");
+        const ans = box.querySelector(".xc-quiz-ans");
+        ans.hidden = !ans.hidden;
+        btn.textContent = ans.hidden ? "查看答案与解析" : "收起答案与解析";
+      };
+    });
+    [...el.querySelectorAll(".xc-toggle")].forEach(btn => {
+      btn.onclick = () => {
+        const card = btn.closest(".card");
+        const items = [...card.querySelectorAll(".zy-body")];
+        const secs = [...card.querySelectorAll(".xc-sec-body")];
+        const expand = items.some(b => b.hidden);
+        items.forEach(b => { b.hidden = !expand; });
+        secs.forEach(b => { b.hidden = !expand; });
+        [...card.querySelectorAll(".xc-sec-desc")].forEach(d => { d.hidden = !expand; });
+        [...card.querySelectorAll(".xc-sec-arrow")].forEach(a => { a.textContent = expand ? "▴" : "▾"; });
+        [...card.querySelectorAll(".zy-head span")].forEach(s => {
+          if (s.textContent === "▾" || s.textContent === "▴") s.textContent = expand ? "▴" : "▾";
+        });
+        btn.textContent = expand ? "收起全部" : "展开全部";
+      };
+    });
+  };
+
+  $("#xcQ").oninput = e => draw(e.target.value);
+  draw("");
+}
+
+/* ---------- 申论速查手册（与行测速查同构，去掉选择题） ---------- */
+
+async function renderSlNotes() {
+  view.innerHTML = `
+    <div class="page-head">
+      <h2>申论速查</h2>
+      <p class="muted">申论六个模块 · 点按钮跳到对应模块，模块内按分类分层</p>
+    </div>
+    <div class="card"><input id="slQ" type="search" placeholder="搜索考点标题或正文…" style="width:100%"></div>
+    <div class="card" id="slToc" style="padding:10px 12px"></div>
+    <div id="slBody"></div>`;
+
+  let notes;
+  try {
+    const r = await api("/api/sl/notes");
+    notes = r.data;
+  } catch (e) {
+    $("#slBody").innerHTML = `
+      <div class="card">
+        <h3>申论速查加载失败</h3>
+        <p class="muted">${esc(String((e && e.message) || e))}</p>
+        <button class="btn btn-primary" id="slRetry">重试</button>
+      </div>`;
+    $("#slToc").innerHTML = "";
+    $("#slRetry").onclick = () => renderSlNotes();
+    return;
+  }
+  const groups = (notes && notes.groups) || [];
+  const MI = (g, s) => ModuleIcon.html(g.key, s)
+    || `<b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>`;
+
+  const sectionsOf = g => {
+    if (!g.sections || !g.sections.length) return [{ key: "", name: "", desc: "", points: g.points }];
+    const map = new Map(g.sections.map(s => [s.key, { ...s, points: [] }]));
+    g.points.forEach(p => {
+      const s = map.get(p.section);
+      if (s) s.points.push(p);
+    });
+    return [...map.values()].filter(s => s.points.length);
+  };
+
+  const TOC_BTN = "display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border:1px solid var(--line-soft);"
+    + "border-radius:15px;background:transparent;font-size:calc(12.5px * var(--fs));color:var(--ink-2);cursor:pointer";
+  const drawToc = shown => {
+    const el = $("#slToc");
+    if (!shown.length) { el.innerHTML = ""; return; }
+    el.innerHTML = `<div class="muted" style="font-size:calc(12px * var(--fs));margin-bottom:8px">模块 · 点按钮跳到该模块（共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点）</div>
+      <div style="display:flex;flex-wrap:wrap;gap:7px">
+        ${shown.map(g => `<button type="button" class="sl-toc" data-g="${esc(g.key)}" aria-pressed="false"
+          style="${TOC_BTN}">
+          ${MI(g, 20)}${esc(g.name)}
+          <span class="muted">${g.points.length}</span></button>`).join("")}
+      </div>`;
+    [...el.querySelectorAll(".sl-toc")].forEach(a => {
+      a.onclick = () => {
+        const t = document.getElementById("sl-" + a.dataset.g);
+        if (!t) return;
+        t.scrollIntoView({ behavior: "smooth", block: "start" });
+        [...el.querySelectorAll(".sl-toc")].forEach(b => {
+          b.style.cssText = TOC_BTN;
+          b.setAttribute("aria-pressed", "false");
+        });
+        a.style.cssText = TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)";
+        a.setAttribute("aria-pressed", "true");
       };
     });
   };
@@ -6320,40 +6718,205 @@ async function renderXcNotes() {
         !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)),
     })).filter(g => g.points.length);
     drawToc(shown);
-    const el = $("#xcBody");
-    el.innerHTML = shown.length ? shown.map(g => `
-      <div class="card" id="xc-${esc(g.key)}">
-        <h3 class="sec"><span style="color:var(--cinnabar)">${esc(g.icon)}</span> ${esc(g.name)} · ${g.points.length} 点</h3>
+    const el = $("#slBody");
+    el.innerHTML = shown.length ? shown.map(g => {
+      const secs = sectionsOf(g);
+      return `
+      <div class="card" id="sl-${esc(g.key)}">
+        <h3 class="sec">${MI(g, 22)} ${esc(g.name)} · ${g.points.length} 点
+          <button class="btn btn-ghost sl-toggle" style="float:right;font-size:calc(12px * var(--fs));padding:1px 9px">展开全部</button></h3>
         <p class="muted" style="margin:0 0 4px;font-size:calc(12.5px * var(--fs))">${esc(g.desc)}</p>
-        ${g.points.map(p => `
-          <div class="zy-item">
-            <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--line-soft);cursor:pointer">
-              <b style="font-size:calc(14.5px * var(--fs));line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
+        ${secs.map(s => `
+          <div class="sl-sec" id="sl-${esc(g.key)}-${esc(s.key)}">
+            ${s.name ? `
+            <div class="sl-sec-head" style="display:flex;align-items:center;gap:8px;margin:10px 0 0;padding:6px 9px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar);cursor:pointer">
+              <b style="font-size:calc(13px * var(--fs))">${esc(s.name)}</b>
+              <span class="muted" style="font-size:calc(11.5px * var(--fs))">${s.points.length} 点</span>
+              <span class="sl-sec-arrow muted" style="margin-left:auto">${k ? "▴" : "▾"}</span>
             </div>
-            <div class="zy-body" hidden style="padding-bottom:12px">
-              ${md(p.body)}
-              ${p.tips && p.tips.length ? `
-                <div style="margin-top:8px;padding:8px 10px;background:#fbf6ec;border-left:3px solid var(--cinnabar)">
-                  <b style="font-size:calc(13px * var(--fs))">⚠ 易错提醒</b>
-                  <ul class="md-list" style="margin:4px 0 0;font-size:calc(12.5px * var(--fs));color:var(--ink-2)">
-                    ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
-                  </ul>
-                </div>` : ""}
+            <p class="sl-sec-desc muted"${k ? "" : " hidden"} style="margin:0;padding:2px 2px 2px 9px;font-size:calc(11.5px * var(--fs))">${esc(s.desc)}</p>` : ""}
+            <div class="sl-sec-body"${k ? "" : " hidden"}>
+              ${s.points.map(p => `
+                <div class="sl-item">
+                  <div class="sl-head" style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--line-soft);cursor:pointer">
+                    <b style="font-size:calc(14.5px * var(--fs));line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
+                  </div>
+                  <div class="sl-body" hidden style="padding-bottom:12px">
+                    ${md(p.body)}
+                    ${p.tips && p.tips.length ? `
+                      <div style="margin-top:8px;padding:8px 10px;background:#fbf6ec;border-left:3px solid var(--cinnabar)">
+                        <b style="font-size:calc(13px * var(--fs))">⚠ 答题提示</b>
+                        <ul class="md-list" style="margin:4px 0 0;font-size:calc(12.5px * var(--fs));color:var(--ink-2)">
+                          ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
+                        </ul>
+                      </div>` : ""}
+                  </div>
+                </div>`).join("")}
             </div>
           </div>`).join("")}
-      </div>`).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点</div>`;
-    [...el.querySelectorAll(".zy-head")].forEach(h => {
+      </div>`;
+    }).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点</div>`;
+    [...el.querySelectorAll(".sl-sec-head")].forEach(h => {
       h.onclick = () => {
-        const item = h.closest(".zy-item");
-        const b = item.querySelector(".zy-body");
+        const sec = h.closest(".sl-sec");
+        const b = sec.querySelector(".sl-sec-body");
+        const desc = sec.querySelector(".sl-sec-desc");
+        b.hidden = !b.hidden;
+        if (desc) desc.hidden = b.hidden;
+        const ar = h.querySelector(".sl-sec-arrow");
+        if (ar) ar.textContent = b.hidden ? "▾" : "▴";
+      };
+    });
+    [...el.querySelectorAll(".sl-head")].forEach(h => {
+      h.onclick = () => {
+        const item = h.closest(".sl-item");
+        const b = item.querySelector(".sl-body");
         b.hidden = !b.hidden;
         h.querySelector("span").textContent = b.hidden ? "▾" : "▴";
       };
     });
+    [...el.querySelectorAll(".sl-toggle")].forEach(btn => {
+      btn.onclick = () => {
+        const card = btn.closest(".card");
+        const items = [...card.querySelectorAll(".sl-body")];
+        const secs = [...card.querySelectorAll(".sl-sec-body")];
+        const expand = items.some(b => b.hidden);
+        items.forEach(b => { b.hidden = !expand; });
+        secs.forEach(b => { b.hidden = !expand; });
+        [...card.querySelectorAll(".sl-sec-desc")].forEach(d => { d.hidden = !expand; });
+        [...card.querySelectorAll(".sl-sec-arrow")].forEach(a => { a.textContent = expand ? "▴" : "▾"; });
+        [...card.querySelectorAll(".sl-head span")].forEach(s => {
+          if (s.textContent === "▾" || s.textContent === "▴") s.textContent = expand ? "▴" : "▾";
+        });
+        btn.textContent = expand ? "收起全部" : "展开全部";
+      };
+    });
   };
 
-  $("#xcQ").oninput = e => draw(e.target.value);
+  $("#slQ").oninput = e => draw(e.target.value);
   draw("");
+}
+
+/* ---------- 知识点综合（PDF 批量整理成果） ---------- */
+
+async function renderKb() {
+  view.innerHTML = `
+    <div class="page-head">
+      <h2>知识点综合</h2>
+      <p class="muted">政治理论 · 常识判断 · 思维导图，按模块整理，支持全文搜索</p>
+    </div>
+    <div class="card"><input id="kbQ" type="search" placeholder="搜索知识点标题或正文…" style="width:100%"></div>
+    <div class="card" id="kbMods" style="padding:10px 12px"></div>
+    <div id="kbBody"></div>`;
+
+  const state = { module: "", q: "", page: 1, total: 0, items: [] };
+  let mods = [];
+  try {
+    mods = (await api("/api/kb/modules")).items || [];
+  } catch (e) {
+    $("#kbMods").innerHTML = "";
+    $("#kbBody").innerHTML = `
+      <div class="card">
+        <h3>知识点加载失败</h3>
+        <p class="muted">${esc(String((e && e.message) || e))}</p>
+        <button class="btn btn-primary" id="kbRetry">重试</button>
+      </div>`;
+    $("#kbRetry").onclick = () => renderKb();
+    return;
+  }
+
+  const chip = (m, active) => `<a href="javascript:void(0)" class="kb-mod" data-k="${esc(m.key)}"
+    style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:14px;text-decoration:none;
+      border:1px solid ${active ? "var(--cinnabar)" : "var(--line-soft)"};
+      background:${active ? "var(--cinnabar)" : "transparent"};
+      color:${active ? "#fff" : "var(--ink-2)"};font-size:calc(12.5px * var(--fs))">
+      ${esc(m.name)}<span style="opacity:.72">${m.count}</span></a>`;
+
+  const drawMods = () => {
+    const all = mods.reduce((s, m) => s + m.count, 0);
+    const list = [{ key: "", name: "全部", count: all }].concat(mods);
+    $("#kbMods").innerHTML = `
+      <div class="muted" style="font-size:calc(12px * var(--fs));margin-bottom:6px">模块 · 共 ${all} 个知识点</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${list.map(m => chip(m, m.key === state.module)).join("")}</div>`;
+    [...$("#kbMods").querySelectorAll(".kb-mod")].forEach(a => {
+      a.onclick = () => { state.module = a.dataset.k; state.page = 1; drawMods(); load(false); };
+    });
+  };
+
+  const openItem = async (box) => {
+    const bd = box.querySelector(".kb-bd");
+    const arrow = box.querySelector(".kb-hd span");
+    if (!bd.dataset.loaded) {
+      bd.innerHTML = `<p class="muted">加载中…</p>`;
+      try {
+        const r = await api("/api/kb/item/" + box.dataset.id);
+        bd.innerHTML = `<div style="white-space:pre-wrap">${esc(r.data.body)}</div>
+          <p class="muted" style="margin:8px 0 0;font-size:calc(11.5px * var(--fs))">原文：${esc(r.data.source)}</p>`;
+        bd.dataset.loaded = "1";
+      } catch (e) {
+        bd.innerHTML = `<p class="muted">加载失败：${esc(String((e && e.message) || e))}</p>`;
+      }
+    }
+    bd.hidden = !bd.hidden;
+    if (arrow) arrow.textContent = bd.hidden ? "▾" : "▴";
+  };
+
+  const bindItems = el => {
+    [...el.querySelectorAll(".kb-item")].forEach(box => {
+      box.querySelector(".kb-hd").onclick = () => openItem(box);
+    });
+    const more = el.querySelector("#kbMore");
+    if (more) more.onclick = () => load(true);
+  };
+
+  const renderList = (items, total, append) => {
+    const el = $("#kbBody");
+    const html = items.map(it => `
+      <div class="card kb-item" data-id="${esc(it.id)}" style="padding:12px 14px">
+        <div class="kb-hd" style="display:flex;justify-content:space-between;gap:10px;cursor:pointer">
+          <b style="font-size:calc(14.5px * var(--fs));line-height:1.45">${esc(it.title)}</b>
+          <span class="muted" style="white-space:nowrap">▾</span>
+        </div>
+        <div class="muted" style="font-size:calc(12px * var(--fs));margin-top:4px">${esc(it.module_name)} · ${esc(it.source.replace(/\\.pdf$/i, ""))}${it.quality === "ocr" ? ` <span style="color:#a9862f">· OCR 整理，个别字词可能有误</span>` : ""}</div>
+        ${state.q ? `<div style="font-size:calc(12.5px * var(--fs));color:var(--ink-2);margin-top:6px">${esc(it.snippet)}</div>` : ""}
+        <div class="kb-bd" hidden style="margin-top:8px;font-size:calc(13.5px * var(--fs));line-height:1.75;color:var(--ink-2)"></div>
+      </div>`).join("");
+    if (append) {
+      const old = el.querySelector("#kbMore");
+      if (old) old.remove();
+      el.insertAdjacentHTML("beforeend", html);
+    } else {
+      el.innerHTML = html || `<div class="card muted" style="text-align:center;padding:18px">${state.q ? `没有匹配「${esc(state.q)}」的知识点` : "该模块暂无内容"}</div>`;
+    }
+    const loaded = state.items.length;
+    if (loaded < total) {
+      el.insertAdjacentHTML("beforeend", `<button class="btn" id="kbMore" style="width:100%;margin:10px 0">加载更多（已显示 ${loaded}/${total}）</button>`);
+    }
+    bindItems(el);
+  };
+
+  const load = async (append) => {
+    if (append) state.page += 1;
+    const qs = new URLSearchParams({ q: state.q, module: state.module, page: String(state.page), size: "20" });
+    try {
+      const r = await api("/api/kb/list?" + qs.toString());
+      state.total = r.total;
+      state.items = append ? state.items.concat(r.items) : r.items;
+      renderList(r.items, r.total, append);
+    } catch (e) {
+      $("#kbBody").innerHTML = `<div class="card muted" style="text-align:center;padding:18px">加载失败：${esc(String((e && e.message) || e))}</div>`;
+    }
+  };
+
+  let timer = null;
+  $("#kbQ").oninput = e => {
+    clearTimeout(timer);
+    const v = e.target.value;
+    timer = setTimeout(() => { state.q = v.trim(); state.page = 1; load(false); }, 260);
+  };
+
+  drawMods();
+  load(false);
 }
 
 /* =====================================================
@@ -6617,26 +7180,36 @@ boot();
 
 /* ---------- 功能排版：移动端首页和分类中心 ---------- */
 async function renderHome() {
-  const {s,pl} = await renderLearningSummary();
+  const {s} = await renderLearningSummary();
   const take = sel => view.querySelector(sel);
   const setup = take("#setupCard"), countdown=take(".countdown"), daily=take(".daily-door:not(#bkGuide)"), backup=take("#bkGuide");
   const drafts=[...view.querySelectorAll(".draft-resume")];
-  const rec=take("#recGo"), goal=take(".goal-panel"), stats=take(".stat-grid"), rank=take(".rank-badge"), exp=take("#exportToday");
+  const rec=take("#recGo"), grid=take(".entry-grid"), goal=take(".goal-panel");
+  const links=take(".home-links"), data=take("#dataCard");
   const frame=document.createElement("div"); frame.className="study-home";
-  frame.innerHTML=`<div class="study-section-head"><h2>今天先学什么</h2><a href="#/plan">学习计划 →</a></div><div data-slot="countdown"></div><div data-slot="daily"></div><div data-slot="resume"></div>
-    <section class="card study-tasks"><div class="study-section-head"><h3>今日学习安排</h3><a href="#/plan">查看计划</a></div><div class="study-task"><div><b>到期错题复习</b><small>${s.review_due} 道到期题目</small></div><a class="btn btn-sm" href="#/review">开始复习</a></div><div data-slot="rec"></div><div class="study-task"><div><b>辨析卡记忆</b><small>${s.card_due} 张词卡到期</small></div><a class="btn btn-sm" href="#/cards">开始记忆</a></div><div class="study-task"><div><b>学习计划</b><small>${(pl.summary.today||[]).length ? esc(pl.summary.today.map(t=>`${t.module} ${t.n}题`).join(" · ")) : "按能力雷达生成弱项加权路径"}</small></div><a class="btn btn-sm" href="#/plan">查看</a></div></section>
-    <section class="card"><div class="study-section-head"><h3>今日概况</h3><a href="#/reports">报告 →</a></div><div class="study-home-stats"><div><b>${s.today_answers}<small>题</small></b><span>今日作答</span></div><div><b>${Math.round((s.today_focus||0)/60)}<small>分钟</small></b><span>今日专注</span></div></div><p class="study-muted">连续学习 ${s.streak} 天 · 待处理错题 ${s.wrong_count} 道</p></section><div data-slot="goal"></div>
-    <div class="study-quick-grid"><a href="#/xc-notes"><b>行测速查</b><small>公式与解题方法</small></a><a href="#/ai-ask"><b>AI 答疑</b><small>文字与图片提问</small></a></div>
-    <details class="study-fold"><summary>学习成就与完整统计</summary><div data-slot="stats"></div></details><div data-slot="export"></div><div data-slot="setup"></div><div data-slot="backup"></div>`;
+  /* 手机端首页只保留一块主线：主入口 → 常用四格 → 今日目标/概况 → 折叠数据 → 次级链接。
+     所有节点都从 renderLearningSummary 搬过来，绑定的事件与 id 不变。 */
+  frame.innerHTML=`<div class="study-section-head"><h2>今天先学什么</h2><a href="#/plan">学习计划 →</a></div>
+    <div data-slot="countdown"></div><div data-slot="daily"></div><div data-slot="resume"></div>
+    <div data-slot="rec"></div><div data-slot="grid"></div><div data-slot="goal"></div>
+    <section class="card">
+      <div class="study-section-head"><h3>今日概况</h3><a href="#/reports">报告 →</a></div>
+      <div class="study-home-stats"><div><b>${s.today_answers}<small>题</small></b><span>今日作答</span></div><div><b>${Math.round((s.today_focus||0)/60)}<small>分钟</small></b><span>今日专注</span></div></div>
+      <p class="study-muted">连续学习 ${s.streak} 天 · 待处理错题 ${s.wrong_count} 道</p>
+    </section>
+    <div data-slot="data"></div><div data-slot="links"></div><div data-slot="setup"></div><div data-slot="backup"></div>`;
   const put=(key,node)=>{if(node)frame.querySelector(`[data-slot="${key}"]`).append(node);};
   put("countdown",countdown); if(daily && daily!==backup)put("daily",daily);
-  drafts.forEach(d=>put("resume",d)); put("rec",rec); put("goal",goal); put("stats",rank);put("stats",stats);put("export",exp);put("setup",setup);put("backup",backup);
+  drafts.forEach(d=>put("resume",d));
+  put("rec",rec); put("grid",grid); put("goal",goal);
+  put("data",data); put("links",links); put("setup",setup); put("backup",backup);
   view.replaceChildren(frame);
 }
 
 function renderMobileCenter(kind) {
   const titles={knowledge:["知识资料","公式、考点和时政，按内容查找。"],reports:["学习报告","回顾做题记录，了解学习节奏。"],manage:["题库管理","检索题目、维护题源与处理疑点。"]};
   view.innerHTML=StudyLayout.header(...titles[kind])+StudyLayout.cards(kind,true);
+  if(kind==="knowledge")view.insertAdjacentHTML("beforeend",`<a class="entry" href="#/kb"><span class="et"><b>知识点综合</b><small>政治理论 / 常识判断 / 思维导图，按模块整理并支持全文搜索</small></span><span class="go">›</span></a>`);
   if(kind==="reports")view.insertAdjacentHTML("beforeend",`<a class="entry" href="#/summary"><span class="et"><b>学习总览与今日报告</b><small>称号、连对、累计统计与报告导出</small></span><span class="go">›</span></a>`);
   if(kind==="manage")view.insertAdjacentHTML("beforeend",`<div class="study-quick-grid"><a href="#/mydocs"><b>我的题库</b><small>导入的私有题目</small></a><a href="#/settings"><b>设置与数据</b><small>备份、同步与热更新</small></a><a href="#/all"><b>全部功能</b><small>完整目录</small></a></div>`);
 }

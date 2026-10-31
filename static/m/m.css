@@ -77,6 +77,23 @@ html[data-fontsize="sm"] { --fs: .84; }
 html[data-fontsize="lg"] { --fs: 1.16; }
 html[data-fontsize="xl"] { --fs: 1.35; }
 html[data-lineheight="loose"] { --read-lh: 1.95; }
+/* N9 字体选择：与桌面端同一套字体栈；默认 auto 不覆写，保持原混排 */
+html[data-fontface="song"] {
+  --serif: "SimSun", "宋体", "Songti SC", "Noto Serif SC", serif;
+  --sans: "SimSun", "宋体", "Songti SC", "Noto Serif SC", serif;
+}
+html[data-fontface="hei"] {
+  --serif: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --sans: "SimHei", "黑体", "Heiti SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+}
+html[data-fontface="kai"] {
+  --serif: "KaiTi", "楷体", "Kaiti SC", "STKaiti", serif;
+  --sans: "KaiTi", "楷体", "Kaiti SC", "STKaiti", serif;
+}
+html[data-fontface="yahei"] {
+  --serif: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", sans-serif;
+  --sans: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", sans-serif;
+}
 /* 特大档下长文允许换行、表格横向滚动，但不横向溢出（文档边界要求） */
 .stem, .opt, .sz-content, .f-ctx, .f-explain, .muted, .card { overflow-wrap: anywhere; }
 html[data-fontsize] .sz-content table, html[data-fontsize] .sz-content pre {
@@ -1563,3 +1580,62 @@ body:has(.q-bottom-bar) #view { padding-bottom: calc(64px + env(safe-area-inset-
    否则本规则与上面的 .hint-on 规则同权重、又排在后面，会把 150px 覆盖回 64px，
    题目页末尾的「我的笔记」入口就被压在两条浮层底下、滚到底也点不到。 */
 body.hint-on:has(.q-bottom-bar) #view { padding-bottom: calc(150px + env(safe-area-inset-bottom)); }
+
+/* ===== 首页信息层级：主入口 / 常用四格 / 次级链接 / 折叠数据 ===== */
+.entry-hero { border-left: 3px solid var(--cinnabar); }
+.entry-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.entry-grid .entry { margin: 0; padding: 12px 13px; gap: 10px; }
+.entry-grid .entry .ei { width: 32px; height: 32px; font-size: calc(15px * var(--fs)); }
+.entry-grid .entry .et b { font-size: calc(14px * var(--fs)); }
+.entry-grid .entry .et small { display: block; font-size: calc(11.5px * var(--fs)); line-height: 1.5; }
+.entry-grid .entry .go { display: none; }
+
+.home-links { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 8px; margin: 12px 0; }
+.home-link {
+  text-align: center; padding: 9px 12px;
+  border: 1px solid var(--line-soft); border-radius: 999px; background: var(--panel);
+  color: var(--ink-2); font-size: calc(13px * var(--fs)); text-decoration: none;
+}
+.home-link:active { transform: scale(.98); }
+
+/* 折叠数据卡：标题行可点开，展开后才是称号与八格统计 */
+details.data-card { padding: 0; }
+details.data-card > summary {
+  list-style: none; display: flex; align-items: center; gap: 8px;
+  padding: 14px 16px; cursor: pointer; font-size: calc(15px * var(--fs));
+}
+details.data-card > summary::-webkit-details-marker { display: none; }
+details.data-card > summary small { color: var(--ink-3); font-weight: 400; font-size: calc(12.5px * var(--fs)); }
+details.data-card > summary .dc-arrow { margin-left: auto; color: var(--ink-3); transition: transform .2s; }
+details.data-card[open] > summary .dc-arrow { transform: rotate(90deg); }
+details.data-card .dc-body { padding: 0 16px 16px; }
+
+/* 使用指南页 */
+.help-steps { margin: 4px 0 0; padding-left: 20px; font-size: calc(14px * var(--fs)); line-height: 1.75; }
+.help-steps li { margin-bottom: 10px; }
+.help-steps li:last-child { margin-bottom: 0; }
+.help-steps b { display: block; }
+.help-steps p { margin: 2px 0 0; color: var(--ink-2); }
+
+/* ===== 新手引导蒙层（聚光灯 + 气泡） ===== */
+.guide-mask { position: fixed; inset: 0; z-index: 200; }
+.guide-mask.dim { background: rgba(24,20,14,.58); }
+.guide-spot {
+  position: fixed; border-radius: 12px; pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(24,20,14,.58), 0 0 0 2px rgba(255,246,226,.55);
+  transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease;
+}
+.guide-tip {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  width: min(340px, calc(100vw - 28px)); z-index: 1;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 14px; padding: 16px;
+  box-shadow: 0 14px 40px rgba(0,0,0,.32);
+}
+.guide-tip.center { top: 50%; transform: translate(-50%, -50%); }
+.guide-tip .guide-count { font-family: var(--mono); font-size: calc(12px * var(--fs)); color: var(--ink-3); margin-bottom: 6px; }
+.guide-tip h3 { margin: 0 0 6px; font-family: var(--serif); font-size: calc(17px * var(--fs)); }
+.guide-tip p { margin: 0; font-size: calc(13.5px * var(--fs)); line-height: 1.75; color: var(--ink-2); }
+.guide-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+.guide-actions #gSkip { margin-right: auto; }
+

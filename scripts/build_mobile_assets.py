@@ -252,6 +252,10 @@ def build_all(src: str = SRC, assets_dir: str = "") -> None:
     if os.path.exists(icons_dst):
         shutil.rmtree(icons_dst)
     shutil.copytree(os.path.join(BASE_DIR, "static", "icons"), icons_dst)
+    # 知识点综合（PDF 整理成果）：app/kb.py 在手机端读 web/kb.json
+    kb_src = os.path.join(BASE_DIR, "data", "kb.json")
+    if os.path.exists(kb_src):
+        shutil.copy2(kb_src, os.path.join(web_dst, "kb.json"))
     print("资产目录就绪:", assets)
     for f in sorted(os.listdir(assets)):
         fp = os.path.join(assets, f)

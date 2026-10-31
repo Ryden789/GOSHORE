@@ -122,6 +122,119 @@ const FontSize = {
   },
 };
 
+/* N9 字体选择 · 网页端（app.js / m.js 共用）。
+   偏好 Pref('fontface') ∈ 'auto' | 'song' | 'hei' | 'kai' | 'yahei'，落到 <html data-fontface>。
+   CSS 只覆写 --serif / --sans 两条字体栈，全站文字随之切换；'auto' 保留原
+   「宋体标题 + 黑体正文」的默认混排，与升级前完全一致。
+   只列系统自带字体：中文字库动辄 10MB，离线包不内置，缺字体时由后面的族名回退。 */
+const FontFace = {
+  KEY: "fontface",
+  FACES: [["auto", "默认"], ["song", "宋体"], ["hei", "黑体"], ["kai", "楷体"], ["yahei", "雅黑"]],
+  STACK: {
+    auto: "",
+    song: "'SimSun','Songti SC','Noto Serif SC',serif",
+    hei: "'SimHei','Heiti SC','Microsoft YaHei','Noto Sans SC',sans-serif",
+    kai: "'KaiTi','Kaiti SC','STKaiti',serif",
+    yahei: "'Microsoft YaHei','PingFang SC','Noto Sans SC',sans-serif",
+  },
+  norm(v) { return this.FACES.some(f => f[0] === v) ? v : "auto"; },
+  current() { return this.norm(Pref.get(this.KEY, "auto")); },
+  /** 把字体偏好落到 <html>；'auto' 也显式落属性，便于排查 */
+  apply() { document.documentElement.dataset.fontface = this.current(); },
+  set(v) { Pref.set(this.KEY, this.norm(v)); this.apply(); },
+  init() { this.apply(); },
+  /** 设置页分段控件：每颗胶囊用自身字体预览，避免选完才知道效果 */
+  pickerHtml() {
+    return this.FACES
+      .map(([k, v]) => `<div class="type-check ${this.current() === k ? "on" : ""}"`
+        + ` data-fontface-pick="${k}" style="font-family:${this.STACK[k] || "inherit"}">${v}</div>`)
+      .join("");
+  },
+  bindPicker(root) {
+    const box = root || document;
+    box.querySelectorAll("[data-fontface-pick]").forEach(el => {
+      el.onclick = () => {
+        this.set(el.dataset.fontfacePick);
+        box.querySelectorAll("[data-fontface-pick]").forEach(x =>
+          x.classList.toggle("on", x === el));
+      };
+    });
+  },
+};
+
+/* N10 模块图标 · 网页端（app.js / m.js 共用）。
+   行测六个模块原先各用一个汉字（资 / 数 / 判 / 言 / 识 / 政）当图标，
+   字形与「纸墨」画风脱节。这里改为 32×32 手绘线图标：墨线勾形 + 朱砂点睛，
+   stroke 走 var(--ink)，夜间模式自动跟随；不引外部 SVG 文件，直接内联。
+   调用：ModuleIcon.html(g.key)；未知 key 返回空串，调用方保留原单字兜底。 */
+const ModuleIcon = {
+  SIZE: 30,
+  ICONS: {
+    // 政治理论：旗帜（纲领）
+    zhengzhi: '<path d="M11 27V4.5"/><path d="M11 6h13l-3.6 4.2L24 14.4H11"/>'
+      + '<circle cx="11" cy="3.6" r="1.5" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 资料分析：柱状图 + 上扬折线
+    ziliao: '<path d="M6 26V6"/><path d="M6 26h20"/><path d="M10.5 22v-5"/>'
+      + '<path d="M15 22v-9"/><path d="M19.5 22v-3"/>'
+      + '<path d="M9 12l5-4 5 3 5-6"/>'
+      + '<circle cx="24" cy="5" r="1.5" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 数量关系：算盘
+    shuliang: '<rect x="6" y="7" width="20" height="18" rx="2.5"/>'
+      + '<path d="M11 10.5v11M16 10.5v11M21 10.5v11"/>'
+      + '<circle cx="11" cy="14" r="1.8" fill="var(--ink)" stroke="var(--ink)"/>'
+      + '<circle cx="16" cy="18.5" r="1.8" fill="var(--ink)" stroke="var(--ink)"/>'
+      + '<circle cx="21" cy="13" r="1.8" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 判断推理：九宫格，右上格点亮
+    panduan: '<rect x="6" y="6" width="20" height="20" rx="2.5"/>'
+      + '<path d="M12.67 6v20M19.33 6v20M6 12.67h20M6 19.33h20"/>'
+      + '<rect x="19.33" y="6" width="6.67" height="6.67" fill="var(--cinnabar)" stroke="none"/>',
+    // 言语理解：书页 + 语句行
+    yanyu: '<path d="M8 5.5h13a3 3 0 0 1 3 3v16a3 3 0 0 1-3 3H8z"/>'
+      + '<path d="M8 5.5v22"/><path d="M12 11.5h9M12 15.5h9M12 19.5h5.5"/>'
+      + '<circle cx="5.4" cy="16.5" r="1.4" fill="var(--cinnabar)" stroke="none"/>',
+    // 常识判断：罗盘（博闻定向）
+    changshi: '<circle cx="16" cy="16" r="8.6"/>'
+      + '<path d="M16 16l4.6-7.4-2.2 6.2z" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>'
+      + '<path d="M16 4.4v2M16 25.6v2M4.4 16h2M25.6 16h2"/>',
+    // 申论 · 答题总纲：卷轴（纲领成卷）
+    zonggang: '<rect x="6.5" y="4.4" width="19" height="4.4" rx="2.2"/>'
+      + '<rect x="6.5" y="23.2" width="19" height="4.4" rx="2.2"/>'
+      + '<rect x="9.5" y="8.8" width="13" height="14.4"/>'
+      + '<path d="M12.6 12.6h6.8M12.6 15.8h6.8"/>'
+      + '<rect x="16.6" y="18.4" width="3.4" height="3.4" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 申论 · 归纳概括：漏斗（由多到少收敛）
+    gaikuo: '<path d="M6 6.5h20l-7 8.5v6.5l-6 3.5v-10L6 6.5z"/>'
+      + '<circle cx="16" cy="15" r="1.4" fill="var(--cinnabar)" stroke="none"/>',
+    // 申论 · 综合分析：放大镜（聚焦要点）
+    fenxi: '<circle cx="13.4" cy="13.6" r="7.4"/>'
+      + '<path d="M18.8 19l6.4 6.4"/>'
+      + '<path d="M10.6 13.6h5.6M13.4 10.8v5.6"/>'
+      + '<circle cx="13.4" cy="13.6" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 申论 · 提出对策：靶心 + 箭（直指问题）
+    duice: '<circle cx="13" cy="17" r="8.4"/><circle cx="13" cy="17" r="3.8"/>'
+      + '<circle cx="13" cy="17" r="1.2" fill="var(--cinnabar)" stroke="none"/>'
+      + '<path d="M18.6 11.4L26.4 3.6"/>'
+      + '<path d="M26.4 3.6l-5.2.9M26.4 3.6l.9 5.2"/>',
+    // 申论 · 贯彻执行：公文 + 印章（文件规范）
+    guanche: '<path d="M7.6 5.6h9.8l7 7V26.4H7.6z"/>'
+      + '<path d="M17.4 5.6v7h7"/>'
+      + '<path d="M11 16h9M11 19.4h9"/>'
+      + '<rect x="16" y="21.4" width="3.6" height="3.6" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 申论 · 文章写作：笔（落笔成文）
+    zuowen: '<path d="M8.4 23.6l1.3-5L21 7.4l3.4 3.4L13 22.3l-4.6 1.3z"/>'
+      + '<path d="M19.6 8.8l3.4 3.4"/>'
+      + '<circle cx="8.4" cy="23.6" r="1.3" fill="var(--cinnabar)" stroke="none"/>',
+  },
+  html(key, size) {
+    const body = this.ICONS[key];
+    if (!body) return "";
+    const s = size || this.SIZE;
+    return `<svg viewBox="0 0 32 32" width="${s}" height="${s}" aria-hidden="true" focusable="false"`
+      + ` fill="none" stroke="var(--ink)" stroke-width="1.7" stroke-linecap="round"`
+      + ` stroke-linejoin="round" style="vertical-align:-7px;margin-right:7px">${body}</svg>`;
+  },
+};
+
 /* G2 每日目标 · 进度环（app.js / m.js 逐字节一致）。
    目标值（题量/分钟）存在**服务端设置**里，由 /api/stats 顺带算好进度
    （`s.goal = {enabled, questions, minutes, goal_questions, goal_minutes,
