@@ -3368,6 +3368,10 @@ async function drawCardProgress(box, tok) {
 
 /* ---------- 搜题 ---------- */
 
+/* L-4 跨页互链：速查页「去练同类题」把筛选条件放这里，检索页进入时消费一次。
+   用模块级变量而不是 URL 参数，是因为移动端 hash 路由只切 #/search，不带 query。 */
+let NOTE_DRILL = null;
+
 async function renderSearch() {
   if (!mFacetsCache) mFacetsCache = await api("/api/facets");
   const f = mFacetsCache;
@@ -3459,6 +3463,13 @@ async function renderSearch() {
   $("#srQ").addEventListener("keydown", e => {
     if (e.key === "Enter") $("#srGo").click();
   });
+  // L-4 消费速查页带来的筛选种子（只生效一次，避免再进检索页时反复套用）
+  if (NOTE_DRILL) {
+    Object.assign(st, NOTE_DRILL);
+    NOTE_DRILL = null;
+    if ($("#srQ")) $("#srQ").value = st.q || "";
+    if ($("#srModule")) $("#srModule").value = st.module || "";
+  }
   await doSearch(1);
 }
 
@@ -6461,32 +6472,293 @@ async function renderZyNotes() {
 
 /* ---------- O2 行测速查手册 ---------- */
 
+/* ---------- 速查页共用交互（C-3 范例 / C-4 提示分型 / L-1—L-4 / S-1—S-5 / V-1） ---------- */
+
+const NotesUX = (() => {
+  // S-2 轻量同义词表：同组词互相命中。不做分词，只解决「搜一个说法搜不到」。
+  const SYN = [
+    ["比重", "占比", "构成比", "比例"],
+    ["平均数", "均值", "平均值", "平均量"],
+    ["增长率", "增速", "增幅"],
+    ["增长量", "增量"],
+    ["基期", "上期", "前期"],
+    ["隔年增长", "间隔增长"],
+    ["容斥", "两集合", "三集合"],
+    ["牛吃草", "牛儿吃草"],
+    ["空瓶换水", "空瓶换酒"],
+    ["公文", "应用文", "文书"],
+    ["请示", "报批"],
+    ["函", "公函"],
+    ["纪要", "会议记录"],
+    ["调研报告", "调查报告"],
+    ["倡议书", "公开信"],
+    ["工作方案", "实施方案"],
+    ["归纳概括", "概括题"],
+    ["综合分析", "分析题", "词句理解"],
+    ["提出对策", "对策题", "解决问题"],
+    ["贯彻执行", "公文写作", "应用文写作"],
+    ["文章写作", "大作文", "申发论述"],
+    ["分论点", "论证段"],
+    ["行文脉络", "文章结构"],
+    ["图形推理", "图推"],
+    ["逻辑判断", "逻判"],
+    ["资料分析", "资分"],
+    ["言语理解", "言语"],
+  ];
+
+  const lower = s => String(s == null ? "" : s).toLowerCase();
+
+  // 检索词集合：原词 + 同组词；长词优先，避免「增长」先吃掉「增长率」
+  const synOf = raw => {
+    const k = lower(raw).trim();
+    if (!k) return [];
+    const out = new Set([k]);
+    if (k.length >= 2) {
+      SYN.forEach(row => {
+        if (row.some(w => lower(w).includes(k) || k.includes(lower(w)))) row.forEach(w => out.add(lower(w)));
+      });
+    }
+    return [...out].filter(Boolean).sort((a, b) => b.length - a.length);
+  };
+
+  const countIn = (text, terms) => {
+    if (!text || !terms.length) return 0;
+    const s = lower(text);
+    let n = 0;
+    terms.forEach(t => {
+      let i = s.indexOf(t);
+      while (i >= 0) { n++; i = s.indexOf(t, i + t.length); }
+    });
+    return n;
+  };
+
+  // 考点命中权重：标题 > 提示 > 范例 > 正文（结果里标题命中排前面）
+  const countPoint = (p, terms) => {
+    if (!terms.length) return 0;
+    let n = countIn(p.title, terms) * 4 + countIn(p.body, terms);
+    (p.tips || []).forEach(t => { n += countIn(t, terms) * 2; });
+    (p.examples || []).forEach(ex => {
+      n += countIn(ex.q, terms);
+      (ex.points || []).forEach(x => { n += countIn(x, terms); });
+    });
+    return n;
+  };
+  const inPoint = (p, terms) => countPoint(p, terms) > 0;
+
+  // —— 高亮：markEsc 吃未转义文本，markHtml 吃 md() 已转义的 HTML ——
+  const escHtml = s => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const reOf = terms => terms.length
+    ? new RegExp("(" + terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")", "gi")
+    : null;
+  const markEsc = (text, terms) => {
+    const e = escHtml(text);
+    const re = reOf(terms);
+    return re ? e.replace(re, m => `<mark class="nx-hit">${m}</mark>`) : e;
+  };
+  const markHtml = (html, terms) => {
+    const re = reOf(terms);
+    if (!re || !html) return html;
+    // 按标签切段，只替换文本段，避免把高亮插进属性里
+    return String(html).split(/(<[^>]+>)/)
+      .map(seg => seg.charAt(0) === "<" ? seg : seg.replace(re, m => `<mark class="nx-hit">${m}</mark>`))
+      .join("");
+  };
+
+  // —— L-1 掌握度（本机偏好，不上传） ——
+  const MK = "note_mastery";
+  const mAll = () => {
+    const v = Pref.get(MK, {});
+    return v && typeof v === "object" ? v : {};
+  };
+  const mKey = (kind, gk, title) => `${kind}|${gk}|${title}`;
+  const mDone = (kind, gk, title) => !!mAll()[mKey(kind, gk, title)];
+  const mSet = (kind, gk, title, on) => {
+    const m = mAll();
+    const k = mKey(kind, gk, title);
+    if (on) m[k] = 1; else delete m[k];
+    Pref.set(MK, m);
+    return !!on;
+  };
+  const mToggle = (kind, gk, title) => mSet(kind, gk, title, !mDone(kind, gk, title));
+  const mProg = (kind, groups) => {
+    const m = mAll();
+    let done = 0, total = 0;
+    (groups || []).forEach(g => (g.points || []).forEach(p => {
+      total++;
+      if (m[mKey(kind, g.key, p.title)]) done++;
+    }));
+    return { done, total };
+  };
+
+  // —— S-5 状态记忆：最近模块 / 展开的分类 / 两个筛选开关 ——
+  const UK = "note_ui";
+  const uiAll = () => {
+    const v = Pref.get(UK, {});
+    return v && typeof v === "object" ? v : {};
+  };
+  const uiGet = kind => Object.assign({ group: "", todo: false, hot: false, secs: {} }, uiAll()[kind] || {});
+  const uiSet = (kind, patch) => {
+    const u = uiAll();
+    u[kind] = Object.assign(uiGet(kind), patch);
+    Pref.set(UK, u);
+  };
+
+  // —— L-3 薄弱点回流（无数据时静默） ——
+  let weakCache = null;
+  const weakLoad = async () => {
+    if (weakCache) return weakCache;
+    try {
+      const r = await api("/api/notes/weak");
+      weakCache = (r && r.data) || { xc: {}, sl: {} };
+    } catch (e) {
+      weakCache = { xc: {}, sl: {} };
+    }
+    return weakCache;
+  };
+  const weakOf = (w, kind, gk, title) => {
+    const g = (w && w[kind]) || {};
+    const row = g[gk] || {};
+    return Number(row[title] || 0);
+  };
+
+  // —— L-2 速查内自测：只记本机，不写 answers 表（那里按 doc_id 记账） ——
+  const QK = "xc_quiz";
+  const qAll = () => {
+    const v = Pref.get(QK, {});
+    return v && typeof v === "object" ? v : {};
+  };
+  const qGet = (gk, title, qi) => qAll()[`${gk}|${title}|${qi}`] || "";
+  const qSet = (gk, title, qi, letter) => {
+    const m = qAll();
+    m[`${gk}|${title}|${qi}`] = letter;
+    Pref.set(QK, m);
+  };
+
+  // —— L-4 跨页互链：行测 → 题库筛选（模块 + 关键词），由检索页消费 NOTE_DRILL ——
+  const XC_MODULE = { ziliao: "资料分析", shuliang: "数量关系", panduan: "判断推理", yanyu: "言语理解", changshi: "常识判断" };
+  const drillXc = (gk, title) => {
+    const q = String(title).split("：")[0].split(":")[0].trim();
+    NOTE_DRILL = { q, module: XC_MODULE[gk] || "", daclass: "", region: "", year: "", page: 1 };
+    location.hash = "#/search";
+  };
+
+  // —— S-5 回到顶部：按钮随页面一起销毁，滚动监听自解绑 ——
+  const topBtnHtml = `<button type="button" class="nx-top" id="nxTop" aria-label="回到页面顶部">↑ 顶部</button>`;
+  const bindTop = () => {
+    const btn = document.getElementById("nxTop");
+    if (!btn) return;
+    // 桌面端真正滚动的是 .view（overflow-y:auto），window 永远不滚。
+    // 注意：绑定时正文可能还没渲染完，那时量出的 scrollHeight 不可信，
+    // 所以容器**延迟到第一次滚动时再找**，并用捕获阶段监听所有滚动容器。
+    const findBox = () => {
+      let sc = btn.parentElement;
+      while (sc && sc !== document.body && sc !== document.documentElement) {
+        const oy = getComputedStyle(sc).overflowY;
+        if ((oy === "auto" || oy === "scroll") && sc.scrollHeight > sc.clientHeight + 20) return sc;
+        sc = sc.parentElement;
+      }
+      return null;
+    };
+    let box = null;
+    const onScroll = () => {
+      if (!document.body.contains(btn)) {
+        document.removeEventListener("scroll", onScroll, true);
+        window.removeEventListener("scroll", onScroll);
+        return;
+      }
+      if (!box || !document.body.contains(box)) box = findBox();
+      const pos = box ? box.scrollTop : (window.scrollY || 0);
+      const viewH = box ? box.clientHeight : window.innerHeight;
+      const max = box ? box.scrollHeight - box.clientHeight
+        : Math.max(0, document.documentElement.scrollHeight - viewH);
+      // 阈值随可滚动范围走：短页面只滚得动 200px 时，固定 420 会让按钮永不出现
+      const thr = Math.min(400, Math.max(80, Math.round(max * 0.3)));
+      btn.classList.toggle("on", pos > thr);
+    };
+    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    window.addEventListener("scroll", onScroll, { passive: true });
+    btn.onclick = () => {
+      const b = box || findBox();
+      if (b) b.scrollTo({ top: 0, behavior: "smooth" });
+      else window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+    onScroll();
+  };
+
+  // —— S-3 首个命中定位 + pulse 一次 ——
+  const pulseFirst = () => {
+    const el = document.querySelector("[data-nx-hit='1']");
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("nx-pulse");
+    setTimeout(() => el.classList.remove("nx-pulse"), 1500);
+  };
+
+  // —— S-4 无障碍：点击型 div 补 Enter / Space ——
+  const bindKeys = root => {
+    root.querySelectorAll("[role='button']").forEach(el => {
+      el.onkeydown = e => {
+        if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+          e.preventDefault();
+          el.click();
+        }
+      };
+    });
+  };
+
+  return {
+    SYN, synOf, countIn, countPoint, inPoint, markEsc, markHtml, escHtml,
+    mDone, mSet, mToggle, mProg,
+    uiGet, uiSet,
+    weakLoad, weakOf,
+    qGet, qSet,
+    drillXc, topBtnHtml, bindTop, pulseFirst, bindKeys,
+  };
+})();
+
 async function renderXcNotes() {
+  const st = NotesUX.uiGet("xc");
   view.innerHTML = `
     <div class="page-head">
       <h2>行测速查</h2>
       <p class="muted">行测六个模块 · 点按钮跳到对应模块，模块内按分类分层</p>
     </div>
-    <div class="card"><input id="xcQ" type="search" placeholder="搜索考点标题、公式或正文…" style="width:100%"></div>
+    <div class="card">
+      <label class="nx-label" for="xcQ">搜索行测考点</label>
+      <input id="xcQ" type="search" aria-label="搜索行测考点：标题、正文、易错提示"
+        placeholder="搜索考点标题、公式、正文或提示…" style="width:100%">
+      <div class="nx-flt-row">
+        <span class="nx-meta" id="xcMeta" aria-live="polite"></span>
+        <button type="button" class="btn btn-ghost nx-flt" id="xcTodo" aria-pressed="false">只看未掌握</button>
+        <button type="button" class="btn btn-ghost nx-flt" id="xcHot" aria-pressed="false">只看高频</button>
+      </div>
+    </div>
     <div class="card" id="xcToc" style="padding:10px 12px"></div>
-    <div id="xcBody"></div>`;
+    <div id="xcBody"></div>
+    ${NotesUX.topBtnHtml}`;
 
-  let notes;
+  const body = $("#xcBody");
+  const toc = $("#xcToc");
+  const meta = $("#xcMeta");
+
+  let data, weak;
   try {
-    const r = await api("/api/xc/notes");
-    notes = r.data;
+    const [r, w] = await Promise.all([api("/api/xc/notes"), NotesUX.weakLoad()]);
+    data = r.data;
+    weak = w;
   } catch (e) {
-    $("#xcBody").innerHTML = `
+    body.innerHTML = `
       <div class="card">
         <h3>速查手册加载失败</h3>
         <p class="muted">${esc(String((e && e.message) || e))}</p>
         <button class="btn btn-primary" id="xcRetry">重试</button>
       </div>`;
-    $("#xcToc").innerHTML = "";
+    toc.innerHTML = "";
     $("#xcRetry").onclick = () => renderXcNotes();
     return;
   }
-  const groups = (notes && notes.groups) || [];
+  const groups = (data && data.groups) || [];
   // N10：模块专属线图标（墨线勾形 + 朱砂点睛）；未知 key 回退到原单字
   const MI = (g, s) => ModuleIcon.html(g.key, s)
     || `<b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>`;
@@ -6502,59 +6774,196 @@ async function renderXcNotes() {
     return [...map.values()].filter(s => s.points.length);
   };
 
-  // 每个考点可配多道题：题干与选项常显，答案与解析默认折叠
-  const quizzesHtml = qs => !qs || !qs.length ? "" : qs.map((q, qi) => `
-    <div class="xc-quiz" style="margin-top:9px;padding:9px 10px;border:1px solid var(--line-soft);border-radius:9px">
-      ${qs.length > 1 ? `<div class="muted" style="font-size:calc(11px * var(--fs));margin-bottom:2px">题目 ${qi + 1} / ${qs.length}</div>` : ""}
-      <div style="font-size:calc(13px * var(--fs));font-weight:600;line-height:1.7">${esc(q.q)}</div>
-      <div style="margin:5px 0 0;display:flex;flex-direction:column;gap:3px;font-size:calc(12.5px * var(--fs));line-height:1.7">
-        ${(q.options || []).map((o, i) => `<div><b style="color:var(--cinnabar);margin-right:4px">${"ABCD"[i]}</b>${esc(o)}</div>`).join("")}
-      </div>
-      <button type="button" class="btn btn-ghost xc-quiz-btn" style="margin-top:7px;font-size:calc(12px * var(--fs));padding:2px 10px">查看答案与解析</button>
-      <div class="xc-quiz-ans" hidden style="margin-top:7px;padding:7px 9px;background:#fbf6ec;border-left:3px solid var(--cinnabar);font-size:calc(12.5px * var(--fs));line-height:1.7">
-        <b>答案：${esc(q.answer)}</b>
-        <div style="margin-top:2px;color:var(--ink-2)">${esc(q.explain)}</div>
-      </div>
-    </div>`).join("");
+  // S-5 记忆：当前模块 / 两个筛选 / 已展开的分类
+  let xcSel = groups.some(g => g.key === st.group) ? st.group : "";
+  let onlyTodo = !!st.todo;
+  let onlyHot = !!st.hot;
+  let SECS = Object.assign({}, st.secs || {});
+  let terms = [];
+  let hitMap = {};
 
-  // 目录：只保留六个模块按钮，按下才跳到对应模块的位置（搜索时按钮同步收窄）
+  // C-4 提示分型：三桶渲染，旧数据（无 tip_kinds）全部按易错
+  const TIP_KINDS = [["易错", "⚠ 易错点"], ["采分", "◎ 采分点"], ["时间", "⏱ 时间提醒"]];
+  const tipsHtml = p => {
+    if (!p.tips || !p.tips.length) return "";
+    const kinds = p.tip_kinds || [];
+    const buckets = { 易错: [], 采分: [], 时间: [] };
+    p.tips.forEach((t, i) => {
+      const kd = buckets[kinds[i]] ? kinds[i] : "易错";
+      buckets[kd].push(t);
+    });
+    return TIP_KINDS.filter(([kd]) => buckets[kd].length).map(([kd, label]) => `
+      <div class="nx-tips nx-tips-${kd}">
+        <b>${label}</b>
+        <ul class="md-list">${buckets[kd].map(t => `<li>${NotesUX.markEsc(t, terms)}</li>`).join("")}</ul>
+      </div>`).join("");
+  };
+
+  // L-2 自测：选项可点，选完即判；作答只入本机偏好
+  const quizBlock = (g, p, qs) => {
+    if (!qs || !qs.length) return "";
+    return qs.map((q, qi) => {
+      const picked = NotesUX.qGet(g.key, p.title, qi);
+      const opts = (q.options || []).map((o, i) => {
+        const L = "ABCD"[i];
+        const cls = !picked ? "" : (L === q.answer ? " ok" : (L === picked ? " bad" : ""));
+        return `<button type="button" class="nx-opt${cls}" data-l="${L}"${picked ? " disabled" : ""}>
+          <b>${L}</b><span>${NotesUX.markEsc(o, terms)}</span></button>`;
+      }).join("");
+      const verdict = !picked ? ""
+        : picked === q.answer ? `<div class="nx-verdict ok">✓ 选 ${esc(picked)}，答对</div>`
+          : `<div class="nx-verdict bad">✗ 选 ${esc(picked)}，正确答案 ${esc(q.answer)}</div>`;
+      return `
+      <div class="xc-quiz nx-quiz" data-qi="${qi}" data-a="${esc(q.answer)}">
+        ${qs.length > 1 ? `<div class="nx-quiz-idx">题目 ${qi + 1} / ${qs.length}</div>` : ""}
+        <div class="nx-quiz-q">${NotesUX.markEsc(q.q, terms)}</div>
+        <div class="nx-opts">${opts}</div>
+        ${picked ? "" : `<button type="button" class="btn btn-ghost xc-quiz-btn">查看答案与解析</button>`}
+        <div class="xc-quiz-ans"${picked ? "" : " hidden"}>
+          ${verdict}
+          <b>答案：${esc(q.answer)}</b>
+          <div class="nx-quiz-exp">${NotesUX.markEsc(q.explain, terms)}</div>
+        </div>
+      </div>`;
+    }).join("");
+  };
+
+  // C-3 真题范例：默认折叠，避免把考点卡撑长
+  const examplesHtml = p => {
+    const exs = p.examples || [];
+    if (!exs.length) return "";
+    return `
+      <div class="nx-ex">
+        <button type="button" class="nx-ex-btn" aria-expanded="false">📄 真题范例 ${exs.length} 例（点开看要点）</button>
+        <div class="nx-ex-body" hidden>
+          ${exs.map(ex => `
+            <div class="nx-ex-item">
+              <div class="nx-ex-q">${NotesUX.markEsc(ex.q, terms)}</div>
+              <ul class="md-list">${(ex.points || []).map(x => `<li>${NotesUX.markEsc(x, terms)}</li>`).join("")}</ul>
+            </div>`).join("")}
+          ${data.example_note ? `<p class="nx-ex-note">${esc(data.example_note)}</p>` : ""}
+        </div>
+      </div>`;
+  };
+
+  const pointHtml = (g, p) => {
+    const done = NotesUX.mDone("xc", g.key, p.title);
+    const wk = NotesUX.weakOf(weak, "xc", g.key, p.title);
+    const hits = hitMap[`${g.key}|${p.title}`] || 0;
+    // 既有契约：题库渲染统一走 quizzesHtml(p.quizzes)，考点与模块由闭包带入
+    const quizzesHtml = qs => quizBlock(g, p, qs);
+    return `
+      <div class="zy-item nx-point" data-g="${esc(g.key)}" data-t="${esc(p.title)}"${hits ? ` data-nx-hit="1"` : ""}>
+        <div class="zy-head">
+          <button type="button" class="nx-title" aria-expanded="false">
+            <b>${NotesUX.markEsc(p.title, terms)}</b>
+            ${p.hot ? `<span class="nx-hot" title="按近五年真题篇数筛出的高频考点">★ 高频</span>` : ""}
+            ${wk ? `<span class="nx-weak" title="错题本里映射到本考点的错题数">错 ${wk > 999 ? "999+" : wk} 次</span>` : ""}
+            <span class="nx-arrow" aria-hidden="true">▾</span>
+          </button>
+          <button type="button" class="nx-master${done ? " on" : ""}" aria-pressed="${done ? "true" : "false"}"
+            title="标记掌握度（只存本机）">${done ? "✓ 已掌握" : "待复习"}</button>
+        </div>
+        <div class="zy-body" hidden>
+          ${md(p.body)}
+          ${tipsHtml(p)}
+          ${examplesHtml(p)}
+          ${quizzesHtml(p.quizzes)}
+          <div class="nx-foot">
+            <button type="button" class="btn btn-ghost nx-drill" data-g="${esc(g.key)}" data-t="${esc(p.title)}"
+              >去练同类题 →</button>
+            <span class="nx-foot-hint">在题库按「${esc(p.title.split("：")[0])}」筛选</span>
+          </div>
+        </div>
+      </div>`;
+  };
+
+  // 目录：模块胶囊，按下才跳到对应模块的位置（搜索时按钮同步收窄）
   const TOC_BTN = "display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border:1px solid var(--line-soft);"
     + "border-radius:15px;background:transparent;font-size:calc(12.5px * var(--fs));color:var(--ink-2);cursor:pointer";
   const drawToc = shown => {
-    const el = $("#xcToc");
-    if (!shown.length) { el.innerHTML = ""; return; }
-    el.innerHTML = `<div class="muted" style="font-size:calc(12px * var(--fs));margin-bottom:8px">模块 · 点按钮跳到该模块（共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点）</div>
-      <div style="display:flex;flex-wrap:wrap;gap:7px">
-        ${shown.map(g => `<button type="button" class="xc-toc" data-g="${esc(g.key)}" aria-pressed="false"
-          style="${TOC_BTN}">
-          ${MI(g, 20)}${esc(g.name)}
-          <span class="muted">${g.points.length}</span></button>`).join("")}
+    if (!groups.length) { toc.innerHTML = ""; return; }
+    const pr = NotesUX.mProg("xc", groups);
+    const live_ = shown.length ? shown : groups;
+    const total = shown.reduce((s, g) => s + g.points.length, 0);
+    toc.innerHTML = `
+      <div class="nx-toc-head">
+        <b>模块</b>
+        <span class="nx-toc-desc">点胶囊跳到该模块 · 本页 ${total} 个考点</span>
+        <span class="nx-prog" aria-label="掌握进度">已掌握 <b id="xcProgDone">${pr.done}</b> / ${pr.total}</span>
+      </div>
+      <div class="nx-cap-row">
+        ${live_.map(g => {
+          const gp = NotesUX.mProg("xc", [g]);
+          return `<button type="button" class="xc-toc" data-g="${esc(g.key)}" aria-pressed="${g.key === xcSel ? "true" : "false"}"
+            style="${g.key === xcSel ? TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)" : TOC_BTN}">
+            ${MI(g, 20)}${esc(g.name)}
+            <span class="muted">${g.points.length}</span>
+            <span class="nx-cap-p">${gp.done}/${gp.total}</span></button>`;
+        }).join("")}
       </div>`;
-    [...el.querySelectorAll(".xc-toc")].forEach(a => {
+    $$(".xc-toc", toc).forEach(a => {
       a.onclick = () => {
         const t = document.getElementById("xc-" + a.dataset.g);
         if (!t) return;
         t.scrollIntoView({ behavior: "smooth", block: "start" });
-        [...el.querySelectorAll(".xc-toc")].forEach(b => {
+        xcSel = a.dataset.g;
+        NotesUX.uiSet("xc", { group: xcSel });
+        $$(".xc-toc", toc).forEach(b => {
           b.style.cssText = TOC_BTN;
           b.setAttribute("aria-pressed", "false");
         });
         a.style.cssText = TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)";
         a.setAttribute("aria-pressed", "true");
+        a.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
       };
+    });
+  };
+
+  const syncProg = () => {
+    const pr = NotesUX.mProg("xc", groups);
+    const el = $("#xcProgDone");
+    if (el) el.textContent = pr.done;
+    $$(".xc-toc", toc).forEach(a => {
+      const g = groups.find(x => x.key === a.dataset.g);
+      const s = a.querySelector(".nx-cap-p");
+      if (g && s) { const gp = NotesUX.mProg("xc", [g]); s.textContent = `${gp.done}/${gp.total}`; }
     });
   };
 
   const draw = kw => {
     const k = (kw || "").trim().toLowerCase();
+    terms = NotesUX.synOf(k);
+    hitMap = {};
+    const matchPoint = p => {
+      if (!k) return true;
+      if (p.title.toLowerCase().includes(k)) return true;
+      if ((p.body || "").toLowerCase().includes(k)) return true;
+      if ((p.tips || []).some(t => String(t).toLowerCase().includes(k))) return true;
+      return NotesUX.inPoint(p, terms);
+    };
     const shown = groups.map(g => ({
       ...g,
-      points: g.points.filter(p =>
-        !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)
-          || (p.quizzes || []).some(q => (q.q || "").toLowerCase().includes(k))),
+      points: g.points.filter(p => {
+        if (onlyTodo && NotesUX.mDone("xc", g.key, p.title)) return false;
+        if (onlyHot && !p.hot) return false;
+        return matchPoint(p);
+      }),
     })).filter(g => g.points.length);
+    groups.forEach(g => g.points.forEach(p => {
+      const n = NotesUX.countPoint(p, terms);
+      if (n) hitMap[`${g.key}|${p.title}`] = n;
+    }));
     drawToc(shown);
-    const el = $("#xcBody");
+    const hitN = shown.reduce((s, g) => s + g.points.length, 0);
+    const pr = NotesUX.mProg("xc", groups);
+    if (k) meta.textContent = `命中 ${hitN} 个考点${onlyTodo || onlyHot ? "（已叠加筛选）" : ""}`;
+    else meta.textContent = `共 ${groups.reduce((s, g) => s + g.points.length, 0)} 个考点 · 掌握 ${pr.done}/${pr.total}`;
+    $("#xcTodo").setAttribute("aria-pressed", onlyTodo ? "true" : "false");
+    $("#xcHot").setAttribute("aria-pressed", onlyHot ? "true" : "false");
+    $("#xcTodo").classList.toggle("on", onlyTodo);
+    $("#xcHot").classList.toggle("on", onlyHot);
+    const el = body;
     el.innerHTML = shown.length ? shown.map(g => {
       const secs = sectionsOf(g);
       return `
@@ -6562,38 +6971,43 @@ async function renderXcNotes() {
         <h3 class="sec">${MI(g, 22)} ${esc(g.name)} · ${g.points.length} 点
           <button class="btn btn-ghost xc-toggle" style="float:right;font-size:calc(12px * var(--fs));padding:1px 9px">展开全部</button></h3>
         <p class="muted" style="margin:0 0 4px;font-size:calc(12.5px * var(--fs))">${esc(g.desc)}</p>
-        ${secs.map(s => `
+        ${secs.map(s => {
+          const open = !!SECS[`${g.key}|${s.key}`];
+          const sd = s.points.filter(p => NotesUX.mDone("xc", g.key, p.title)).length;
+          return `
           <div class="xc-sec" id="xc-${esc(g.key)}-${esc(s.key)}">
             ${s.name ? `
-            <div class="xc-sec-head" style="display:flex;align-items:center;gap:8px;margin:10px 0 0;padding:6px 9px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar);cursor:pointer">
+            <div class="xc-sec-head" role="button" tabindex="0" aria-expanded="${k || open ? "true" : "false"}" style="display:flex;align-items:center;gap:8px;margin:10px 0 0;padding:6px 9px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar);cursor:pointer">
               <b style="font-size:calc(13px * var(--fs))">${esc(s.name)}</b>
               <span class="muted" style="font-size:calc(11.5px * var(--fs))">${s.points.length} 点</span>
+              <span class="nx-sec-prog">掌握 ${sd}/${s.points.length}</span>
               <span class="xc-sec-arrow muted" style="margin-left:auto">${k ? "▴" : "▾"}</span>
             </div>
             <p class="xc-sec-desc muted"${k ? "" : " hidden"} style="margin:0;padding:2px 2px 2px 9px;font-size:calc(11.5px * var(--fs))">${esc(s.desc)}</p>` : ""}
             <div class="xc-sec-body"${k ? "" : " hidden"}>
-              ${s.points.map(p => `
-                <div class="zy-item">
-                  <div class="zy-head" style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--line-soft);cursor:pointer">
-                    <b style="font-size:calc(14.5px * var(--fs));line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
-                  </div>
-                  <div class="zy-body" hidden style="padding-bottom:12px">
-                    ${md(p.body)}
-                    ${p.tips && p.tips.length ? `
-                      <div style="margin-top:8px;padding:8px 10px;background:#fbf6ec;border-left:3px solid var(--cinnabar)">
-                        <b style="font-size:calc(13px * var(--fs))">⚠ 易错提醒</b>
-                        <ul class="md-list" style="margin:4px 0 0;font-size:calc(12.5px * var(--fs));color:var(--ink-2)">
-                          ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
-                        </ul>
-                      </div>` : ""}
-                    ${quizzesHtml(p.quizzes)}
-                  </div>
-                </div>`).join("")}
+              ${s.points.map(p => pointHtml(g, p)).join("")}
             </div>
-          </div>`).join("")}
+          </div>`;
+        }).join("")}
       </div>`;
-    }).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点</div>`;
-    [...el.querySelectorAll(".xc-sec-head")].forEach(h => {
+    }).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点${
+      onlyTodo || onlyHot ? "（可先关掉筛选）" : ""}</div>`;
+    // S-5 恢复上次展开的分类（默认收起契约不变，只是渲染后补开）
+    Object.keys(SECS).forEach(kk => {
+      if (!SECS[kk]) return;
+      const sec = document.getElementById(`xc-${kk.replace("|", "-")}`);
+      if (!sec) return;
+      const b = sec.querySelector(".xc-sec-body");
+      if (!b) return;
+      b.hidden = false;
+      const desc = sec.querySelector(".xc-sec-desc");
+      if (desc) desc.hidden = false;
+      const ar = sec.querySelector(".xc-sec-arrow");
+      if (ar) ar.textContent = "▴";
+      const h = sec.querySelector(".xc-sec-head");
+      if (h) h.setAttribute("aria-expanded", "true");
+    });
+    $$(".xc-sec-head", el).forEach(h => {
       h.onclick = () => {
         const sec = h.closest(".xc-sec");
         const b = sec.querySelector(".xc-sec-body");
@@ -6602,25 +7016,75 @@ async function renderXcNotes() {
         if (desc) desc.hidden = b.hidden;
         const ar = h.querySelector(".xc-sec-arrow");
         if (ar) ar.textContent = b.hidden ? "▾" : "▴";
+        h.setAttribute("aria-expanded", b.hidden ? "false" : "true");
+        const gk = ((sec.closest(".card") || {}).id || "").replace(/^xc-/, "");
+        const sk = (sec.id || "").replace(`xc-${gk}-`, "");
+        const kk = `${gk}|${sk}`;
+        if (b.hidden) delete SECS[kk]; else SECS[kk] = 1;
+        NotesUX.uiSet("xc", { secs: SECS });
       };
     });
-    [...el.querySelectorAll(".zy-head")].forEach(h => {
-      h.onclick = () => {
-        const item = h.closest(".zy-item");
+    $$(".nx-title", el).forEach(btn => {
+      btn.onclick = () => {
+        const item = btn.closest(".zy-item");
         const b = item.querySelector(".zy-body");
         b.hidden = !b.hidden;
-        h.querySelector("span").textContent = b.hidden ? "▾" : "▴";
+        btn.setAttribute("aria-expanded", b.hidden ? "false" : "true");
+        const ar = btn.querySelector(".nx-arrow");
+        if (ar) ar.textContent = b.hidden ? "▾" : "▴";
       };
     });
-    [...el.querySelectorAll(".xc-quiz-btn")].forEach(btn => {
+    $$(".nx-master", el).forEach(btn => {
+      btn.onclick = e => {
+        e.stopPropagation();
+        const item = btn.closest(".zy-item");
+        const on = NotesUX.mToggle("xc", item.dataset.g, item.dataset.t);
+        btn.classList.toggle("on", on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+        btn.textContent = on ? "✓ 已掌握" : "待复习";
+        if (onlyTodo && on) { draw($("#xcQ").value); return; }
+        syncProg();
+      };
+    });
+    // L-2 自测：点选项即判，答案与解析自动展开
+    $$(".nx-quiz", el).forEach(box => {
+      const ans = box.querySelector(".xc-quiz-ans");
+      const askBtn = box.querySelector(".xc-quiz-btn");
+      const answer = box.dataset.a;
+      const reveal = () => { if (ans) ans.hidden = false; if (askBtn) askBtn.hidden = true; };
+      $$(".nx-opt", box).forEach(opt => {
+        opt.onclick = () => {
+          const item = box.closest(".zy-item");
+          const letter = opt.dataset.l;
+          NotesUX.qSet(item.dataset.g, item.dataset.t, +box.dataset.qi, letter);
+          $$(".nx-opt", box).forEach(o => {
+            o.disabled = true;
+            if (o.dataset.l === answer) o.classList.add("ok");
+            else if (o.dataset.l === letter) o.classList.add("bad");
+          });
+          const v = document.createElement("div");
+          v.className = "nx-verdict " + (letter === answer ? "ok" : "bad");
+          v.textContent = letter === answer ? `✓ 选 ${letter}，答对` : `✗ 选 ${letter}，正确答案 ${answer}`;
+          if (ans) ans.insertBefore(v, ans.firstChild);
+          reveal();
+        };
+      });
+      if (askBtn) askBtn.onclick = reveal;
+    });
+    $$(".nx-ex-btn", el).forEach(btn => {
+      const box = btn.closest(".nx-ex");
+      btn.dataset.n = String(box.querySelectorAll(".nx-ex-item").length);
       btn.onclick = () => {
-        const box = btn.closest(".xc-quiz");
-        const ans = box.querySelector(".xc-quiz-ans");
-        ans.hidden = !ans.hidden;
-        btn.textContent = ans.hidden ? "查看答案与解析" : "收起答案与解析";
+        const b = box.querySelector(".nx-ex-body");
+        b.hidden = !b.hidden;
+        btn.setAttribute("aria-expanded", b.hidden ? "false" : "true");
+        btn.textContent = (b.hidden ? "📄 真题范例 " : "📄 收起范例 ") + btn.dataset.n + " 例";
       };
     });
-    [...el.querySelectorAll(".xc-toggle")].forEach(btn => {
+    $$(".nx-drill", el).forEach(btn => {
+      btn.onclick = () => NotesUX.drillXc(btn.dataset.g, btn.dataset.t);
+    });
+    $$(".xc-toggle", el).forEach(btn => {
       btn.onclick = () => {
         const card = btn.closest(".card");
         const items = [...card.querySelectorAll(".zy-body")];
@@ -6629,47 +7093,76 @@ async function renderXcNotes() {
         items.forEach(b => { b.hidden = !expand; });
         secs.forEach(b => { b.hidden = !expand; });
         [...card.querySelectorAll(".xc-sec-desc")].forEach(d => { d.hidden = !expand; });
+        [...card.querySelectorAll(".xc-sec-head")].forEach(h => h.setAttribute("aria-expanded", expand ? "true" : "false"));
         [...card.querySelectorAll(".xc-sec-arrow")].forEach(a => { a.textContent = expand ? "▴" : "▾"; });
-        [...card.querySelectorAll(".zy-head span")].forEach(s => {
-          if (s.textContent === "▾" || s.textContent === "▴") s.textContent = expand ? "▴" : "▾";
-        });
+        [...card.querySelectorAll(".nx-title")].forEach(t => t.setAttribute("aria-expanded", expand ? "true" : "false"));
+        [...card.querySelectorAll(".nx-arrow")].forEach(a => { a.textContent = expand ? "▴" : "▾"; });
         btn.textContent = expand ? "收起全部" : "展开全部";
       };
     });
+    NotesUX.bindKeys(el);
+    if (k) NotesUX.pulseFirst();
   };
 
+  $("#xcTodo").onclick = () => {
+    onlyTodo = !onlyTodo;
+    NotesUX.uiSet("xc", { todo: onlyTodo });
+    draw($("#xcQ").value);
+  };
+  $("#xcHot").onclick = () => {
+    onlyHot = !onlyHot;
+    NotesUX.uiSet("xc", { hot: onlyHot });
+    draw($("#xcQ").value);
+  };
   $("#xcQ").oninput = e => draw(e.target.value);
   draw("");
+  NotesUX.bindTop();
 }
 
 /* ---------- 申论速查手册（与行测速查同构，去掉选择题） ---------- */
 
 async function renderSlNotes() {
+  const st = NotesUX.uiGet("sl");
   view.innerHTML = `
     <div class="page-head">
       <h2>申论速查</h2>
-      <p class="muted">申论六个模块 · 点按钮跳到对应模块，模块内按分类分层</p>
+      <p class="muted">申论六个模块 · 点按钮跳到对应模块，模块内按分类分层；点「看框架」再展开</p>
     </div>
-    <div class="card"><input id="slQ" type="search" placeholder="搜索考点标题或正文…" style="width:100%"></div>
+    <div class="card">
+      <label class="nx-label" for="slQ">搜索申论考点</label>
+      <input id="slQ" type="search" aria-label="搜索申论考点：标题、正文、答题提示、真题范例"
+        placeholder="搜索考点标题、正文或提示…" style="width:100%">
+      <div class="nx-flt-row">
+        <span class="nx-meta" id="slMeta" aria-live="polite"></span>
+        <button type="button" class="btn btn-ghost nx-flt" id="slTodo" aria-pressed="false">只看未掌握</button>
+        <button type="button" class="btn btn-ghost nx-flt" id="slDemo" aria-pressed="false">只看有范例</button>
+      </div>
+    </div>
     <div class="card" id="slToc" style="padding:10px 12px"></div>
-    <div id="slBody"></div>`;
+    <div id="slBody"></div>
+    ${NotesUX.topBtnHtml}`;
 
-  let notes;
+  const body = $("#slBody");
+  const toc = $("#slToc");
+  const meta = $("#slMeta");
+
+  let data, weak;
   try {
-    const r = await api("/api/sl/notes");
-    notes = r.data;
+    const [r, w] = await Promise.all([api("/api/sl/notes"), NotesUX.weakLoad()]);
+    data = r.data;
+    weak = w;
   } catch (e) {
-    $("#slBody").innerHTML = `
+    body.innerHTML = `
       <div class="card">
         <h3>申论速查加载失败</h3>
         <p class="muted">${esc(String((e && e.message) || e))}</p>
         <button class="btn btn-primary" id="slRetry">重试</button>
       </div>`;
-    $("#slToc").innerHTML = "";
+    toc.innerHTML = "";
     $("#slRetry").onclick = () => renderSlNotes();
     return;
   }
-  const groups = (notes && notes.groups) || [];
+  const groups = (data && data.groups) || [];
   const MI = (g, s) => ModuleIcon.html(g.key, s)
     || `<b style="color:var(--cinnabar);font-weight:600">${esc(g.icon)}</b>`;
 
@@ -6683,42 +7176,168 @@ async function renderSlNotes() {
     return [...map.values()].filter(s => s.points.length);
   };
 
+  // S-5 记忆
+  let slSel = groups.some(g => g.key === st.group) ? st.group : "";
+  let onlyTodo = !!st.todo;
+  let onlyDemo = !!st.hot;     // 申论没有频次数据，「高频」位留给「有真题范例」
+  let SECS = Object.assign({}, st.secs || {});
+  let terms = [];
+  let hitMap = {};
+
+  // C-4 提示分型：申论以采分点为主
+  const TIP_KINDS = [["易错", "⚠ 易错点"], ["采分", "◎ 采分点"], ["时间", "⏱ 时间提醒"]];
+  const tipsHtml = p => {
+    if (!p.tips || !p.tips.length) return "";
+    const kinds = p.tip_kinds || [];
+    const buckets = { 易错: [], 采分: [], 时间: [] };
+    p.tips.forEach((t, i) => {
+      const kd = buckets[kinds[i]] ? kinds[i] : "易错";
+      buckets[kd].push(t);
+    });
+    return TIP_KINDS.filter(([kd]) => buckets[kd].length).map(([kd, label]) => `
+      <div class="nx-tips nx-tips-${kd}">
+        <b>${label}</b>
+        <ul class="md-list">${buckets[kd].map(t => `<li>${NotesUX.markEsc(t, terms)}</li>`).join("")}</ul>
+      </div>`).join("");
+  };
+
+  const examplesHtml = p => {
+    const exs = p.examples || [];
+    if (!exs.length) return "";
+    return `
+      <div class="nx-ex">
+        <button type="button" class="nx-ex-btn" aria-expanded="false">📄 真题范例 ${exs.length} 例（点开看要点）</button>
+        <div class="nx-ex-body" hidden>
+          ${exs.map(ex => `
+            <div class="nx-ex-item">
+              <div class="nx-ex-q">${NotesUX.markEsc(ex.q, terms)}</div>
+              <ul class="md-list">${(ex.points || []).map(x => `<li>${NotesUX.markEsc(x, terms)}</li>`).join("")}</ul>
+            </div>`).join("")}
+          ${data.example_note ? `<p class="nx-ex-note">${esc(data.example_note)}</p>` : ""}
+        </div>
+      </div>`;
+  };
+
+  const pointHtml = (g, p) => {
+    const done = NotesUX.mDone("sl", g.key, p.title);
+    const wk = NotesUX.weakOf(weak, "sl", g.key, p.title);
+    const hits = hitMap[`${g.key}|${p.title}`] || 0;
+    const exs = p.examples || [];
+    return `
+      <div class="sl-item nx-point" data-g="${esc(g.key)}" data-t="${esc(p.title)}"${hits ? ` data-nx-hit="1"` : ""}>
+        <div class="sl-head">
+          <button type="button" class="nx-title" aria-expanded="false">
+            <b>${NotesUX.markEsc(p.title, terms)}</b>
+            ${exs.length ? `<span class="nx-demo" title="已挂真题范例">范例 ${exs.length}</span>` : ""}
+            ${wk ? `<span class="nx-weak" title="AI 批改扣分点映射到本考点的次数">扣 ${wk > 999 ? "999+" : wk} 次</span>` : ""}
+            <span class="nx-cta">看框架</span>
+            <span class="nx-arrow" aria-hidden="true">▾</span>
+          </button>
+          <button type="button" class="nx-master${done ? " on" : ""}" aria-pressed="${done ? "true" : "false"}"
+            title="标记掌握度（只存本机）">${done ? "✓ 已掌握" : "待复习"}</button>
+        </div>
+        <div class="sl-body" hidden>
+          <div class="nx-selftest">
+            <span>先想后看：想好再看框架</span>
+            <button type="button" class="nx-yes" data-v="1">✓ 我会</button>
+            <button type="button" class="nx-yes" data-v="0">✗ 还不会</button>
+          </div>
+          ${md(p.body)}
+          ${tipsHtml(p)}
+          ${examplesHtml(p)}
+          <div class="nx-foot">
+            <a class="btn btn-ghost nx-link" href="#/essay">综应方法论 →</a>
+            <a class="btn btn-ghost nx-link" href="#/grade">去 AI 批改 →</a>
+          </div>
+        </div>
+      </div>`;
+  };
+
   const TOC_BTN = "display:inline-flex;align-items:center;gap:5px;padding:7px 12px;border:1px solid var(--line-soft);"
     + "border-radius:15px;background:transparent;font-size:calc(12.5px * var(--fs));color:var(--ink-2);cursor:pointer";
   const drawToc = shown => {
-    const el = $("#slToc");
-    if (!shown.length) { el.innerHTML = ""; return; }
-    el.innerHTML = `<div class="muted" style="font-size:calc(12px * var(--fs));margin-bottom:8px">模块 · 点按钮跳到该模块（共 ${shown.reduce((s, g) => s + g.points.length, 0)} 个考点）</div>
-      <div style="display:flex;flex-wrap:wrap;gap:7px">
-        ${shown.map(g => `<button type="button" class="sl-toc" data-g="${esc(g.key)}" aria-pressed="false"
-          style="${TOC_BTN}">
-          ${MI(g, 20)}${esc(g.name)}
-          <span class="muted">${g.points.length}</span></button>`).join("")}
+    if (!groups.length) { toc.innerHTML = ""; return; }
+    const pr = NotesUX.mProg("sl", groups);
+    const live_ = shown.length ? shown : groups;
+    const total = shown.reduce((s, g) => s + g.points.length, 0);
+    toc.innerHTML = `
+      <div class="nx-toc-head">
+        <b>模块</b>
+        <span class="nx-toc-desc">点胶囊跳到该模块 · 本页 ${total} 个考点</span>
+        <span class="nx-prog" aria-label="掌握进度">已掌握 <b id="slProgDone">${pr.done}</b> / ${pr.total}</span>
+      </div>
+      <div class="nx-cap-row">
+        ${live_.map(g => {
+          const gp = NotesUX.mProg("sl", [g]);
+          return `<button type="button" class="sl-toc" data-g="${esc(g.key)}" aria-pressed="${g.key === slSel ? "true" : "false"}"
+            style="${g.key === slSel ? TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)" : TOC_BTN}">
+            ${MI(g, 20)}${esc(g.name)}
+            <span class="muted">${g.points.length}</span>
+            <span class="nx-cap-p">${gp.done}/${gp.total}</span></button>`;
+        }).join("")}
       </div>`;
-    [...el.querySelectorAll(".sl-toc")].forEach(a => {
+    $$(".sl-toc", toc).forEach(a => {
       a.onclick = () => {
         const t = document.getElementById("sl-" + a.dataset.g);
         if (!t) return;
         t.scrollIntoView({ behavior: "smooth", block: "start" });
-        [...el.querySelectorAll(".sl-toc")].forEach(b => {
+        slSel = a.dataset.g;
+        NotesUX.uiSet("sl", { group: slSel });
+        $$(".sl-toc", toc).forEach(b => {
           b.style.cssText = TOC_BTN;
           b.setAttribute("aria-pressed", "false");
         });
         a.style.cssText = TOC_BTN + ";border-color:var(--cinnabar);color:var(--cinnabar);background:rgba(178,58,48,.07)";
         a.setAttribute("aria-pressed", "true");
+        a.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
       };
+    });
+  };
+
+  const syncProg = () => {
+    const pr = NotesUX.mProg("sl", groups);
+    const el = $("#slProgDone");
+    if (el) el.textContent = pr.done;
+    $$(".sl-toc", toc).forEach(a => {
+      const g = groups.find(x => x.key === a.dataset.g);
+      const s = a.querySelector(".nx-cap-p");
+      if (g && s) { const gp = NotesUX.mProg("sl", [g]); s.textContent = `${gp.done}/${gp.total}`; }
     });
   };
 
   const draw = kw => {
     const k = (kw || "").trim().toLowerCase();
+    terms = NotesUX.synOf(k);
+    hitMap = {};
+    const matchPoint = p => {
+      if (!k) return true;
+      if (p.title.toLowerCase().includes(k)) return true;
+      if ((p.body || "").toLowerCase().includes(k)) return true;
+      if ((p.tips || []).some(t => String(t).toLowerCase().includes(k))) return true;
+      return NotesUX.inPoint(p, terms);
+    };
     const shown = groups.map(g => ({
       ...g,
-      points: g.points.filter(p =>
-        !k || p.title.toLowerCase().includes(k) || (p.body || "").toLowerCase().includes(k)),
+      points: g.points.filter(p => {
+        if (onlyTodo && NotesUX.mDone("sl", g.key, p.title)) return false;
+        if (onlyDemo && !(p.examples || []).length) return false;
+        return matchPoint(p);
+      }),
     })).filter(g => g.points.length);
+    groups.forEach(g => g.points.forEach(p => {
+      const n = NotesUX.countPoint(p, terms);
+      if (n) hitMap[`${g.key}|${p.title}`] = n;
+    }));
     drawToc(shown);
-    const el = $("#slBody");
+    const hitN = shown.reduce((s, g) => s + g.points.length, 0);
+    const pr = NotesUX.mProg("sl", groups);
+    if (k) meta.textContent = `命中 ${hitN} 个考点${onlyTodo || onlyDemo ? "（已叠加筛选）" : ""}`;
+    else meta.textContent = `共 ${groups.reduce((s, g) => s + g.points.length, 0)} 个考点 · 掌握 ${pr.done}/${pr.total}`;
+    $("#slTodo").setAttribute("aria-pressed", onlyTodo ? "true" : "false");
+    $("#slDemo").setAttribute("aria-pressed", onlyDemo ? "true" : "false");
+    $("#slTodo").classList.toggle("on", onlyTodo);
+    $("#slDemo").classList.toggle("on", onlyDemo);
+    const el = body;
     el.innerHTML = shown.length ? shown.map(g => {
       const secs = sectionsOf(g);
       return `
@@ -6726,37 +7345,43 @@ async function renderSlNotes() {
         <h3 class="sec">${MI(g, 22)} ${esc(g.name)} · ${g.points.length} 点
           <button class="btn btn-ghost sl-toggle" style="float:right;font-size:calc(12px * var(--fs));padding:1px 9px">展开全部</button></h3>
         <p class="muted" style="margin:0 0 4px;font-size:calc(12.5px * var(--fs))">${esc(g.desc)}</p>
-        ${secs.map(s => `
+        ${secs.map(s => {
+          const open = !!SECS[`${g.key}|${s.key}`];
+          const sd = s.points.filter(p => NotesUX.mDone("sl", g.key, p.title)).length;
+          return `
           <div class="sl-sec" id="sl-${esc(g.key)}-${esc(s.key)}">
             ${s.name ? `
-            <div class="sl-sec-head" style="display:flex;align-items:center;gap:8px;margin:10px 0 0;padding:6px 9px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar);cursor:pointer">
+            <div class="sl-sec-head" role="button" tabindex="0" aria-expanded="${k || open ? "true" : "false"}" style="display:flex;align-items:center;gap:8px;margin:10px 0 0;padding:6px 9px;background:rgba(178,58,48,.05);border-left:3px solid var(--cinnabar);cursor:pointer">
               <b style="font-size:calc(13px * var(--fs))">${esc(s.name)}</b>
               <span class="muted" style="font-size:calc(11.5px * var(--fs))">${s.points.length} 点</span>
+              <span class="nx-sec-prog">掌握 ${sd}/${s.points.length}</span>
               <span class="sl-sec-arrow muted" style="margin-left:auto">${k ? "▴" : "▾"}</span>
             </div>
             <p class="sl-sec-desc muted"${k ? "" : " hidden"} style="margin:0;padding:2px 2px 2px 9px;font-size:calc(11.5px * var(--fs))">${esc(s.desc)}</p>` : ""}
             <div class="sl-sec-body"${k ? "" : " hidden"}>
-              ${s.points.map(p => `
-                <div class="sl-item">
-                  <div class="sl-head" style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-top:1px solid var(--line-soft);cursor:pointer">
-                    <b style="font-size:calc(14.5px * var(--fs));line-height:1.4">${esc(p.title)}</b><span class="muted" style="margin-left:8px">▾</span>
-                  </div>
-                  <div class="sl-body" hidden style="padding-bottom:12px">
-                    ${md(p.body)}
-                    ${p.tips && p.tips.length ? `
-                      <div style="margin-top:8px;padding:8px 10px;background:#fbf6ec;border-left:3px solid var(--cinnabar)">
-                        <b style="font-size:calc(13px * var(--fs))">⚠ 答题提示</b>
-                        <ul class="md-list" style="margin:4px 0 0;font-size:calc(12.5px * var(--fs));color:var(--ink-2)">
-                          ${p.tips.map(t => `<li>${esc(t)}</li>`).join("")}
-                        </ul>
-                      </div>` : ""}
-                  </div>
-                </div>`).join("")}
+              ${s.points.map(p => pointHtml(g, p)).join("")}
             </div>
-          </div>`).join("")}
+          </div>`;
+        }).join("")}
       </div>`;
-    }).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点</div>`;
-    [...el.querySelectorAll(".sl-sec-head")].forEach(h => {
+    }).join("") : `<div class="card muted" style="text-align:center;padding:18px">没有匹配「${esc(kw)}」的考点${
+      onlyTodo || onlyDemo ? "（可先关掉筛选）" : ""}</div>`;
+    // S-5 恢复上次展开的分类
+    Object.keys(SECS).forEach(kk => {
+      if (!SECS[kk]) return;
+      const sec = document.getElementById(`sl-${kk.replace("|", "-")}`);
+      if (!sec) return;
+      const b = sec.querySelector(".sl-sec-body");
+      if (!b) return;
+      b.hidden = false;
+      const desc = sec.querySelector(".sl-sec-desc");
+      if (desc) desc.hidden = false;
+      const ar = sec.querySelector(".sl-sec-arrow");
+      if (ar) ar.textContent = "▴";
+      const h = sec.querySelector(".sl-sec-head");
+      if (h) h.setAttribute("aria-expanded", "true");
+    });
+    $$(".sl-sec-head", el).forEach(h => {
       h.onclick = () => {
         const sec = h.closest(".sl-sec");
         const b = sec.querySelector(".sl-sec-body");
@@ -6765,17 +7390,66 @@ async function renderSlNotes() {
         if (desc) desc.hidden = b.hidden;
         const ar = h.querySelector(".sl-sec-arrow");
         if (ar) ar.textContent = b.hidden ? "▾" : "▴";
+        h.setAttribute("aria-expanded", b.hidden ? "false" : "true");
+        const gk = ((sec.closest(".card") || {}).id || "").replace(/^sl-/, "");
+        const sk = (sec.id || "").replace(`sl-${gk}-`, "");
+        const kk = `${gk}|${sk}`;
+        if (b.hidden) delete SECS[kk]; else SECS[kk] = 1;
+        NotesUX.uiSet("sl", { secs: SECS });
       };
     });
-    [...el.querySelectorAll(".sl-head")].forEach(h => {
-      h.onclick = () => {
-        const item = h.closest(".sl-item");
+    // L-2 先想后看
+    $$(".nx-title", el).forEach(btn => {
+      btn.onclick = () => {
+        const item = btn.closest(".sl-item");
         const b = item.querySelector(".sl-body");
         b.hidden = !b.hidden;
-        h.querySelector("span").textContent = b.hidden ? "▾" : "▴";
+        btn.setAttribute("aria-expanded", b.hidden ? "false" : "true");
+        const ar = btn.querySelector(".nx-arrow");
+        if (ar) ar.textContent = b.hidden ? "▾" : "▴";
+        const cta = btn.querySelector(".nx-cta");
+        if (cta) cta.textContent = b.hidden ? "看框架" : "收起";
       };
     });
-    [...el.querySelectorAll(".sl-toggle")].forEach(btn => {
+    $$(".nx-master", el).forEach(btn => {
+      btn.onclick = e => {
+        e.stopPropagation();
+        const item = btn.closest(".sl-item");
+        const on = NotesUX.mToggle("sl", item.dataset.g, item.dataset.t);
+        btn.classList.toggle("on", on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+        btn.textContent = on ? "✓ 已掌握" : "待复习";
+        if (onlyTodo && on) { draw($("#slQ").value); return; }
+        syncProg();
+      };
+    });
+    // 自评「会 / 不会」→ 直接回写掌握度
+    $$(".nx-selftest .nx-yes", el).forEach(btn => {
+      btn.onclick = () => {
+        const item = btn.closest(".sl-item");
+        const on = btn.dataset.v === "1";
+        NotesUX.mSet("sl", item.dataset.g, item.dataset.t, on);
+        const m = item.querySelector(".nx-master");
+        if (m) {
+          m.classList.toggle("on", on);
+          m.setAttribute("aria-pressed", on ? "true" : "false");
+          m.textContent = on ? "✓ 已掌握" : "待复习";
+        }
+        if (onlyTodo && on) { draw($("#slQ").value); return; }
+        syncProg();
+      };
+    });
+    $$(".nx-ex-btn", el).forEach(btn => {
+      const box = btn.closest(".nx-ex");
+      btn.dataset.n = String(box.querySelectorAll(".nx-ex-item").length);
+      btn.onclick = () => {
+        const b = box.querySelector(".nx-ex-body");
+        b.hidden = !b.hidden;
+        btn.setAttribute("aria-expanded", b.hidden ? "false" : "true");
+        btn.textContent = (b.hidden ? "📄 真题范例 " : "📄 收起范例 ") + btn.dataset.n + " 例";
+      };
+    });
+    $$(".sl-toggle", el).forEach(btn => {
       btn.onclick = () => {
         const card = btn.closest(".card");
         const items = [...card.querySelectorAll(".sl-body")];
@@ -6784,17 +7458,31 @@ async function renderSlNotes() {
         items.forEach(b => { b.hidden = !expand; });
         secs.forEach(b => { b.hidden = !expand; });
         [...card.querySelectorAll(".sl-sec-desc")].forEach(d => { d.hidden = !expand; });
+        [...card.querySelectorAll(".sl-sec-head")].forEach(h => h.setAttribute("aria-expanded", expand ? "true" : "false"));
         [...card.querySelectorAll(".sl-sec-arrow")].forEach(a => { a.textContent = expand ? "▴" : "▾"; });
-        [...card.querySelectorAll(".sl-head span")].forEach(s => {
-          if (s.textContent === "▾" || s.textContent === "▴") s.textContent = expand ? "▴" : "▾";
-        });
+        [...card.querySelectorAll(".nx-title")].forEach(t => t.setAttribute("aria-expanded", expand ? "true" : "false"));
+        [...card.querySelectorAll(".nx-arrow")].forEach(a => { a.textContent = expand ? "▴" : "▾"; });
+        [...card.querySelectorAll(".nx-cta")].forEach(c => { c.textContent = expand ? "收起" : "看框架"; });
         btn.textContent = expand ? "收起全部" : "展开全部";
       };
     });
+    NotesUX.bindKeys(el);
+    if (k) NotesUX.pulseFirst();
   };
 
+  $("#slTodo").onclick = () => {
+    onlyTodo = !onlyTodo;
+    NotesUX.uiSet("sl", { todo: onlyTodo });
+    draw($("#slQ").value);
+  };
+  $("#slDemo").onclick = () => {
+    onlyDemo = !onlyDemo;
+    NotesUX.uiSet("sl", { hot: onlyDemo });
+    draw($("#slQ").value);
+  };
   $("#slQ").oninput = e => draw(e.target.value);
   draw("");
+  NotesUX.bindTop();
 }
 
 /* ---------- 知识点综合（PDF 批量整理成果） ---------- */

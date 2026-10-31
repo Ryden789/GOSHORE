@@ -45,6 +45,7 @@ from . import (
     kb,
     knowledge,
     logging_setup,
+    note_weak,
     planner,
     share,
     shenlun_notes,
@@ -1167,16 +1168,37 @@ def api_zy_notes():
     return {"ok": True, "data": zy_notes.NOTES}
 
 
+def _notes_slice(notes: dict, group: str) -> dict:
+    """按模块裁剪速查数据（E-3）；group 为空或不存在时返回全量，行为向后兼容。"""
+    if not group:
+        return notes
+    hit = [g for g in notes.get("groups", []) if g.get("key") == group]
+    if not hit:
+        return notes
+    out = {k: v for k, v in notes.items() if k != "groups"}
+    out["groups"] = hit
+    return out
+
+
 @app.get("/api/xc/notes")
-def api_xc_notes():
-    """O2 行测速查手册：公式 / 规律 / 速算技巧静态数据（与移动端同源）。"""
-    return {"ok": True, "data": xingce_notes.NOTES}
+def api_xc_notes(group: str = ""):
+    """O2 行测速查手册：公式 / 规律 / 速算技巧静态数据（与移动端同源）。
+
+    `group` 可选，用于按模块取数（E-3）；不带参数时返回全量。
+    """
+    return {"ok": True, "data": _notes_slice(xingce_notes.NOTES, group)}
 
 
 @app.get("/api/sl/notes")
-def api_sl_notes():
+def api_sl_notes(group: str = ""):
     """申论速查手册：五大题型方法与答题框架静态数据（与移动端同源）。"""
-    return {"ok": True, "data": shenlun_notes.NOTES}
+    return {"ok": True, "data": _notes_slice(shenlun_notes.NOTES, group)}
+
+
+@app.get("/api/notes/weak")
+def api_notes_weak():
+    """速查回流（L-3）：错题与申论扣分点映射到考点，无数据时返回空表。"""
+    return {"ok": True, "data": note_weak.build()}
 
 
 @app.get("/api/kb/modules")

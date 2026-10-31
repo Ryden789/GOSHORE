@@ -1639,3 +1639,81 @@ details.data-card .dc-body { padding: 0 16px 16px; }
 .guide-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .guide-actions #gSkip { margin-right: auto; }
 
+
+/* ===== 速查页交互（C-3 范例 / C-4 提示分型 / L-1—L-4 / S-1—S-5 / V-1） =====
+   与桌面 styles.css 的同名类同构，只把字号/内边距按手机密度收一档。
+   颜色一律走主题变量，夜间模式不需要额外覆写。 */
+.nx-label { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+.nx-flt-row { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-top:7px; padding-top:7px; border-top:1px dashed var(--line-soft); }
+.nx-meta { font-size:calc(11.5px * var(--fs)); color:var(--ink-3); margin-right:auto; }
+.nx-flt { font-size:calc(11.5px * var(--fs)); padding:3px 10px; }
+.nx-flt.on { border-color:var(--cinnabar); color:var(--cinnabar); background:rgba(178,58,48,.07); }
+
+.nx-toc-head { display:flex; align-items:baseline; gap:6px; flex-wrap:wrap; margin-bottom:8px; font-size:calc(12px * var(--fs)); }
+.nx-toc-desc { font-size:calc(11.5px * var(--fs)); color:var(--ink-3); }
+.nx-prog { margin-left:auto; font-size:calc(11.5px * var(--fs)); color:var(--ink-2); font-family:var(--mono); white-space:nowrap; }
+.nx-prog b { color:var(--cinnabar); }
+.nx-no { font-family:var(--mono); font-size:calc(10.5px * var(--fs)); color:var(--ink-3); opacity:.65; }
+.nx-toc-prog { font-size:calc(11px * var(--fs)); color:var(--ink-3); font-family:var(--mono); }
+.nx-cap-row { display:flex; flex-wrap:wrap; gap:7px; }
+.nx-cap-p { font-family:var(--mono); font-size:calc(10px * var(--fs)); color:var(--ink-3); }
+.nx-entry-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:7px 9px; margin:0 0 7px; background:rgba(178,58,48,.04); border-left:3px solid var(--cinnabar); font-size:calc(11.5px * var(--fs)); color:var(--ink-2); }
+.nx-bar { flex:1 1 100px; height:5px; min-width:60px; background:var(--line-soft); border-radius:3px; overflow:hidden; }
+.nx-bar i { display:block; height:100%; background:var(--cinnabar); }
+.nx-sec-prog { font-size:calc(11px * var(--fs)); color:var(--ink-3); font-family:var(--mono); }
+
+.nx-point .zy-head, .nx-point .sl-head { display:flex; align-items:center; gap:7px; padding:10px 0; border-top:1px solid var(--line-soft); }
+.nx-title { flex:1 1 auto; display:flex; align-items:center; gap:5px; flex-wrap:wrap; padding:0; border:0; background:transparent; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.nx-title b { font-size:calc(14.5px * var(--fs)); line-height:1.4; }
+.nx-arrow { margin-left:auto; color:var(--ink-3); font-size:calc(12px * var(--fs)); }
+.nx-master { flex:none; padding:2px 8px; border:1px solid var(--line); border-radius:12px; background:transparent; color:var(--ink-3); font-size:calc(11px * var(--fs)); cursor:pointer; }
+.nx-master.on { border-color:var(--bamboo); color:var(--bamboo); background:var(--bamboo-soft); }
+.nx-hot { padding:0 5px; border-radius:9px; background:var(--amber-soft); color:var(--amber); font-size:calc(10.5px * var(--fs)); }
+.nx-weak { padding:0 5px; border-radius:9px; background:var(--cinnabar-soft); color:var(--cinnabar-deep); font-size:calc(10.5px * var(--fs)); }
+.nx-demo { padding:0 5px; border-radius:9px; background:var(--indigo-soft); color:var(--indigo); font-size:calc(10.5px * var(--fs)); }
+.nx-cta { color:var(--cinnabar); font-size:calc(11px * var(--fs)); }
+.nx-point .zy-body, .nx-point .sl-body { padding-bottom:12px; }
+
+.nx-tips { margin-top:8px; padding:8px 10px; border-left:3px solid var(--cinnabar); background:rgba(178,58,48,.05); }
+.nx-tips > b { font-size:calc(13px * var(--fs)); }
+.nx-tips > ul { margin:4px 0 0; padding-left:18px; font-size:calc(12.5px * var(--fs)); color:var(--ink-2); line-height:1.75; }
+.nx-tips-采分 { border-left-color:var(--bamboo); background:rgba(92,113,83,.08); }
+.nx-tips-采分 > b { color:var(--bamboo); }
+.nx-tips-时间 { border-left-color:var(--amber); background:rgba(176,124,36,.08); }
+.nx-tips-时间 > b { color:var(--amber); }
+
+.nx-ex { margin-top:8px; }
+.nx-ex-btn { padding:3px 9px; border:1px dashed var(--line); border-radius:9px; background:transparent; color:var(--indigo); font-size:calc(12px * var(--fs)); cursor:pointer; }
+.nx-ex-body { margin-top:6px; padding:8px 9px; background:var(--surface-2); border-radius:8px; }
+.nx-ex-item + .nx-ex-item { margin-top:8px; padding-top:8px; border-top:1px dashed var(--line-soft); }
+.nx-ex-q { font-size:calc(12px * var(--fs)); color:var(--ink-2); margin-bottom:4px; }
+.nx-ex-body ul { margin:0; padding-left:17px; font-size:calc(12.5px * var(--fs)); line-height:1.75; }
+.nx-ex-note { margin:6px 0 0; font-size:calc(11px * var(--fs)); color:var(--ink-3); }
+
+.nx-quiz { margin-top:9px; padding:9px 10px; border:1px solid var(--line-soft); border-radius:9px; }
+.nx-quiz-idx { font-size:calc(11px * var(--fs)); color:var(--ink-3); margin-bottom:2px; }
+.nx-quiz-q { font-size:calc(13px * var(--fs)); font-weight:600; line-height:1.7; }
+.nx-opts { margin-top:5px; display:flex; flex-direction:column; gap:4px; }
+.nx-opt { display:flex; gap:6px; text-align:left; padding:7px 9px; border:1px solid var(--line-soft); border-radius:8px; background:var(--surface); color:var(--ink); font-size:calc(12.5px * var(--fs)); line-height:1.7; cursor:pointer; }
+.nx-opt > b { flex:none; color:var(--cinnabar); }
+.nx-opt.ok { border-color:var(--bamboo); background:var(--bamboo-soft); }
+.nx-opt.bad { border-color:var(--cinnabar); background:var(--cinnabar-soft); }
+.nx-opt:disabled { cursor:default; }
+.nx-verdict { font-size:calc(12px * var(--fs)); font-weight:600; margin-bottom:2px; }
+.nx-verdict.ok { color:var(--green-ink); }
+.nx-verdict.bad { color:var(--cinnabar); }
+.nx-quiz-exp { margin-top:2px; color:var(--ink-2); }
+.xc-quiz-ans { margin-top:7px; padding:7px 9px; background:rgba(178,58,48,.05); border-left:3px solid var(--cinnabar); font-size:calc(12.5px * var(--fs)); line-height:1.7; }
+
+.nx-foot { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-top:9px; }
+.nx-foot-hint { font-size:calc(11px * var(--fs)); color:var(--ink-3); }
+.nx-selftest { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-bottom:8px; padding:6px 9px; background:var(--indigo-soft); border-radius:8px; font-size:calc(11.5px * var(--fs)); color:var(--indigo); }
+.nx-selftest .nx-yes { padding:2px 9px; border:1px solid var(--line); border-radius:12px; background:var(--surface); color:var(--ink-2); font-size:calc(11.5px * var(--fs)); cursor:pointer; }
+
+mark.nx-hit { background:rgba(176,124,36,.32); color:inherit; padding:0 1px; border-radius:2px; }
+@keyframes nxPulse { 0% { box-shadow:0 0 0 0 rgba(178,58,48,.45); } 100% { box-shadow:0 0 0 10px rgba(178,58,48,0); } }
+.nx-pulse { animation:nxPulse 1.2s ease-out 1; border-radius:8px; }
+/* 回到顶部：抬到 tabbar 之上，避免挡住「我的」入口 */
+.nx-top { position:fixed; right:12px; bottom:74px; z-index:31; padding:7px 12px; border:1px solid var(--line); border-radius:16px; background:var(--panel); color:var(--ink-2); font-size:calc(11.5px * var(--fs)); box-shadow:0 4px 14px rgba(0,0,0,.16); cursor:pointer; opacity:0; pointer-events:none; transition:opacity .18s ease; }
+.nx-top.on { opacity:1; pointer-events:auto; }
+.nx-top:hover { color:var(--cinnabar); border-color:var(--cinnabar); }

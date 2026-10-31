@@ -16,7 +16,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, kb, knowledge, planner, print_export, share, shenlun_notes, speedcalc, sync_webdav, variant, wordfill, xingce_notes, zy_notes
+from app import accounts, ai, argument, config, db, essay_rubric, formula_drill, importer, interview, kb, knowledge, note_weak, planner, print_export, share, shenlun_notes, speedcalc, sync_webdav, variant, wordfill, xingce_notes, zy_notes
 
 # 运行路径（Java 注入）
 _DB_PATH: Path = Path("")
@@ -880,6 +880,19 @@ def _rubric_points(rubric: str) -> list[str]:
 
 # ---------------- HTTP 处理 ----------------
 
+
+def _notes_slice(notes: dict, group: str) -> dict:
+    """按模块裁剪速查数据（E-3），与桌面端 app/main.py 同名同义。"""
+    if not group:
+        return notes
+    hit = [g for g in notes.get("groups", []) if g.get("key") == group]
+    if not hit:
+        return notes
+    out = {k: v for k, v in notes.items() if k != "groups"}
+    out["groups"] = hit
+    return out
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "GOSHORE/1.0"
 
@@ -1016,11 +1029,14 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/zy/notes":
                 self._json({"ok": True, "data": zy_notes.NOTES})
             elif path == "/api/xc/notes":
-                # O2 行测速查手册：与桌面端共用同一份静态数据
-                self._json({"ok": True, "data": xingce_notes.NOTES})
+                # O2 行测速查手册：与桌面端共用同一份静态数据；group 可选（E-3）
+                self._json({"ok": True, "data": _notes_slice(xingce_notes.NOTES, q("group"))})
             elif path == "/api/sl/notes":
-                # 申论速查手册：与桌面端共用同一份静态数据
-                self._json({"ok": True, "data": shenlun_notes.NOTES})
+                # 申论速查手册：与桌面端共用同一份静态数据；group 可选
+                self._json({"ok": True, "data": _notes_slice(shenlun_notes.NOTES, q("group"))})
+            elif path == "/api/notes/weak":
+                # 速查回流（L-3）：错题与申论扣分点映射到考点
+                self._json({"ok": True, "data": note_weak.build()})
             elif path == "/api/kb/modules":
                 # 知识点综合：PDF 批量整理成果，与桌面端 /api/kb/* 同构
                 self._json({"ok": True, "items": kb.modules()})

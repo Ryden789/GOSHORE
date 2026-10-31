@@ -5956,3 +5956,36 @@ def reset_data(scope: str) -> dict:
         "ok": True, "scope": key, "deleted": deleted,
         "total": sum(deleted.values()), "skipped": skipped,
     }
+
+
+# ---------------------------------------------------------------- 速查回流（L-3）
+def wrong_by_kaodian(limit: int = 500) -> list[tuple[str, str, int]]:
+    """行测错题按 (module, kaodian) 聚合，供速查考点显示「错 N 次」。
+
+    只读 answers 与 documents 两表，不改任何写入路径；题库未导入时返回空表。
+    """
+    try:
+        conn = connect()
+        rows = conn.execute(
+            """SELECT d.module AS module, d.kaodian AS kaodian, COUNT(*) AS c
+                 FROM answers a JOIN documents d ON d.id = a.doc_id
+                WHERE a.correct = 0 AND d.kaodian != ''
+                GROUP BY d.module, d.kaodian
+                ORDER BY c DESC LIMIT ?""", (limit,)).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return []
+    return [(r["module"], r["kaodian"], r["c"]) for r in rows]
+
+
+def essay_weak_by_point() -> list[tuple[str, str, int]]:
+    """申论扣分点（essay_weak_points）的 miss_count 列表；表不存在时返回空。"""
+    try:
+        conn = connect()
+        rows = conn.execute(
+            "SELECT category, point_name, miss_count FROM essay_weak_points"
+            " WHERE miss_count > 0 ORDER BY miss_count DESC").fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return []
+    return [(r["category"], r["point_name"], r["miss_count"]) for r in rows]

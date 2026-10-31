@@ -1061,3 +1061,48 @@ for _g in NOTES["groups"]:
         _p["body"] = _e["body"]
         _p["tips"] = _e["tips"]
         _p["quizzes"] = _e["quizzes"]
+
+# ---------------------------------------------------------------- 常识判断配题（C-1）
+# 常识判断原先 35 点 0 题，是全库唯一「只讲不练」的模块。
+# 题目独立成 app/xingce_changshi_quiz.py，按考点标题合并；标题对不上直接报错，
+# 避免题目静默挂到别的考点上。
+from app.xingce_changshi_quiz import QUIZZES as _CHANGSHI_QUIZZES  # noqa: E402
+
+_CHANGSHI = next(_g for _g in NOTES["groups"] if _g["key"] == "changshi")
+_CHANGSHI_TITLES = {_p["title"] for _p in _CHANGSHI["points"]}
+_missing = [_t for _t in _CHANGSHI_QUIZZES if _t not in _CHANGSHI_TITLES]
+if _missing:
+    raise KeyError(f"常识判断配题的考点标题不存在：{_missing}")
+for _p in _CHANGSHI["points"]:
+    _qs = _CHANGSHI_QUIZZES.get(_p["title"])
+    if _qs:
+        _p["quizzes"] = list(_qs) + list(_p.get("quizzes") or [])
+if any(not _p.get("quizzes") for _p in _CHANGSHI["points"]):
+    raise KeyError("常识判断仍有考点未配题，C-1 未达标")
+
+
+# ---------------------------------------------------------------- 提示分型（C-4）
+# tips 保持原字符串列表不变，另存等长的 tip_kinds（易错 / 采分 / 时间），
+# 由 tools/classify_note_tips.py 按关键词表生成；前端据此把提示分三块显示。
+from app.note_tip_kinds import TIP_KINDS as _TIP_KINDS  # noqa: E402
+
+for _g in NOTES["groups"]:
+    for _p in _g["points"]:
+        _kinds = _TIP_KINDS["xc"].get(f"{_g['key']}|{_p['title']}")
+        if not _kinds:
+            continue
+        if len(_kinds) != len(_p.get("tips") or []):
+            raise KeyError(f"{_g['name']} · {_p['title']} 的 tip_kinds 与 tips 长度不一致")
+        _p["tip_kinds"] = list(_kinds)
+
+
+# ---------------------------------------------------------------- 高频标记（V-1）
+# 口径见 tools/mark_xc_hot.py：题库题量作近五年频次的代理，模块内前 30% 标高频。
+from app.xingce_hot import HOT as _HOT  # noqa: E402
+
+for _g in NOTES["groups"]:
+    for _p in _g["points"]:
+        _n = _HOT.get(f"{_g['key']}|{_p['title']}")
+        if _n:
+            _p["hot"] = True
+            _p["hot_count"] = _n
