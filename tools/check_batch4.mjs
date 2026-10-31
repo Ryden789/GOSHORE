@@ -80,7 +80,7 @@ function buildSandbox(code, env = {}) {
   // eslint-disable-next-line no-new-func
   const make = new Function(
     "window", "document", "localStorage", "esc",
-    `${code.pref}\n${code.block}\nreturn { GoalRing, SearchHistory };`,
+    `${code.ui || ""}\n${code.pref}\n${code.block}\nreturn { GoalRing, SearchHistory };`,
   );
   return make(env.window || {}, doc, storage,
     s => String(s ?? "").replace(/[&<>"']/g,
@@ -106,12 +106,16 @@ function has(hay, needle, msg) {
 const SHARED_REL = "static/shared/core.js";
 const sharedSrc = fs.readFileSync(path.join(ROOT, SHARED_REL), "utf8");
 const sharedBlock = extractBlock(sharedSrc);
+// 共享块的目标卡标题用 UiIcon 画图标；沙箱里只有块本身，需把图标表一并注入
+const sharedUiIcon = extractBraced(sharedSrc, "const UiIcon = {");
+if (!sharedUiIcon) throw new Error(`${SHARED_REL} 里找不到 const UiIcon = {...}`);
 
 const IMPLS = {};
 for (const s of SOURCES) {
   const src = fs.readFileSync(path.join(ROOT, s.rel), "utf8");
   IMPLS[s.label] = {
     block: sharedBlock,
+    ui: sharedUiIcon,
     pref: extractBraced(src, "const Pref = {"),
     src,
     html: fs.readFileSync(path.join(ROOT, s.html), "utf8"),
@@ -165,12 +169,12 @@ ok(sharedSrc.includes(BLOCK_START), `${SHARED_REL} 必须包含 G2 每日目标�
   has(h100, "var(--bamboo)", "完成时环用竹绿");
   const p100 = G.panel({ enabled: true, pct: 100, q_pct: 100, m_pct: 100, done: true,
     goal_questions: 30, goal_minutes: 30, questions: 30, minutes: 30 });
-  has(p100, "🎉", "panel 完成态应带庆祝文案");
+  has(p100, "今日目标已达成", "panel 完成态应带庆祝文案");
   has(p100, "goal-panel done", "panel 完成态应带 done 类（触发动效）");
   has(h50, "var(--cinnabar)", "未完成时环用朱砂");
   has(G.panel({ enabled: true, pct: 50, q_pct: 50, m_pct: 50,
       goal_questions: 30, goal_minutes: 0, questions: 15, minutes: 0 }),
-    "🎯", "panel 未完成态应是「今日学习目标」");
+    "今日学习目标", "panel 未完成态应是「今日学习目标」");
 
   // pct 夹取
   const hOver = G.html({ enabled: true, pct: 250, done: true });

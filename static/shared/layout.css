@@ -12,7 +12,8 @@
 .study-recent-row small { display: block; color: var(--ink-2); font-size: calc(12px * var(--fs)); margin-top: 5px; }
 .study-recent-row > span:last-child { flex-shrink: 0; color: var(--cinnabar); font-size: calc(12px * var(--fs)); }
 .study-feature:hover { border-color: var(--cinnabar); }
-.study-feature-icon { color: var(--cinnabar); font: 500 calc(23px * var(--fs)) var(--serif); margin-bottom: 10px; }
+.study-feature-icon { color: var(--cinnabar); font: 500 calc(23px * var(--fs)) var(--serif); margin-bottom: 10px; display: flex; align-items: center; height: calc(24px * var(--fs)); }
+.study-feature-icon svg { width: calc(24px * var(--fs)); height: calc(24px * var(--fs)); }
 .study-feature b { font-size: calc(15px * var(--fs)); font-weight: 600; }
 .study-feature small, .study-quick-grid small, .study-task small { display: block; color: var(--ink-2); font-size: calc(12.5px * var(--fs)); margin-top: 5px; }
 .study-tabs { display: flex; flex-wrap: wrap; gap: 12px 28px; border-bottom: 1px solid var(--line); margin-bottom: 24px; }

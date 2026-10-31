@@ -138,6 +138,7 @@ img { max-width: 100%; height: auto; }
   font-size: calc(11px * var(--fs)); gap: 2px;
 }
 #tabbar a .ti { font-size: calc(19px * var(--fs)); line-height: 1; }
+#tabbar a .ti svg { display: block; stroke: currentColor; }
 #tabbar a.active { color: var(--cinnabar); font-weight: 600; }
 
 /* ============ UX-06 键盘可达性与无障碍 ============ */
@@ -290,6 +291,7 @@ button.mst-row { padding: 0; }
   background: var(--paper-2); color: var(--cinnabar);
   display: grid; place-items: center; font-size: calc(19px * var(--fs)); font-weight: 700;
 }
+.entry .ei svg { stroke: var(--cinnabar); }
 .entry .et { flex: 1; }
 .entry .et b { display: block; font-size: calc(15.5px * var(--fs)); }
 .entry .et small { color: var(--ink-3); font-size: calc(12.5px * var(--fs)); }
@@ -556,6 +558,7 @@ h2.sec { font-family: var(--serif); font-size: calc(15px * var(--fs)); color: va
   background: var(--paper-2); color: var(--cinnabar);
   font-weight: 700; font-size: calc(17px * var(--fs));
 }
+.hub-ico svg { stroke: var(--cinnabar); }
 .hub-tx { min-width: 0; }
 .hub-tx b { display: block; font-size: calc(14.5px * var(--fs)); }
 .hub-tx small {
@@ -1558,6 +1561,7 @@ body.hint-on #view { padding-bottom: calc(150px + env(safe-area-inset-bottom)); 
 .note-box .nb-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
 .note-box .nb-hint { font-size: calc(12px * var(--fs)); color: var(--ink-3); }
 .note-dot { color: var(--cinnabar); font-size: calc(13px * var(--fs)); margin-left: 4px; }
+.note-dot svg { stroke: var(--cinnabar); display: inline-block; vertical-align: -2px; }
 .note-row { padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 10px; margin-bottom: 10px; }
 .note-row .nr-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .note-row .nr-title { font-weight: 700; color: var(--ink); text-decoration: none; }

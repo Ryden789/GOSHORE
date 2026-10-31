@@ -235,6 +235,207 @@ const ModuleIcon = {
   },
 };
 
+/* N10+ 界面装饰图标 · 网页端（app.js / m.js / layout.js 共用）。
+   与 ModuleIcon 同一画风：32×32 手绘线（墨线 var(--ink) 1.7）＋朱砂点睛，夜间模式自动跟随。
+   用于导航、学习入口卡、页面小标题、按钮前缀与空状态，替换原先的 emoji 与汉字字符。
+   用法：UiIcon.html("target")  标题 / 按钮前缀（带间距与基线对齐）
+        UiIcon.svg("target", 22) 裸 SVG（.ico / .ei / 卡片格）
+        UiIcon.route("paper")    学习功能卡按路由名取图标 */
+const UiIcon = {
+  SIZE: 32,
+  ROUTE: {
+    home: "home", plan: "route", paper: "paper", logic: "grid", formula: "formula",
+    wordfill: "text", speed: "stopwatch", cube: "cube", essay: "scroll", argument: "scale",
+    wenxian: "book", grade: "checkdoc", interview: "mic", share: "share",
+    review: "refresh", wrong: "flag", mastery: "radar", cards: "cards", marks: "bookmark",
+    notes: "pen", "xc-notes": "chart", "sl-notes": "scroll", "zy-notes": "book",
+    shizheng: "newspaper", report: "chart", time: "clock", history: "list",
+    "ai-ask": "chat", search: "search", doubts: "help", import: "import",
+    settings: "gear", manage: "list", overview: "chart", summary: "chart",
+    "review-center": "refresh", practice: "paper", knowledge: "book", reports: "chart",
+  },
+  ICONS: {
+    // 今日书房：屋顶 + 书桌
+    home: '<path d="M6 14.5L16 6l10 8.5"/><path d="M8.5 13.5v12h15v-12"/>'
+      + '<path d="M13 25.5v-7h6v7"/>'
+      + '<circle cx="16" cy="10.6" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 学习计划：路径线 + 起终点
+    route: '<path d="M6 24.5l6.5-4 7 3 6.5-5"/>'
+      + '<circle cx="6" cy="24.5" r="1.7"/><circle cx="19.5" cy="23.5" r="1.7"/>'
+      + '<circle cx="26" cy="18.5" r="1.7" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 试卷：纸面 + 行 + 朱砂印章
+    paper: '<rect x="7" y="4.5" width="18" height="23" rx="2"/>'
+      + '<path d="M11 10h10M11 14h10M11 18h6"/>'
+      + '<rect x="17" y="20.6" width="3.4" height="3.4" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 判断：九宫格，右上格点亮
+    grid: '<rect x="6" y="6" width="20" height="20" rx="2.5"/>'
+      + '<path d="M12.67 6v20M19.33 6v20M6 12.67h20M6 19.33h20"/>'
+      + '<rect x="19.33" y="6" width="6.67" height="6.67" fill="var(--cinnabar)" stroke="none"/>',
+    // 列式：根号线 + 分数线
+    formula: '<path d="M5.5 12.5h5.2l3.6 10.5 4.8-17h7.4"/>'
+      + '<path d="M12 24.5h13"/>'
+      + '<circle cx="26.5" cy="6" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 词语填空：书页 + 空位（朱砂方框）
+    text: '<rect x="6.5" y="5.5" width="19" height="21" rx="2"/>'
+      + '<path d="M10.5 10.5h11M10.5 14.5h6"/>'
+      + '<rect x="10.5" y="18.2" width="11" height="4.2" stroke="var(--cinnabar)"/>',
+    // 速算：秒表
+    stopwatch: '<circle cx="16" cy="17.5" r="8.5"/>'
+      + '<path d="M16 13v4.8l3.2 2.2"/><path d="M13 4.5h6"/><path d="M16 4.5v2.5"/>'
+      + '<path d="M23.4 9.8l1.8-1.8"/>'
+      + '<circle cx="16" cy="17.5" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 空间折叠：立方体
+    cube: '<path d="M16 5.5l9 5v11l-9 5-9-5v-11z"/>'
+      + '<path d="M7 10.5l9 5 9-5"/><path d="M16 15.5v11"/>'
+      + '<circle cx="16" cy="15.5" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 申论 / 申论速查：卷轴（与模块图标同形）
+    scroll: '<rect x="6.5" y="4.4" width="19" height="4.4" rx="2.2"/>'
+      + '<rect x="6.5" y="23.2" width="19" height="4.4" rx="2.2"/>'
+      + '<rect x="9.5" y="8.8" width="13" height="14.4"/>'
+      + '<path d="M12.6 12.6h6.8M12.6 15.8h6.8"/>'
+      + '<rect x="16.6" y="18.4" width="3.4" height="3.4" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 论证评价：天平
+    scale: '<path d="M16 6v20"/><path d="M9 9.5h14"/><path d="M6 26h20"/>'
+      + '<path d="M9 9.5l-3.6 7.5h7.2z"/><path d="M23 9.5l-3.6 7.5h7.2z"/>'
+      + '<circle cx="16" cy="9.5" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 书：书页 + 语句行
+    book: '<path d="M8 5.5h13a3 3 0 0 1 3 3v16a3 3 0 0 1-3 3H8z"/>'
+      + '<path d="M8 5.5v22"/><path d="M12 11.5h9M12 15.5h9M12 19.5h5.5"/>'
+      + '<circle cx="5.4" cy="16.5" r="1.4" fill="var(--cinnabar)" stroke="none"/>',
+    // AI 批改：文稿 + 朱砂对勾
+    checkdoc: '<rect x="7.5" y="5.5" width="17" height="21" rx="2"/>'
+      + '<path d="M11.5 11h9M11.5 15h6"/>'
+      + '<path d="M11.5 20l2.6 2.7 7-7.7" stroke="var(--cinnabar)"/>',
+    // 面试：话筒
+    mic: '<rect x="12" y="5.5" width="8" height="13" rx="4"/>'
+      + '<path d="M9 15.5a7 7 0 0 0 14 0"/><path d="M16 22.5v4"/><path d="M12.5 26.5h7"/>'
+      + '<circle cx="16" cy="11" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 分享：三点连线
+    share: '<circle cx="9" cy="16" r="3"/><circle cx="23" cy="9" r="3"/>'
+      + '<circle cx="23" cy="23" r="3" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>'
+      + '<path d="M11.7 14.5L20.3 10.4M11.7 17.5L20.3 21.6"/>',
+    // 复习：循环箭头
+    refresh: '<path d="M25 16a9 9 0 1 1-3-6.8"/><path d="M25.2 6.4v5.2h-5.2"/>'
+      + '<circle cx="16" cy="16" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 错题：旗帜
+    flag: '<path d="M9 26.5V5.5"/><path d="M9 6h13l-3.4 4.6L22 15.2H9"/>'
+      + '<circle cx="9" cy="4" r="1.4" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 掌握度：五边形雷达
+    radar: '<path d="M16 5l10 7.3-3.8 11.7H9.8L6 12.3z"/>'
+      + '<path d="M16 10.4l5.6 4-2.1 6.6H12.5l-2.1-6.6z"/>'
+      + '<circle cx="16" cy="16.2" r="1.3" fill="var(--cinnabar)" stroke="none"/>',
+    // 辨析卡：叠放的两张卡
+    cards: '<rect x="6" y="10" width="13" height="16.5" rx="2"/>'
+      + '<path d="M10 10V7.5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12.5a2 2 0 0 1-2 2H19"/>'
+      + '<circle cx="12.5" cy="15" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 收藏：书签
+    bookmark: '<path d="M9 5.5h14v21l-7-5-7 5z"/>'
+      + '<path d="M12.6 12h6.8"/>'
+      + '<circle cx="16" cy="18.6" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 笔记 / 写作：笔
+    pen: '<path d="M8.4 23.6l1.3-5L21 7.4l3.4 3.4L13 22.3l-4.6 1.3z"/>'
+      + '<path d="M19.6 8.8l3.4 3.4"/>'
+      + '<circle cx="8.4" cy="23.6" r="1.3" fill="var(--cinnabar)" stroke="none"/>',
+    // 时政：报纸
+    newspaper: '<rect x="6" y="6.5" width="13" height="19" rx="1.5"/>'
+      + '<rect x="19" y="10.5" width="7" height="15" rx="1.5"/>'
+      + '<path d="M9 11h7M9 15h7M9 19h7"/>'
+      + '<rect x="21.2" y="13.4" width="3.6" height="3.6" fill="var(--cinnabar)" stroke="none"/>',
+    // 报告：柱状图 + 上扬线
+    chart: '<path d="M6 26V6"/><path d="M6 26h20"/><path d="M10.5 22v-5"/>'
+      + '<path d="M15 22v-9"/><path d="M19.5 22v-3"/>'
+      + '<path d="M9 12l5-4 5 3 5-6"/>'
+      + '<circle cx="24" cy="5" r="1.5" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 时钟：表盘
+    clock: '<circle cx="16" cy="16" r="9.6"/>'
+      + '<path d="M16 10.4V16l4 2.4"/>'
+      + '<circle cx="16" cy="16" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 记录 / 目录：清单
+    list: '<path d="M11 9h15M11 16h15M11 23h15"/>'
+      + '<circle cx="6.6" cy="9" r="1.5"/><circle cx="6.6" cy="16" r="1.5"/>'
+      + '<circle cx="6.6" cy="23" r="1.5" fill="var(--cinnabar)" stroke="none"/>',
+    // AI 答疑：对话气泡
+    chat: '<path d="M6 7.5h20v13H13.6L8 25v-4.5H6z"/>'
+      + '<path d="M11 12h10M11 15.7h6"/>'
+      + '<circle cx="22" cy="15.7" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 检索：放大镜
+    search: '<circle cx="13.4" cy="13.6" r="7.4"/><path d="M18.8 19l6.4 6.4"/>'
+      + '<path d="M10.6 13.6h5.6M13.4 10.8v5.6"/>'
+      + '<circle cx="13.4" cy="13.6" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 疑点：问号
+    help: '<circle cx="16" cy="16" r="10"/>'
+      + '<path d="M12.4 12.6a3.7 3.7 0 1 1 5.2 3.5c-.9.4-1.5 1.1-1.5 2.2v.6"/>'
+      + '<circle cx="16" cy="22.4" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 导入：托盘 + 向下箭头
+    import: '<path d="M16 6v10.5"/><path d="M11.6 12.4l4.4 4.4 4.4-4.4"/>'
+      + '<path d="M6 21v4.5h20V21"/>'
+      + '<circle cx="16" cy="17.4" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 设置：齿轮
+    gear: '<circle cx="16" cy="16" r="4.3"/>'
+      + '<path d="M16 5.6v3.1M16 23.3v3.1M5.6 16h3.1M23.3 16h3.1"/>'
+      + '<path d="M8.7 8.7l2.2 2.2M21.1 21.1l2.2 2.2M23.3 8.7l-2.2 2.2M10.9 21.1l-2.2 2.2"/>'
+      + '<circle cx="16" cy="16" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 目标：同心圆
+    target: '<circle cx="16" cy="16" r="9.2"/><circle cx="16" cy="16" r="5"/>'
+      + '<circle cx="16" cy="16" r="1.5" fill="var(--cinnabar)" stroke="var(--cinnabar)"/>',
+    // 日历：纸张 + 朱砂块
+    calendar: '<rect x="6.5" y="8" width="19" height="17.5" rx="2"/>'
+      + '<path d="M6.5 13.6h19"/><path d="M11 5.5v4M21 5.5v4"/>'
+      + '<rect x="10.4" y="17.2" width="4.2" height="4.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 提示：灯泡
+    bulb: '<path d="M11.4 20.4a6.6 6.6 0 1 1 9.2 0"/><path d="M12.8 20.4h6.4"/>'
+      + '<path d="M13.8 23.4h4.4M14.8 26.4h2.4"/>'
+      + '<circle cx="16" cy="11.4" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 成就：奖杯
+    trophy: '<path d="M10.4 5.5h11.2v6.8a5.6 5.6 0 0 1-11.2 0z"/>'
+      + '<path d="M10.4 7.6H7.4a3.4 3.4 0 0 0 3.4 5"/><path d="M21.6 7.6h3a3.4 3.4 0 0 1-3.4 5"/>'
+      + '<path d="M16 17.9v4.6"/><path d="M12.4 25.5h7.2"/>'
+      + '<circle cx="16" cy="11.6" r="1.2" fill="var(--cinnabar)" stroke="none"/>',
+    // 图钉：缺失期次
+    pin: '<path d="M12 6.2h8l-1 6.2 4 3.4H9l4-3.4z"/><path d="M16 15.8v10.2"/>'
+      + '<circle cx="16" cy="12.4" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 热门：火焰
+    flame: '<path d="M16 27c-4.9 0-8-3.1-8-6.9 0-4.5 4.2-6 4.2-10.1 3 1 4 3.4 4 5.9 1.5-1 2.4-2.9 2.4-5 3 2 5.4 5.1 5.4 9.2 0 3.8-3.1 6.9-8 6.9z"/>'
+      + '<circle cx="16" cy="19.6" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 收藏热度：星
+    star: '<path d="M16 5.5l3.3 6.7 7.4 1.1-5.3 5.2 1.2 7.3L16 22.4l-6.6 3.4 1.2-7.3-5.3-5.2 7.4-1.1z"/>'
+      + '<circle cx="16" cy="15.6" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 下载：箭头入托盘
+    download: '<path d="M16 6.5v12"/><path d="M10.4 13.4L16 19l5.6-5.6"/>'
+      + '<path d="M6 23v3.5h20V23"/>'
+      + '<circle cx="16" cy="19" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 桌面端：显示器
+    desktop: '<rect x="5" y="7.5" width="22" height="14" rx="2"/>'
+      + '<path d="M12 26h8M16 21.5V26"/>'
+      + '<circle cx="16" cy="14.5" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 关闭：两笔交叉
+    close: '<path d="M9 9l14 14M23 9L9 23"/>'
+      + '<circle cx="16" cy="16" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+    // 下一个 / 跳过：右向箭头
+    next: '<path d="M7 16h15.5"/><path d="M16.5 10.2L22.3 16l-5.8 5.8"/>'
+      + '<circle cx="7" cy="16" r="1.3" fill="var(--cinnabar)" stroke="none"/>',
+    // 密钥：钥匙
+    key: '<circle cx="11.2" cy="11.2" r="4.6"/><path d="M14.8 14.8l9 9"/>'
+      + '<path d="M20.4 20.4l2.6-2.6M23 23l2.6-2.6"/>'
+      + '<circle cx="11.2" cy="11.2" r="1.1" fill="var(--cinnabar)" stroke="none"/>',
+  },
+  svg(name, size) {
+    const body = this.ICONS[name];
+    if (!body) return "";
+    const s = size || this.SIZE;
+    return `<svg viewBox="0 0 32 32" width="${s}" height="${s}" aria-hidden="true" focusable="false"`
+      + ` fill="none" stroke="var(--ink)" stroke-width="1.7" stroke-linecap="round"`
+      + ` stroke-linejoin="round">${body}</svg>`;
+  },
+  html(name, size) {
+    const s = this.svg(name, size || 16);
+    return s ? `<span aria-hidden="true" style="display:inline-flex;vertical-align:-4px;margin-right:6px">${s}</span>` : "";
+  },
+  route(name) {
+    return this.svg(this.ROUTE[name], 22);
+  },
+};
+
 /* G2 每日目标 · 进度环（app.js / m.js 逐字节一致）。
    目标值（题量/分钟）存在**服务端设置**里，由 /api/stats 顺带算好进度
    （`s.goal = {enabled, questions, minutes, goal_questions, goal_minutes,
@@ -283,7 +484,7 @@ const GoalRing = {
       <div class="goal-flex">
         ${this.html(goal)}
         <div class="goal-main">
-          <h3 style="margin:0 0 4px">${done ? "🎉 今日目标已达成" : "🎯 今日学习目标"}</h3>
+          <h3 style="margin:0 0 4px">${UiIcon.html(done ? "trophy" : "target", 16)}${done ? "今日目标已达成" : "今日学习目标"}</h3>
           <p class="goal-sub">${esc(this.label(goal))}</p>
           <div class="goal-bars">
             ${goal.goal_questions ? `<div class="goal-bar"><span class="gb-name">题量</span>
@@ -405,7 +606,7 @@ const NoteBox = {
     const body = String(content == null ? "" : content);
     return `<div class="note-box" id="noteBox" data-doc="${docId}">
       <div class="nb-head">
-        <span class="nb-title">📝 我的笔记</span>
+        <span class="nb-title">${UiIcon.html("pen", 14)}我的笔记</span>
         <span class="nb-state" id="nbState">${body ? "已保存" : ""}</span>
       </div>
       <textarea class="nb-text" id="nbText" rows="3"
@@ -456,7 +657,7 @@ const NoteBox = {
     if (!counts) return "";
     const k = String(docId);
     return Object.prototype.hasOwnProperty.call(counts, k)
-      ? `<span class="note-dot" title="有笔记">✎</span>` : "";
+      ? `<span class="note-dot" title="有笔记">${UiIcon.svg("pen", 13)}</span>` : "";
   },
   /** 时间戳 → 简短本地时间（块内自带，避免依赖宿主各自的 fmtTime） */
   timeText(ts) {
@@ -469,7 +670,7 @@ const NoteBox = {
   /** 「我的」页集中浏览：全部笔记列表 HTML（含跳转与删除） */
   listHtml(items) {
     const arr = Array.isArray(items) ? items : [];
-    if (!arr.length) return `<div class="empty" style="padding:28px">还没有笔记——做题时点「📝 我的笔记」写下第一条</div>`;
+    if (!arr.length) return `<div class="empty" style="padding:28px">还没有笔记——做题时点「我的笔记」写下第一条</div>`;
     return arr.map(n => `<div class="note-row" data-doc="${n.doc_id}">
       <div class="nr-head">
         <a class="nr-title" href="#/doc/${n.doc_id}/answer">${esc(n.title)}</a>

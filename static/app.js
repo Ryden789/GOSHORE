@@ -231,7 +231,7 @@ function emptyState(title, desc, links) {
   const btns = (links || []).map(([label, href]) =>
     `<a class="btn btn-primary" href="${href}" style="margin:4px 6px 0 0">${esc(label)}</a>`).join("");
   return `<div class="empty-state" style="text-align:center;padding:30px 18px">
-    <div style="font-size:calc(30px * var(--fs));line-height:1;margin-bottom:12px">🚧</div>
+    <div style="line-height:1;margin-bottom:12px">${UiIcon.svg("pen", 30)}</div>
     <h3 style="margin:0 0 10px;font-size:calc(16px * var(--fs))">${esc(title)}</h3>
     <p style="color:var(--ink-2);font-size:calc(13.5px * var(--fs));line-height:1.9;margin:0">${desc}</p>
     ${btns ? `<div style="margin-top:14px">${btns}</div>` : ""}
@@ -287,7 +287,7 @@ function setupPanel(s, cfg) {
   return `<div class="panel setup-panel rise" id="setupPanel">
     <div class="setup-head">
       <h3>开始使用 · 3 步</h3>
-      <button class="setup-x" id="setupX" type="button" aria-label="关闭提示" title="关闭提示">✕</button>
+      <button class="setup-x" id="setupX" type="button" aria-label="关闭提示" title="关闭提示">${UiIcon.svg("close", 14)}</button>
     </div>
     <div class="setup-list">${steps.map(it => `
       <div class="setup-item">
@@ -518,7 +518,7 @@ async function renderOverview() {
     const [rh, rm] = String(rp.time).split(":").map(Number);
     if (lt.getHours() * 60 + lt.getMinutes() >= rh * 60 + rm) {
       remindBanner = `<div class="panel rise" style="border-left:4px solid var(--cinnabar);padding:12px 16px;margin-bottom:14px">
-        ⏰ 已到每日学习时间（${esc(rp.time)}），今天还没做题——<a href="#/paper">去组卷</a> 或 <a href="#/speed">练速算</a> 吧</div>`;
+        ${UiIcon.html("clock", 15)}已到每日学习时间（${esc(rp.time)}），今天还没做题——<a href="#/paper">去组卷</a> 或 <a href="#/speed">练速算</a> 吧</div>`;
     }
   }
   // N2：把今日计划完成度同步给提醒（planOnly 时据此决定要不要打扰）
@@ -562,10 +562,10 @@ async function renderOverview() {
     <div class="panel rise rise-1">
       <h3>开始学习</h3>
       <div class="quick-entries">
-        <a class="qe" href="#/paper"><div class="qe-ico">✎</div><div class="qe-t">随机组卷</div><div class="qe-d">整卷计时，模拟实战</div></a>
-        <a class="qe" href="#/review"><div class="qe-ico">◌</div><div class="qe-t">今日复习</div><div class="qe-d">艾宾浩斯到期 ${s.review_due + s.card_due} 项</div></a>
-        <a class="qe" href="#/cards"><div class="qe-ico">▦</div><div class="qe-t">辨析卡</div><div class="qe-d">${s.card_due ? `今日到期 ${s.card_due} 张` : "词语辨析记忆训练"}</div></a>
-        <a class="qe" href="#/essay"><div class="qe-ico">文</div><div class="qe-t">申论 · 综应</div><div class="qe-d">题型方法与提分要点</div></a>
+        <a class="qe" href="#/paper"><div class="qe-ico">${UiIcon.svg("paper", 26)}</div><div class="qe-t">随机组卷</div><div class="qe-d">整卷计时，模拟实战</div></a>
+        <a class="qe" href="#/review"><div class="qe-ico">${UiIcon.svg("refresh", 26)}</div><div class="qe-t">今日复习</div><div class="qe-d">艾宾浩斯到期 ${s.review_due + s.card_due} 项</div></a>
+        <a class="qe" href="#/cards"><div class="qe-ico">${UiIcon.svg("cards", 26)}</div><div class="qe-t">辨析卡</div><div class="qe-d">${s.card_due ? `今日到期 ${s.card_due} 张` : "词语辨析记忆训练"}</div></a>
+        <a class="qe" href="#/essay"><div class="qe-ico">${UiIcon.svg("scroll", 26)}</div><div class="qe-t">申论 · 综应</div><div class="qe-d">题型方法与提分要点</div></a>
       </div>
     </div>
 
@@ -581,7 +581,7 @@ async function renderOverview() {
 
     <div class="panel rise rise-2" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <div>
-        <h3 style="margin:0 0 4px">🎯 今日推荐练习</h3>
+        <h3 style="margin:0 0 4px">${UiIcon.html("target", 18)}今日推荐练习</h3>
         <p style="margin:0;font-size:calc(13px * var(--fs));color:var(--ink-2)">按掌握度智能组卷 15 题：错得多、久未练的题优先出现</p>
       </div>
       <button class="btn btn-primary" id="recGo">生成推荐练习</button>
@@ -589,7 +589,7 @@ async function renderOverview() {
 
     <div class="panel rise rise-2" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <div>
-        <h3 style="margin:0 0 4px">📋 今日学习计划</h3>
+        <h3 style="margin:0 0 4px">${UiIcon.html("list", 15)}今日学习计划</h3>
         <p style="margin:0;font-size:calc(13px * var(--fs));color:var(--ink-2)">${(pl.summary.today || []).length
           ? `${pl.summary.today.map(t => `${esc(t.module)} ${t.n} 题`).join(" · ")}　<span style="color:var(--ink-3)">（计划完成 ${pl.summary.done}/${pl.summary.total} 题）</span>`
           : "还没有计划——按能力雷达生成个性化路径，弱项自动加权"}</p>
@@ -649,7 +649,7 @@ async function renderOverview() {
         ${s.top_wrong.length ? `<div class="doc-list">${s.top_wrong.map((t, i) => `
           <div class="doc-item" data-id="${t.id}">
             <div class="doc-main">
-              <div class="doc-title">${i + 1}. ${esc(t.title)} ${t.wrongs >= 3 ? "🔥" : t.wrongs >= 2 ? "⭐" : ""}</div>
+              <div class="doc-title">${i + 1}. ${esc(t.title)} ${t.wrongs >= 3 ? UiIcon.svg("flame", 13) : t.wrongs >= 2 ? UiIcon.svg("star", 13) : ""}</div>
               <div class="doc-sub">${esc([t.kaodian, t.module].filter(Boolean).join(" · "))}</div>
             </div>
             <div class="doc-side"><span style="color:var(--cinnabar);font-weight:700">${t.wrongs} 次错</span></div>
@@ -904,11 +904,11 @@ async function renderDoc(id, tabName) {
             : correct === false ? '<span class="badge no">回答错误</span>'
             : '<span class="badge" style="background:var(--amber-soft);color:var(--amber)">答案待补 · 本题不计分</span>'}
           <span style="color:var(--ink-3);font-size:calc(13px * var(--fs));font-family:var(--mono)">用时 ${(ms / 1000).toFixed(1)}s</span>
-          <button class="btn btn-sm" id="showDraft">📄 看底稿解析</button>
+          <button class="btn btn-sm" id="showDraft">${UiIcon.html("paper", 14)}看底稿解析</button>
           <button class="btn btn-sm btn-primary" id="askAi"${!online ? ' disabled title="当前离线，可看底稿解析"' : ''}>让 AI 讲这道题</button>
-          <button class="btn btn-sm" id="variantBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式题（AI 无法读取图形）"' : ''}>🧬 变式题</button>
-          ${correct === true ? "" : correct === false ? `<button class="btn btn-sm btn-primary" id="anniBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式（AI 无法读取图形）"' : ""}>⚔ 变式歼灭</button>` : ""}
-          <button class="btn btn-sm" id="exportBtn" title="打印/导出本题">⬇ 导出</button>
+          <button class="btn btn-sm" id="variantBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式题（AI 无法读取图形）"' : ''}>${UiIcon.html("refresh", 14)}变式题</button>
+          ${correct === true ? "" : correct === false ? `<button class="btn btn-sm btn-primary" id="anniBtn"${!online ? ' disabled title="当前离线"' : isImgQ ? ' disabled title="图片题暂不支持变式（AI 无法读取图形）"' : ""}>${UiIcon.html("target", 14)}变式歼灭</button>` : ""}
+          <button class="btn btn-sm" id="exportBtn" title="打印/导出本题">${UiIcon.html("download", 14)}导出</button>
           <button class="btn btn-sm mark-btn" id="markBtn">${doc.mark ? "★ 已收藏" : "☆ 收藏"}</button>
           ${nextBtnHtml}`;
         $("#exportBtn").onclick = () => window.open(`/api/export/print?doc_ids=${id}`, "_blank");
@@ -929,7 +929,7 @@ async function renderDoc(id, tabName) {
             panel.className = "panel";
             panel.style.marginTop = "12px";
             panel.innerHTML = `
-              <h4 style="margin:0 0 8px;font-size:calc(16px * var(--fs))">🧬 变式题（AI 生成，已通过交叉验证）</h4>
+              <h4 style="margin:0 0 8px;font-size:calc(16px * var(--fs))">${UiIcon.html("refresh", 16)}变式题（AI 生成，已通过交叉验证）</h4>
               <div class="stem">${md(q.stem)}</div>
               <div class="options">
                 ${q.options.map(o => `<div class="option" data-l="${o.label}"><span class="ol">${o.label}</span><span>${esc(o.text)}</span></div>`).join("")}
@@ -950,7 +950,7 @@ async function renderDoc(id, tabName) {
               va.innerHTML = (right ? '<span class="badge ok">正确</span> ' : '<span class="badge no">错误</span> ') + md(q.analysis || "");
             });
           } catch (e) { alert("生成失败：" + e.message); }
-          finally { b.disabled = false; b.textContent = "🧬 变式题"; }
+          finally { b.disabled = false; b.textContent = "变式题"; }
         };
         $("#showDraft").onclick = () => {
           const bar = $("#answerBar");
@@ -1438,10 +1438,10 @@ async function renderWrong() {
     <div class="page-head rise">
       <h1 class="page-title">错题本</h1>
       <p class="page-desc">最近一次答错的真题，共 ${items.length} 道 · 消灭它们比刷 100 道新题更值</p>
-      ${items.length ? `<button class="btn btn-sm" id="aiReason" style="margin-top:8px">🤖 AI 归因未打标题</button>` : ""}
+      ${items.length ? `<button class="btn btn-sm" id="aiReason" style="margin-top:8px">${UiIcon.html("chat", 14)}AI 归因未打标题</button>` : ""}
       ${items.length ? `<div class="wb-tools">
         <label><input type="checkbox" id="wbAll"/> 全选</label>
-        <button class="btn btn-sm" id="wbExport">⬇ 导出/打印所选（0）</button>
+        <button class="btn btn-sm" id="wbExport">${UiIcon.html("download", 14)}导出/打印所选（0）</button>
         <label><input type="checkbox" id="wbAns" checked/> 附答案</label>
         <span class="hint">导出为可打印页面，浏览器里 Ctrl+P 另存为 PDF</span>
       </div>` : ""}
@@ -1450,8 +1450,8 @@ async function renderWrong() {
     <div class="doc-list rise rise-1" id="list"></div>`;
   $("#list").innerHTML = items.length
     ? items.map(it => {
-        const badge = it.wrongs >= 3 ? ' <span class="hot-badge">🔥</span>' : it.wrongs >= 2 ? ' <span class="hot-badge">⭐</span>' : "";
-        const anniBadge = it.annihilated ? ' <span class="hot-badge anni-done" title="变式歼灭已通过">💥</span>' : "";
+        const badge = it.wrongs >= 3 ? ' <span class="hot-badge">' + UiIcon.svg("flame", 12) + '</span>' : it.wrongs >= 2 ? ' <span class="hot-badge">' + UiIcon.svg("star", 12) + '</span>' : "";
+        const anniBadge = it.annihilated ? ' <span class="hot-badge anni-done" title="变式歼灭已通过">' + UiIcon.svg("target", 12) + '</span>' : "";
         const reason = reasons[it.id] || "";
         return `
         <div class="doc-item wrong-item" data-id="${it.id}">
@@ -1473,7 +1473,7 @@ async function renderWrong() {
               <span>选 <b>${esc(it.last_selected || "-")}</b> / 正解 <b style="color:var(--bamboo)">${esc(it.answer || "?")}</b></span>
               <span>${it.wrongs}/${it.tries} 次错</span>
             </div>
-            <button class="btn btn-sm btn-primary anni-btn" data-id="${it.id}">${it.annihilated ? "💥 再歼灭一轮" : "⚔ 变式歼灭"}</button>
+            <button class="btn btn-sm btn-primary anni-btn" data-id="${it.id}">${UiIcon.html("target", 14)}${it.annihilated ? "再歼灭一轮" : "变式歼灭"}</button>
             <button class="btn btn-sm" data-dismiss="${it.id}">移出</button>
           </div>
         </div>`;
@@ -1494,7 +1494,7 @@ async function renderWrong() {
   const picked = new Set();
   const syncPick = () => {
     const btn = $("#wbExport");
-    if (btn) btn.textContent = `⬇ 导出/打印所选（${picked.size}）`;
+    if (btn) btn.textContent = `导出/打印所选（${picked.size}）`;
   };
   $$(".wb-pick").forEach(c => c.onchange = () => {
     if (c.checked) picked.add(+c.dataset.id); else picked.delete(+c.dataset.id);
@@ -1607,7 +1607,7 @@ function annihilateFlow(docId) {
   const failView = (msg, label = "关闭") => {
     body.innerHTML = `
       <div class="anni-result no">
-        <div class="anni-trophy">📚</div>
+        <div class="anni-trophy">${UiIcon.svg("trophy", 52)}</div>
         <h3>没能开始歼灭</h3>
         <p>${esc(msg)}</p>
         <button class="btn btn-sm btn-primary" id="anniFailBtn">${label}</button>
@@ -1635,7 +1635,7 @@ function annihilateFlow(docId) {
       const q = r.items[idx];
       body.innerHTML = `
         <div class="anni-head">
-          <span class="anni-prog">⚔ 变式歼灭 · 第 ${idx + 1}/${r.items.length} 题</span>
+          <span class="anni-prog">${UiIcon.html("target", 14)}变式歼灭 · 第 ${idx + 1}/${r.items.length} 题</span>
           <span class="anni-tip">${tag} ${esc(r.tip || "")}</span>
         </div>
         <div class="stem">${md(q.stem)}</div>
@@ -1671,13 +1671,13 @@ function annihilateFlow(docId) {
       }
       body.innerHTML = pass ? `
         <div class="anni-result ok">
-          <div class="anni-trophy">💥</div>
+          <div class="anni-trophy">${UiIcon.svg("trophy", 52)}</div>
           <h3>变式歼灭成功！</h3>
           <p>${r.items.length} 道同考点变式题全部答对，<br>这道错题算真正拿下了。</p>
           <button class="btn btn-sm btn-primary" id="anniDone">完成</button>
         </div>` : `
         <div class="anni-result no">
-          <div class="anni-trophy">📚</div>
+          <div class="anni-trophy">${UiIcon.svg("trophy", 52)}</div>
           <h3>还差一口气</h3>
           <p>有变式题答错，说明考点还没彻底掌握，<br>建议看完解析后再来一轮。</p>
           <div class="anni-actions">
@@ -1730,7 +1730,7 @@ async function renderArgument() {
     <div class="arg-top">
       <div class="panel arg-quiz-entry">
         <div>
-          <div class="arg-title">⚡ 错误辨析快练</div>
+          <div class="arg-title">${UiIcon.html("scale", 15)}错误辨析快练</div>
           <div class="arg-src">给一句论证，判断错在哪类 —— 可选 5~20 题，即时判分</div>
           <div class="arg-card-meta">${qs.total ? `累计 ${qs.total} 题 · 答对 ${qs.right}` : "还没练过，来一组"}</div>
         </div>
@@ -1887,7 +1887,7 @@ async function renderArgumentDo(mid) {
         </div>
         <div class="arg-flaw-line">A：${esc(d.a)}</div>
         <div class="arg-flaw-line">B：${esc(d.b)}</div>
-        ${r.ai_comments && r.ai_comments[k] ? `<div class="arg-flaw-ai">🤖 ${esc(r.ai_comments[k])}</div>` : ""}
+        ${r.ai_comments && r.ai_comments[k] ? `<div class="arg-flaw-ai">${UiIcon.html("chat", 14)}${esc(r.ai_comments[k])}</div>` : ""}
       </div>`).join("");
     $("#argResult").innerHTML = `
       <div class="arg-score-card">
@@ -1912,7 +1912,7 @@ async function renderArgumentQuiz() {
   view.innerHTML = `
     <div class="arg-do-head">
       <a class="btn btn-sm" href="#/argument">← 返回</a>
-      <h1 class="page-title" style="margin:0">⚡ 错误辨析快练</h1>
+      <h1 class="page-title" style="margin:0">${UiIcon.html("scale", 18)}错误辨析快练</h1>
     </div>
     <div id="argQuizBody" class="arg-quiz-wrap">
       <div class="empty">加载中…</div>
@@ -2616,12 +2616,12 @@ async function runPaper(ids, opt = {}) {
       return;
     }
     const m = Math.floor(left / 60000), s = Math.floor(left % 60000 / 1000);
-    el.textContent = `⏱ ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    el.innerHTML = `${UiIcon.html("clock", 14)}${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
     el.style.color = left < 5 * 60000 ? "var(--cinnabar)" : "var(--ink-3)";
     if (exam && left <= 5 * 60000 && !warned5) {
       warned5 = true;
       const blank = answers.filter(a => !(a && a.sel)).length;
-      toast(`⏰ 距交卷还有 5 分钟${blank ? `，尚有 ${blank} 题未作答` : ""}`, 6000);
+      toast(`距交卷还有 5 分钟${blank ? `，尚有 ${blank} 题未作答` : ""}`, 6000);
     }
   }
   timerH = setInterval(tick, 1000);
@@ -2738,7 +2738,7 @@ async function runPaper(ids, opt = {}) {
         <div class="answer-bar">
           <button class="btn btn-sm" id="prev" ${i === 0 ? "disabled" : ""}>← 上一题</button>
           <button class="btn btn-sm" id="next">${i === docs.length - 1 ? "到交卷页" : "下一题 →"}</button>
-          ${exam ? `<button class="btn btn-sm ${marked[i] ? "btn-primary" : ""}" id="markBtn">⚑ ${marked[i] ? "取消标记" : "标记"}</button>` : ""}
+          ${exam ? `<button class="btn btn-sm ${marked[i] ? "btn-primary" : ""}" id="markBtn">${UiIcon.html("flag", 13)}${marked[i] ? "取消标记" : "标记"}</button>` : ""}
           <button class="btn btn-sm btn-primary" id="finish" style="margin-left:auto">交卷</button>
           <button class="btn btn-sm" id="quitPaper" style="margin-left:8px;color:var(--ink-3)">退出</button>
         </div>
@@ -2835,7 +2835,7 @@ async function runPaper(ids, opt = {}) {
       if (st.items.length) {
         try {
           const r = await api("/api/answer/batch", { items: st.items });
-          if (r && r.annihilated && r.annihilated.length) toast(`💥 错题歼灭 +${r.annihilated.length}`);
+          if (r && r.annihilated && r.annihilated.length) toast(`错题歼灭 +${r.annihilated.length}`);
         } catch (e) { /* 落库失败不阻断结算展示 */ }
       }
     }
@@ -2963,7 +2963,7 @@ async function runPaper(ids, opt = {}) {
   }
 
   if (autoSettle) {
-    toast("⏰ 该场考试时间已到，直接结算");
+    toast("该场考试时间已到，直接结算");
     summary(true);
     return;
   }
@@ -3616,7 +3616,7 @@ function renderImport() {
 
       <div id="tabJson">
         <p class="hint" style="margin-bottom:8px">粘贴 JSON 数组，或直接把 .json / .txt 文件拖进文本框。每题字段：stem（题干）、options（选项数组）、answer（答案字母）、analysis（解析，可空）、module / kaodian / year / exam（可空）</p>
-        <textarea id="jsonText" class="imp-area" rows="10" placeholder='[{"stem":"……","options":["A. …","B. …","C. …","D. …"],"answer":"B","analysis":"……","module":"言语理解"}]&#10;&#10;📂 也可将题库文件拖拽到此'></textarea>
+        <textarea id="jsonText" class="imp-area" rows="10" placeholder='[{"stem":"……","options":["A. …","B. …","C. …","D. …"],"answer":"B","analysis":"……","module":"言语理解"}]&#10;&#10;也可将题库文件拖拽到此'></textarea>
         <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
           <input type="file" id="jsonFile" accept=".json,.txt" style="flex:1;min-width:0"/>
           <button class="btn btn-primary" id="jsonPreview">解析预览</button>
@@ -3626,7 +3626,7 @@ function renderImport() {
       <div id="tabFile" style="display:none">
         <p class="hint" style="margin-bottom:8px">支持 PDF、Word、Excel、CSV、Markdown、TXT、JSON 格式，由 AI 自动识别题目结构</p>
         <div class="imp-area" id="fileDrop" style="height:120px;display:flex;align-items:center;justify-content:center;cursor:pointer;position:relative">
-          <div id="fileDropText">📂 拖拽文件到此处，或点击上传</div>
+          <div id="fileDropText">${UiIcon.html("import", 15)}拖拽文件到此处，或点击上传</div>
           <input type="file" id="fileInput" style="position:absolute;inset:0;opacity:0;cursor:pointer"/>
         </div>
         <div id="fileName" class="hint" style="margin-top:6px;display:none"></div>
@@ -3820,7 +3820,7 @@ async function renderDoubts(page = 1, status = "") {
               ${it.ai_note ? `<div class="ai-note" style="margin-top:6px;padding:8px;background:var(--bg-2);border-left:3px solid var(--indigo);font-size:calc(13px * var(--fs))">${md(it.ai_note)}</div>` : ""}
             </div>
             <div style="display:flex;flex-direction:column;gap:4px;min-width:120px">
-              <button class="btn btn-sm" data-ai="${it.qid}"${!it.doc_id ? ' disabled title="题库无原题"' : ''}>🤖 AI 复核</button>
+              <button class="btn btn-sm" data-ai="${it.qid}"${!it.doc_id ? ' disabled title="题库无原题"' : ''}>${UiIcon.html("chat", 13)}AI 复核</button>
               ${it.status !== "confirmed" ? `<button class="btn btn-sm" data-ok="${it.qid}">确认问题</button>` : ""}
               ${it.status !== "dismissed" ? `<button class="btn btn-sm" data-no="${it.qid}">驳回</button>` : ""}
               ${it.status !== "pending" ? `<button class="btn btn-sm" data-reset="${it.qid}">重置</button>` : ""}
@@ -3860,9 +3860,9 @@ async function renderDoubts(page = 1, status = "") {
     b.disabled = true; b.textContent = "AI 复核中…";
     try {
       const r = await api(`/api/doubt/recheck/${b.dataset.ai}`, {});
-      if (!r.ok) { alert(r.error); b.disabled = false; b.textContent = "🤖 AI 复核"; return; }
+      if (!r.ok) { alert(r.error); b.disabled = false; b.textContent = "AI 复核"; return; }
       renderDoubts(page, status);
-    } catch (e) { alert("AI 复核失败：" + e.message); b.disabled = false; b.textContent = "🤖 AI 复核"; }
+    } catch (e) { alert("AI 复核失败：" + e.message); b.disabled = false; b.textContent = "AI 复核"; }
   });
 }
 
@@ -4484,7 +4484,7 @@ async function renderCards() {
     </div>
     <div class="panel rise rise-2">
       <div class="cfg-inline">
-        <input id="cSearch" placeholder="🔍 搜词语 / 成语 / 辨析要点，如：不刊之论、差强人意" style="flex:1"/>
+        <input id="cSearch" placeholder="搜词语 / 成语 / 辨析要点，如：不刊之论、差强人意" style="flex:1"/>
         <button class="btn" id="cSearchBtn">查询词库</button>
       </div>
       <div id="cBrowse"></div>
@@ -4949,7 +4949,7 @@ async function renderShizheng() {
             <span class="sz-step">③ 错题进错题本</span>
           </div>
           <div style="margin-top:8px;padding-top:10px;border-top:1px dashed var(--line)">
-            <button class="btn btn-sm sz-quiz-btn" data-p="${esc(it.period)}">📝 开始自测</button>
+            <button class="btn btn-sm sz-quiz-btn" data-p="${esc(it.period)}">${UiIcon.html("pen", 14)}开始自测</button>
             <span style="font-size:calc(12px * var(--fs));color:var(--ink-3);margin-left:8px">学习模式：先读摘要再做题，答错自动进错题本</span>
           </div>
           <div class="sz-quiz-box" data-p="${esc(it.period)}" style="margin-top:10px"></div>
@@ -4960,7 +4960,7 @@ async function renderShizheng() {
     const missing = (r.missing_periods || []).filter(p => p !== r.current);
     const missingHtml = missing.length ? `
       <div class="panel rise" style="background:var(--paper-2)">
-        <div style="font-weight:700;margin-bottom:8px">📌 缺失期次（近半年）—— 点击生成</div>
+        <div style="font-weight:700;margin-bottom:8px">${UiIcon.html("pin", 14)}缺失期次（近半年）—— 点击生成</div>
         <div style="display:flex;flex-wrap:wrap;gap:8px">
           ${missing.map(p => `<button class="btn btn-sm sz-gen-btn" data-p="${esc(p)}">${esc(p)}</button>`).join("")}
         </div>
@@ -5017,7 +5017,7 @@ async function renderShizheng() {
           if (!box.innerHTML) {
             const qs = g.items || [];
             let right = 0, answered = 0;
-            box.innerHTML = `<div style="font-weight:700;margin-bottom:8px">📋 时政自测（${qs.length} 题 · 点击选项即判分）</div>` +
+            box.innerHTML = `<div style="font-weight:700;margin-bottom:8px">${UiIcon.html("list", 14)}时政自测（${qs.length} 题 · 点击选项即判分）</div>` +
               qs.map((q, qi) => `
                 <div class="szq" data-qi="${qi}" style="margin-bottom:12px">
                   <div style="font-weight:600">${qi + 1}. ${esc(q.q)}</div>
@@ -5053,7 +5053,7 @@ async function renderShizheng() {
             });
           }
         } catch (e) {
-          btn.textContent = "📝 自测 10 题"; btn.disabled = false;
+          btn.textContent = "自测 10 题"; btn.disabled = false;
         }
       };
     });
@@ -5310,7 +5310,7 @@ async function renderGrade() {
     <div class="panel rise rise-1">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
         <select id="gZhenti" style="padding:8px 10px;font-size:calc(14px * var(--fs));max-width:340px">
-          <option value="">📄 从真题库选题（${qs.items.length} 道）…</option>
+          <option value="">从真题库选题（${qs.items.length} 道）…</option>
           ${qs.items.map(q => `<option value="${esc(q.id)}">[${esc(q.exam)}] ${esc(q.title)}（${q.total_score}分）</option>`).join("")}
         </select>
         <select id="gCat" style="padding:8px 10px;font-size:calc(14px * var(--fs))">
@@ -5330,7 +5330,7 @@ async function renderGrade() {
     <div id="gOut"></div>
     <div class="panel rise rise-2" style="margin-top:18px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
-        <h3 style="margin:0">📈 提分曲线</h3>
+        <h3 style="margin:0">${UiIcon.html("chart", 15)}提分曲线</h3>
         <select id="gTrendCat" style="padding:6px 10px;font-size:calc(13px * var(--fs))">
           <option value="">全部题型</option>
           ${rub.items.map(r => `<option value="${r.key}">${esc(r.name)}</option>`).join("")}
@@ -5387,7 +5387,7 @@ async function renderGrade() {
     })).sort((x, y) => (x.rate === null ? 2 : x.rate) - (y.rate === null ? 2 : y.rate));
     const profHtml = prof.length ? `
       <div style="margin-bottom:12px;padding:10px 12px;background:var(--paper-2,#f7f4ec);border-radius:8px">
-        <div style="font-size:calc(13px * var(--fs));color:var(--ink-2);margin-bottom:6px"><b>📊 失分画像</b><span style="color:var(--ink-3);margin-left:8px">按题型平均得分率，靠前且偏红 = 薄弱环节</span></div>
+        <div style="font-size:calc(13px * var(--fs));color:var(--ink-2);margin-bottom:6px"><b>${UiIcon.html("chart", 14)}失分画像</b><span style="color:var(--ink-3);margin-left:8px">按题型平均得分率，靠前且偏红 = 薄弱环节</span></div>
         ${prof.map(p => {
           const pct = p.rate === null ? null : Math.round(p.rate * 100);
           const color = pct === null ? "var(--ink-3)" : pct < 50 ? "var(--cinnabar)" : pct < 70 ? "#c77b1e" : "var(--bamboo)";
@@ -5564,7 +5564,7 @@ async function renderFormula() {
       </div>
       <div class="panel">
         <details>
-          <summary style="cursor:pointer;font-weight:500">📐 公式速查（12 类，考前扫一眼）</summary>
+          <summary style="cursor:pointer;font-weight:500">${UiIcon.html("formula", 14)}公式速查（12 类，考前扫一眼）</summary>
           <table style="width:100%;margin-top:10px;font-size:calc(13.5px * var(--fs));border-collapse:collapse">
             <tr style="color:var(--ink-3)"><th style="text-align:left;padding:4px 8px">题型</th><th style="text-align:left;padding:4px 8px">已知条件</th><th style="text-align:left;padding:4px 8px">列式</th></tr>
             ${CHEAT.map(r => `<tr style="border-top:1px solid var(--line-soft)">
@@ -5760,7 +5760,7 @@ async function renderLogic() {
       </div>`).join("") : `<div class="panel">暂无判断题考点数据</div>`}
     <div class="panel">
       <details>
-        <summary style="cursor:pointer;font-weight:500">📖 规律速查（图推+逻辑+类比+定义）</summary>
+        <summary style="cursor:pointer;font-weight:500">${UiIcon.html("book", 14)}规律速查（图推+逻辑+类比+定义）</summary>
         <div style="margin-top:10px">
           ${CHEAT_LOGIC.map(r => `
             <div style="padding:7px 0;border-top:1px solid var(--line-soft)">
@@ -6051,7 +6051,7 @@ async function renderTimeAnalysis() {
 
     ${d.slow_correct.length ? `
     <div class="panel">
-      <h3 style="margin:0 0 10px">🐢 会做但超时（Top ${d.slow_correct.length}）<span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">正确率没问题，节奏才是——点进去限时重做</span></h3>
+      <h3 style="margin:0 0 10px">${UiIcon.html("clock", 16)}会做但超时（Top ${d.slow_correct.length}）<span style="font-size:calc(12px * var(--fs));color:var(--ink-3);font-family:var(--sans)">正确率没问题，节奏才是——点进去限时重做</span></h3>
       <div class="doc-list">
         ${d.slow_correct.map(t => `
           <a class="doc-item" data-id="${t.doc_id}" href="#/doc/${t.doc_id}">
@@ -6066,12 +6066,12 @@ async function renderTimeAnalysis() {
     </div>` : ""}
 
     <div class="panel">
-      <h3 style="margin:0 0 10px">⏱ 耗时最长 Top ${d.top_slow.length}</h3>
+      <h3 style="margin:0 0 10px">${UiIcon.html("clock", 16)}耗时最长 Top ${d.top_slow.length}</h3>
       <div class="doc-list">
         ${d.top_slow.map((t, i) => `
           <a class="doc-item" data-id="${t.doc_id}" href="#/doc/${t.doc_id}">
             <div class="doc-main">
-              <div class="doc-title">${i + 1}. ${esc(t.title)} ${t.slow ? "🐢" : ""}</div>
+              <div class="doc-title">${i + 1}. ${esc(t.title)} ${t.slow ? UiIcon.svg("clock", 13) : ""}</div>
               <div class="doc-sub">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))} · ${t.correct === null ? "待补" : t.correct ? "答对" : "答错"}</div>
             </div>
             <div class="doc-side"><span style="font-family:var(--mono);font-weight:700">${fmt(t.ms / 1000)}</span></div>
@@ -6192,7 +6192,7 @@ async function renderReport() {
     </div>` : ""}
 
     <div class="panel" style="border-left:4px solid var(--cinnabar)">
-      <h3 style="margin:0 0 8px">📋 本周建议</h3>
+      <h3 style="margin:0 0 8px">${UiIcon.html("list", 15)}本周建议</h3>
       ${d.advice.map((a, i) =>
         `<div style="font-size:calc(14px * var(--fs));padding:6px 0;${i ? "border-top:1px solid var(--line-soft)" : ""}">${esc(a)}</div>`).join("")}
     </div>`;
@@ -6285,7 +6285,7 @@ async function renderAiAsk() {
         <h3 style="margin:0;flex:1">AI 答疑
           <span style="color:var(--ink-2);font-size:calc(13px * var(--fs));font-weight:normal">行测/职测 · 申论/综应 · 国考考情，拍照也能问</span>
         </h3>
-        <button class="btn" id="aiAskNew">🗑 新对话</button>
+        <button class="btn" id="aiAskNew">${UiIcon.html("chat", 13)}新对话</button>
       </div>
       <div id="aiAskList" style="flex:1;overflow-y:auto;margin-top:14px;padding-right:6px"></div>
       <div id="aiAskChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
@@ -6410,7 +6410,7 @@ async function renderAiAsk() {
 
     let thinkBox = null, think = "", full = "";
     const b = bubble("ai", "");
-    b.innerHTML = `<div style="color:var(--ink-2);font-size:calc(12.5px * var(--fs))">🤔 思考中…</div>`;
+    b.innerHTML = `<div style="color:var(--ink-2);font-size:calc(12.5px * var(--fs))">${UiIcon.html("clock", 13)}思考中…</div>`;
     b.classList.add("cursor-blink");
 
     try {
@@ -6924,7 +6924,7 @@ async function renderXcNotes() {
     if (!exs.length) return "";
     return `
       <div class="nx-ex">
-        <button type="button" class="nx-ex-btn" aria-expanded="false">📄 真题范例 ${exs.length} 例（点开看要点）</button>
+        <button type="button" class="nx-ex-btn" aria-expanded="false">${UiIcon.html("paper", 13)}真题范例 ${exs.length} 例（点开看要点）</button>
         <div class="nx-ex-body" hidden>
           ${exs.map(ex => `
             <div class="nx-ex-item">
@@ -7222,7 +7222,7 @@ async function renderXcNotes() {
         const b = box.querySelector(".nx-ex-body");
         b.hidden = !b.hidden;
         btn.setAttribute("aria-expanded", b.hidden ? "false" : "true");
-        btn.textContent = (b.hidden ? "📄 真题范例 " : "📄 收起范例 ") + btn.dataset.n + " 例";
+        btn.textContent = (b.hidden ? "真题范例 " : "收起范例 ") + btn.dataset.n + " 例";
       };
       const box = btn.closest(".nx-ex");
       btn.dataset.n = String(box.querySelectorAll(".nx-ex-item").length);
@@ -7351,7 +7351,7 @@ async function renderSlNotes() {
     if (!exs.length) return "";
     return `
       <div class="nx-ex">
-        <button type="button" class="nx-ex-btn" aria-expanded="false">📄 真题范例 ${exs.length} 例（点开看要点）</button>
+        <button type="button" class="nx-ex-btn" aria-expanded="false">${UiIcon.html("paper", 13)}真题范例 ${exs.length} 例（点开看要点）</button>
         <div class="nx-ex-body" hidden>
           ${exs.map(ex => `
             <div class="nx-ex-item">
@@ -7642,7 +7642,7 @@ async function renderSlNotes() {
         const b = box.querySelector(".nx-ex-body");
         b.hidden = !b.hidden;
         btn.setAttribute("aria-expanded", b.hidden ? "false" : "true");
-        btn.textContent = (b.hidden ? "📄 真题范例 " : "📄 收起范例 ") + btn.dataset.n + " 例";
+        btn.textContent = (b.hidden ? "真题范例 " : "收起范例 ") + btn.dataset.n + " 例";
       };
     });
     body.querySelectorAll(".sl-toggle").forEach(btn => {
@@ -7879,9 +7879,9 @@ function ivResultHtml(d) {
   const pb = (d.problems || []).length
     ? `<div class="gr-sec">⚠️ 主要问题</div><ol class="gr-ol">${d.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
   const sg = (d.suggestions || []).length
-    ? `<div class="gr-sec">🔧 改进建议</div><ol class="gr-ol">${d.suggestions.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+    ? `<div class="gr-sec">${UiIcon.html("bulb", 14)}改进建议</div><ol class="gr-ol">${d.suggestions.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
   const ma = d.model_answer
-    ? `<div class="gr-sec">📖 高分示范作答</div><div class="iv-model">${esc(d.model_answer)}</div>` : "";
+    ? `<div class="gr-sec">${UiIcon.html("book", 14)}高分示范作答</div><div class="iv-model">${esc(d.model_answer)}</div>` : "";
   return card + hl + pb + sg + ma;
 }
 
@@ -7905,7 +7905,7 @@ async function renderInterview() {
     box.className = "iv-clock" + (timerLeft <= 30 && timerPhase.startsWith("作答") ? " warn" : "");
     if (timerLeft <= 0) {
       stopTimer();
-      if (timerPhase.startsWith("作答")) $("#gTipIv") && ($("#gTipIv").textContent = "⏰ 作答时间到，请提交点评");
+      if (timerPhase.startsWith("作答")) $("#gTipIv") && ($("#gTipIv").textContent = "作答时间到，请提交点评");
       return;
     }
     timerLeft--;
@@ -7990,9 +7990,9 @@ async function renderInterview() {
       </div>
       <div style="font-size:calc(15.5px * var(--fs));line-height:1.8;margin:10px 0;font-family:var(--serif)">${esc(curQ.question)}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-        <button class="btn btn-sm" id="ivThink">⏱ 开始思考（${qdata.think_seconds}s）</button>
-        <button class="btn btn-sm" id="ivAnswer">✍️ 开始作答（${qdata.answer_seconds}s）</button>
-        <button class="btn btn-sm" id="ivRef">📖 看参考思路</button>
+        <button class="btn btn-sm" id="ivThink">${UiIcon.html("clock", 14)}开始思考（${qdata.think_seconds}s）</button>
+        <button class="btn btn-sm" id="ivAnswer">${UiIcon.html("pen", 14)}开始作答（${qdata.answer_seconds}s）</button>
+        <button class="btn btn-sm" id="ivRef">${UiIcon.html("book", 14)}看参考思路</button>
       </div>
       <textarea id="ivA" rows="8" placeholder="写下你的作答（一期为文字作答；结构化面试建议分点作答：亮观点 → 分层论证 → 结合岗位表态）" style="width:100%"></textarea>
       <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
@@ -8182,7 +8182,7 @@ async function renderPracticeCenter(tab) {
   }
   const trapCard = document.createElement("button");
   trapCard.type = "button"; trapCard.className = "study-feature";
-  trapCard.innerHTML = '<span class="study-feature-icon" aria-hidden="true">疑</span><b>疑点陷阱训练</b><small>已确认疑点 · 识别命题陷阱</small>';
+  trapCard.innerHTML = `<span class="study-feature-icon" aria-hidden="true">${UiIcon.svg("help", 24)}</span><b>疑点陷阱训练</b><small>已确认疑点 · 识别命题陷阱</small>`;
   trapCard.onclick = () => { const fold=wrapper.querySelector("#studyTraps"); fold.open=true; fold.scrollIntoView({block:"nearest"}); };
   wrapper.querySelector(".study-feature-grid").append(trapCard);
   view.replaceChildren(wrapper);

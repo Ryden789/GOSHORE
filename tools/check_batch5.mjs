@@ -131,7 +131,7 @@ function buildSandbox(code, env = {}) {
   const clock = env.clock || { timers: [], next: 1, setTimeout: (fn, d) => { const id = clock.next++; clock.timers.push({ id, fn, d }); return id; }, clearTimeout: id => { const i = clock.timers.findIndex(t => t.id === id); if (i >= 0) clock.timers.splice(i, 1); } };
   const make = new Function(
     "window", "document", "localStorage", "esc", "api", "setTimeout", "clearTimeout", "$$",
-    `${code.pref}\n${code.block}\nreturn { NoteBox, SwipePaging, Pref };`,
+    `${code.ui || ""}\n${code.pref}\n${code.block}\nreturn { NoteBox, SwipePaging, Pref };`,
   );
   const sandboxApi = env.api || api;
   const out = make(win, doc, storage, ESC, sandboxApi,
@@ -149,12 +149,16 @@ function buildSandbox(code, env = {}) {
 const SHARED_REL = "static/shared/core.js";
 const sharedSrc = fs.readFileSync(path.join(ROOT, SHARED_REL), "utf8");
 const sharedBlock = extractBlock(sharedSrc);
+// 共享块的笔记卡标题用 UiIcon 画图标；沙箱里只有块本身，需把图标表一并注入
+const sharedUiIcon = extractBraced(sharedSrc, "const UiIcon = {");
+if (!sharedUiIcon) throw new Error(`${SHARED_REL} 里找不到 const UiIcon = {...}`);
 
 const IMPLS = {};
 for (const s of SOURCES) {
   const src = fs.readFileSync(path.join(ROOT, s.rel), "utf8");
   IMPLS[s.label] = {
     block: sharedBlock,
+    ui: sharedUiIcon,
     pref: extractBraced(src, "const Pref = {"),
     src,
     html: fs.readFileSync(path.join(ROOT, s.html), "utf8"),
@@ -459,8 +463,8 @@ function tamperCheck() {
     const bad = {
       ...base,
       block: base.block.replace(
-        'return Object.prototype.hasOwnProperty.call(counts, k)\n      ? `<span class="note-dot" title="有笔记">✎</span>` : "";',
-        'return `<span class="note-dot" title="有笔记">✎</span>`;'),
+        'return Object.prototype.hasOwnProperty.call(counts, k)\n      ? `<span class="note-dot" title="有笔记">${UiIcon.svg("pen", 13)}</span>` : "";',
+        'return `<span class="note-dot" title="有笔记">${UiIcon.svg("pen", 13)}</span>`;'),
     };
     const S = buildSandbox(bad, {});
     has(S.NoteBox.mark(1, {}), "note-dot", "自检：去判断后无笔记也出标记（证明断言有效）");

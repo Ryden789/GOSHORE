@@ -235,7 +235,8 @@
     return `<div class="study-feature-grid">${items(key).filter(it => !exclude.includes(it.route)).map(it => {
       // 空间折叠原先仅桌面提供，手机入口明确跳转桌面功能，不伪装原生移植。
       const href = mobile && it.route === "cube" ? "/#/cube" : "#/" + it.route;
-      return `<a class="study-feature" href="${href}"${mobile && it.route === "cube" ? ' target="_blank" rel="noopener"' : ""}><span class="study-feature-icon" aria-hidden="true">${esc(it.title.slice(0,1))}</span><b>${esc(it.title)}</b><small>${esc(it.desc)}${mobile && it.route === "cube" ? " · 打开桌面页" : ""}</small></a>`;
+      const icon = UiIcon.route(it.route);
+      return `<a class="study-feature" href="${href}"${mobile && it.route === "cube" ? ' target="_blank" rel="noopener"' : ""}><span class="study-feature-icon" aria-hidden="true">${icon || esc(it.title.slice(0,1))}</span><b>${esc(it.title)}</b><small>${esc(it.desc)}${mobile && it.route === "cube" ? " · 打开桌面页" : ""}</small></a>`;
     }).join("")}</div>`;
   }
   function header(title, desc) { return `<header class="page-head study-page-head"><h1 class="page-title">${esc(title)}</h1><p class="page-desc">${esc(desc)}</p></header>`; }

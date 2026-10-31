@@ -25,7 +25,7 @@ function emptyState(title, desc, links) {
   const btns = (links || []).map(([label, href]) =>
     `<a class="btn btn-primary" href="${href}" style="margin:4px 6px 0 0">${esc(label)}</a>`).join("");
   return `<div class="empty-state" style="text-align:center;padding:26px 14px">
-    <div style="font-size:calc(28px * var(--fs));line-height:1;margin-bottom:10px">🚧</div>
+    <div style="line-height:1;margin-bottom:10px">${UiIcon.svg("pen", 28)}</div>
     <h3 style="margin:0 0 9px;font-size:calc(15px * var(--fs))">${esc(title)}</h3>
     <p class="muted" style="font-size:calc(13px * var(--fs));line-height:1.85;margin:0">${desc}</p>
     ${btns ? `<div style="margin-top:13px">${btns}</div>` : ""}
@@ -222,7 +222,7 @@ const Pomo = {
     this.last = now;
     if (this.sec % 25 === 0) this.flush();
     if (this.sec > 0 && this.sec % (25 * 60) === 0) {
-      toast("🍅 一个番茄完成，起来喝口水");
+      toast("一个番茄完成，起来喝口水");
       Snd.warn();
     }
     this.draw();
@@ -240,7 +240,7 @@ const Pomo = {
     this.draw();
   },
   draw() {
-    this.el.textContent = "🍅 " + this.fmt(this.sec) + (this.on ? "" : " 暂停");
+    this.el.textContent = this.fmt(this.sec) + (this.on ? "" : " 暂停");
   },
 };
 
@@ -305,8 +305,8 @@ const TITLES = { training: "练习中心", "review-center": "复习巩固", know
 const AUTH_PAGES = ["login", "register"];
 
 /* 全部功能中枢：5 组（与桌面导航一致）。条目：[路由, 图标, 名称, 说明] */
-const HUB = StudyLayout.groups.map(g => ({group:g.title,items:g.items.map(it=>[it.route,it.title.slice(0,1),it.title,it.desc])}));
-HUB.find(g=>g.group==="题库管理").items.push(["mydocs","☰","我的题库","导入的私有题目"]);
+const HUB = StudyLayout.groups.map(g => ({group:g.title,items:g.items.map(it=>[it.route,UiIcon.route(it.route),it.title,it.desc])}));
+HUB.find(g=>g.group==="题库管理").items.push(["mydocs",UiIcon.svg("list",22),"我的题库","导入的私有题目"]);
 
 /* 别名：同一手机页面承载多个桌面功能 */
 const ALIAS = {
@@ -367,7 +367,7 @@ function dailyDoorPrompt() {
   mask.id = "doorPrompt";
   mask.innerHTML = `
     <div class="door-card" role="dialog" aria-modal="true" aria-labelledby="doorT" aria-describedby="doorD">
-      <div class="door-emoji" aria-hidden="true">📅</div>
+      <div class="door-emoji" aria-hidden="true">${UiIcon.svg("calendar", 30)}</div>
       <h3 id="doorT">先完成今日开门一题</h3>
       <p id="doorD">每日开门题是当天学习的第一步：做完它，其余学习功能（刷题 / 复习 / 错题…）才会解锁。
         它只是当天的热身，<b>不等于</b>完成整个学习计划，也不影响复习排期。</p>
@@ -495,8 +495,8 @@ function mountHintBar() {
   if (Pref.get("hintseen", "") === todayStr()) return;
   const bar = document.createElement("div");
   bar.className = "hint-bar";
-  bar.innerHTML = `<span>操作速记：点选项直接判分 → 自动下一题　·　⚑蒙的　·　⏭跳过　·　🍅点钟暂停</span>
-    <b id="hintClose">✕</b>`;
+  bar.innerHTML = `<span>操作速记：点选项直接判分 → 自动下一题　·　蒙的　·　跳过　·　计时暂停</span>
+    <b id="hintClose">${UiIcon.svg("close", 14)}</b>`;
   document.body.appendChild(bar);
   document.body.classList.add("hint-on");
   $("#hintClose", bar).onclick = () => {
@@ -608,7 +608,7 @@ async function renderLogin() {
       </div>
       <button class="btn btn-block" id="guestBtn">以游客身份继续</button>
       <button class="btn btn-ghost btn-block" id="auRestore" style="margin-top:10px">
-        📦 从备份恢复（重装后找回账号）</button>
+        ${UiIcon.html("import", 14)}从备份恢复（重装后找回账号）</button>
       <input type="file" id="auRestoreFile" accept=".zip,application/zip" hidden>
       <div class="auth-profiles" id="auProfiles"></div>
     </div>`;
@@ -667,7 +667,7 @@ async function renderLogin() {
       errEl.textContent = "恢复失败：" + e2.message;
     } finally {
       b.disabled = false;
-      b.textContent = "📦 从备份恢复（重装后找回账号）";
+      b.textContent = "从备份恢复（重装后找回账号）";
     }
   };
 
@@ -789,17 +789,17 @@ async function renderTimeAnalysis() {
       </div>`;
     }).join("")}
     ${d.slow_correct.length ? `
-    <h2 class="sec">🐢 会做但超时</h2>
+    <h2 class="sec">${UiIcon.html("clock", 16)}会做但超时</h2>
     <div class="card">${d.slow_correct.map(t => `
       <button type="button" class="ta-item" data-id="${t.doc_id}">
         <span class="ta-main"><b>${esc(t.title)}</b>
           <span class="muted">${esc([t.module, t.kaodian].filter(Boolean).join(" · "))}</span></span>
         <span class="ta-ms">${fmt(t.ms / 1000)}</span>
       </button>`).join("")}</div>` : ""}
-    <h2 class="sec">⏱ 耗时最长 Top ${d.top_slow.length}</h2>
+    <h2 class="sec">${UiIcon.html("clock", 16)}耗时最长 Top ${d.top_slow.length}</h2>
     <div class="card">${d.top_slow.map((t, i) => `
       <button type="button" class="ta-item" data-id="${t.doc_id}">
-        <span class="ta-main"><b>${i + 1}. ${esc(t.title)}${t.slow ? " 🐢" : ""}</b>
+        <span class="ta-main"><b>${i + 1}. ${esc(t.title)}${t.slow ? " " + UiIcon.svg("clock", 12) : ""}</b>
           <span class="muted">${esc([t.module].filter(Boolean).join(" · "))} · ${t.correct === null ? "待补" : t.correct ? "答对" : "答错"}</span></span>
         <span class="ta-ms">${fmt(t.ms / 1000)}</span>
       </button>`).join("")}</div>`;
@@ -877,9 +877,9 @@ function mIvResultHtml(d) {
   const pb = (d.problems || []).length
     ? `<div class="gr-sec">⚠️ 主要问题</div><ol class="gr-ol">${d.problems.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
   const sg = (d.suggestions || []).length
-    ? `<div class="gr-sec">🔧 改进建议</div><ol class="gr-ol">${d.suggestions.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
+    ? `<div class="gr-sec">${UiIcon.html("bulb", 14)}改进建议</div><ol class="gr-ol">${d.suggestions.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : "";
   const ma = d.model_answer
-    ? `<div class="gr-sec">📖 高分示范作答</div><div class="iv-model">${esc(d.model_answer)}</div>` : "";
+    ? `<div class="gr-sec">${UiIcon.html("book", 14)}高分示范作答</div><div class="iv-model">${esc(d.model_answer)}</div>` : "";
   return `<div class="gr-score">
     <div class="gr-ring">
       <svg width="72" height="72" viewBox="0 0 72 72">
@@ -919,7 +919,7 @@ async function renderInterview() {
     box.className = "iv-clock" + (timerLeft <= 30 && timerPhase.startsWith("作答") ? " warn" : "");
     if (timerLeft <= 0) {
       stopTimer();
-      if (timerPhase.startsWith("作答") && $("#gTipIv")) $("#gTipIv").textContent = "⏰ 作答时间到，请提交点评";
+      if (timerPhase.startsWith("作答") && $("#gTipIv")) $("#gTipIv").textContent = "作答时间到，请提交点评";
       return;
     }
     timerLeft--;
@@ -984,9 +984,9 @@ async function renderInterview() {
         </div>
         <div style="font-size:calc(14.5px * var(--fs));line-height:1.75;margin:9px 0">${esc(curQ.question)}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px">
-          <button class="btn btn-sm" id="ivThink">⏱ 思考</button>
-          <button class="btn btn-sm" id="ivAnswer">✍️ 作答</button>
-          <button class="btn btn-sm" id="ivRef">📖 参考思路</button>
+          <button class="btn btn-sm" id="ivThink">${UiIcon.html("clock", 14)}思考</button>
+          <button class="btn btn-sm" id="ivAnswer">${UiIcon.html("pen", 14)}作答</button>
+          <button class="btn btn-sm" id="ivRef">${UiIcon.html("book", 14)}参考思路</button>
         </div>
         <textarea id="ivA" rows="7" placeholder="写下你的作答（建议分点：亮观点 → 分层论证 → 结合岗位表态）"></textarea>
         <button class="btn btn-primary btn-block" id="ivGo" style="margin-top:10px">请 AI 考官点评</button>
@@ -1320,7 +1320,7 @@ function setupCard(s, cfg) {
   ];
   return `<div class="card setup-card" id="setupCard">
     <div class="setup-head"><b>开始使用 · 3 步</b>
-      <button class="setup-x" id="setupX" type="button" aria-label="关闭提示">✕</button></div>
+      <button class="setup-x" id="setupX" type="button" aria-label="关闭提示">${UiIcon.svg("close", 14)}</button></div>
     ${steps.map(it => `<div class="setup-item">
       <span class="setup-ico" aria-hidden="true">${it.done ? "✓" : it.n}</span>
       <div class="setup-tx"><b>${esc(it.title)}${it.done ? " · 已完成" : ""}</b><p>${esc(it.desc)}</p></div>
@@ -1490,7 +1490,7 @@ async function renderLearningSummary() {
 
     ${DAILY_DONE ? "" : `
     <div class="card daily-door">
-      <div class="door-title">📅 每日一题 · 开门打卡</div>
+      <div class="door-title">${UiIcon.html("calendar", 14)}每日一题 · 开门打卡</div>
       <div class="muted">先完成今天的开门一题，其余功能才会解锁</div>
       <button class="btn btn-primary btn-block" id="dailyGo" style="margin-top:10px">抽今日一题</button>
     </div>`}
@@ -1498,17 +1498,17 @@ async function renderLearningSummary() {
     <!-- 首页信息层级：1 个主入口 → 4 个常用入口 → 3 个次级链接 → 可折叠数据。
          节点 id / 路由 / 点击动作保持不变（PAGE-01 / 新手引导依赖这些锚点）。 -->
     <h2 class="sec">开始学习</h2>
-    <a class="entry entry-hero" id="recGo" style="cursor:pointer"><span class="ei">🎯</span>
+    <a class="entry entry-hero" id="recGo" style="cursor:pointer"><span class="ei">${UiIcon.svg("target", 20)}</span>
       <span class="et"><b>今日推荐练习</b><small>按掌握度智能组卷 15 题 · 弱项优先</small></span><span class="go">›</span></a>
 
     <div class="entry-grid">
-      <a class="entry" id="entryPractice" href="#/practice"><span class="ei">✎</span>
+      <a class="entry" id="entryPractice" href="#/practice"><span class="ei">${UiIcon.svg("paper", 20)}</span>
         <span class="et"><b>去刷题</b><small>组卷 · 专项训练</small></span></a>
-      <a class="entry" id="entryReview" href="#/review"><span class="ei">◌</span>
+      <a class="entry" id="entryReview" href="#/review"><span class="ei">${UiIcon.svg("refresh", 20)}</span>
         <span class="et"><b>复习巩固</b><small>错题 ${s.wrong_count} · 待复习 ${s.review_due}</small></span></a>
-      <a class="entry" id="entryAi" href="#/ai-ask"><span class="ei">智</span>
+      <a class="entry" id="entryAi" href="#/ai-ask"><span class="ei">${UiIcon.svg("chat", 20)}</span>
         <span class="et"><b>AI 答疑</b><small>考点 · 技巧 · 规划</small></span></a>
-      <a class="entry" id="entryCards" href="#/cards"><span class="ei">🃏</span>
+      <a class="entry" id="entryCards" href="#/cards"><span class="ei">${UiIcon.svg("cards", 20)}</span>
         <span class="et"><b>辨析卡记忆</b><small>${s.card_due || 0} 张词卡到期</small></span></a>
     </div>
 
@@ -1529,7 +1529,7 @@ async function renderLearningSummary() {
       <div class="dc-body">
         <div class="rank-badge">
           <div class="rank-line">
-            <span class="rank-name">🏅 ${esc(rank)}</span>
+            <span class="rank-name">${UiIcon.html("trophy", 15)}${esc(rank)}</span>
             <span class="muted">累计作答 ${s.answers_total} 题</span>
           </div>
           ${nextAt ? `
@@ -1543,7 +1543,7 @@ async function renderLearningSummary() {
           <div class="stat"><b>${totalRate}%</b><span>总正确率 · 共 ${s.answers_total} 题</span></div>
           <div class="stat"><b>${s.wrong_count}</b><span>待消灭错题</span></div>
           <div class="stat"><b>${focusMin} 分</b><span>今日专注</span></div>
-          <div class="stat"><b>🔥 ${Streak.n}</b><span>今日连对</span></div>
+          <div class="stat"><b>${UiIcon.html("flame", 14)}${Streak.n}</b><span>今日连对</span></div>
           <div class="stat"><b>${s.annihilated || 0}</b><span>累计歼灭错题</span></div>
           <div class="stat"><b>${s.today_guessed || 0}</b><span>今日蒙题</span></div>
         </div>
@@ -1612,7 +1612,7 @@ function maybeBackupGuide(s) {
   card.className = "card daily-door";
   card.id = "bkGuide";
   card.innerHTML = `
-    <div class="door-title">💾 备份学习数据</div>
+    <div class="door-title">${UiIcon.html("download", 15)}备份学习数据</div>
     <div class="muted">你已积累 ${s.answers_total} 次作答。卸载 App 会清空本机数据，
       建议导出备份（可发微信 / 存网盘），换机或重装后一键恢复。</div>
     <button class="btn btn-primary btn-block" id="bkGuideGo" style="margin-top:10px">立即备份</button>
@@ -2020,7 +2020,7 @@ async function runPaper(ids, opt = {}) {
       if (!el) { clearInterval(timerH); return; }
       if (Date.now() >= deadline) {
         clearInterval(timerH);
-        if (inRun) { toast("⏰ 时间到，自动交卷"); summary(); }
+        if (inRun) { toast("时间到，自动交卷"); summary(); }
         return;
       }
       el.textContent = fmtRemain();
@@ -2028,7 +2028,7 @@ async function runPaper(ids, opt = {}) {
       if (exam && !warned5 && deadline - Date.now() <= 5 * 60000) {
         warned5 = true;
         const blank = answers.filter(a => !(a && a.sel)).length;
-        toast(`⏰ 距交卷还有 5 分钟${blank ? `，尚有 ${blank} 题未作答` : ""}`, 5000);
+        toast(`距交卷还有 5 分钟${blank ? `，尚有 ${blank} 题未作答` : ""}`, 5000);
       }
     }, 1000);
   }
@@ -2173,13 +2173,13 @@ async function runPaper(ids, opt = {}) {
       }).join("")}
       <div class="run-mini-actions">
         ${exam
-          ? `<button class="btn btn-ghost ${marked[i] ? "on" : ""}" id="markBtn">⚑ ${marked[i] ? "已标记" : "标记"}</button>`
-          : `<button class="btn btn-ghost" id="guessBtn">⚑ 蒙的</button>`}
-        <button class="btn btn-ghost" id="skipBtn">⏭ 跳过</button>
+          ? `<button class="btn btn-ghost ${marked[i] ? "on" : ""}" id="markBtn">${UiIcon.html("flag", 14)}${marked[i] ? "已标记" : "标记"}</button>`
+          : `<button class="btn btn-ghost" id="guessBtn">${UiIcon.html("flag", 14)}蒙的</button>`}
+        <button class="btn btn-ghost" id="skipBtn">${UiIcon.html("next", 14)}跳过</button>
         ${exam ? `<button class="btn btn-primary" id="finishBtn">交卷</button>` : ""}
       </div>
       <div id="anaBox"></div>
-      <div class="note-toggle" id="noteToggle">📝 我的笔记</div>
+      <div class="note-toggle" id="noteToggle">${UiIcon.html("pen", 14)}我的笔记</div>
       <div id="noteSlot"></div>`;
     animIn(view);
     bindNote(doc.id);
@@ -2216,7 +2216,7 @@ async function runPaper(ids, opt = {}) {
   /** 已判题的解析框（正常作答与草稿还原共用，避免两处文案漂移） */
   function renderAna(doc, d, a) {
     const headMark = a.correct === true
-      ? (a.guessed ? "⚑ 蒙对了 · 按未掌握安排复习" : "✓ 回答正确")
+      ? (a.guessed ? UiIcon.html("flag", 13) + "蒙对了 · 按未掌握安排复习" : "✓ 回答正确")
       : a.correct === false
         ? "✗ 正确答案 " + esc(((d.options || []).find(o => o.correct) || {}).label || "")
         : "⏳ 题库答案待补 · 本题不计分";
@@ -2250,7 +2250,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
     }).then(r => {
       if (r && r.annihilated) {
         Snd.pop(); confetti(46);
-        toast("💥 错题歼灭 +1");
+        toast("错题歼灭 +1");
       }
     }).catch(() => {});
     if (opt.daily) DAILY_DONE = true;
@@ -2278,7 +2278,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
       if (st.items.length) {
         try {
           const r = await api("/api/answer/batch", { items: st.items });
-          if (r && r.annihilated && r.annihilated.length) toast(`💥 错题歼灭 +${r.annihilated.length}`);
+          if (r && r.annihilated && r.annihilated.length) toast(`错题歼灭 +${r.annihilated.length}`);
         } catch (e) { /* 落库失败不阻断结算 */ }
       }
     }
@@ -2307,7 +2307,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
           <span><b>${wrongIdx.length}</b> 答错</span>
           ${exam ? `<span><b>${blankIdx.length}</b> 未答</span>` : `<span><b>${skippedN}</b> 跳过</span>`}
         </div>
-        ${skippedN ? `<div class="muted" style="margin-top:6px">⏭ 已跳过 ${skippedN} 题（不计入正确率）</div>` : ""}
+        ${skippedN ? `<div class="muted" style="margin-top:6px">${UiIcon.html("next", 13)}已跳过 ${skippedN} 题（不计入正确率）</div>` : ""}
         ${ungradedN ? `<div class="muted" style="margin-top:6px;color:var(--amber)">⏳ ${ungradedN} 题题库答案待补（保留作答，不计对错与错题本）</div>` : ""}
         ${exam && blankIdx.length ? `<div class="muted" style="margin-top:6px">○ 未作答 ${blankIdx.length} 题（按错计分）</div>` : ""}
       </div>
@@ -2348,7 +2348,7 @@ ${rawHtml(String(d.official || "（暂无解析）").slice(0, 4000))}</div>
   }
 
   if (autoSettle) {
-    toast("⏰ 该场考试时间已到，直接结算");
+    toast("该场考试时间已到，直接结算");
     summary();
     return;
   }
@@ -2380,7 +2380,7 @@ function runFormula(items, cfg) {
         <div class="opt" data-label="${o.label}">
           <span class="ol">${o.label}</span><div class="opt-text">${rich(o.text)}</div>
         </div>`).join("")}
-      <button class="btn btn-ghost btn-block" id="fSkipBtn">⏭ 跳过本题（不计对错）</button>
+      <button class="btn btn-ghost btn-block" id="fSkipBtn">${UiIcon.html("next", 14)}跳过本题（不计对错）</button>
       <div id="anaBox"></div>`;
     animIn(view);
     $("#runExit").onclick = exitRun;
@@ -2424,7 +2424,7 @@ ${esc(it.tip || "")}</div>
         <div class="sum-num" style="color:${judged.length && ok / judged.length >= .6 ? "var(--green)" : "var(--cinnabar)"}">
           ${ok} / ${judged.length}</div>
         <div class="muted">正确率 ${judged.length ? Math.round(ok / judged.length * 100) : 0}% · 平均 ${(avg / 1000).toFixed(1)} 秒/题</div>
-        ${skippedN ? `<div class="muted" style="margin-top:6px">⏭ 已跳过 ${skippedN} 题（不计入正确率）</div>` : ""}
+        ${skippedN ? `<div class="muted" style="margin-top:6px">${UiIcon.html("next", 13)}已跳过 ${skippedN} 题（不计入正确率）</div>` : ""}
       </div>
       <div style="display:flex;gap:10px;margin-top:14px">
         <button class="btn btn-block" onclick="location.hash='#/practice'">返回刷题</button>
@@ -2588,7 +2588,7 @@ async function drawWrong(box, tok) {
     ${mReasonDonut(dist.items)}
     ${wrongs.map(w => `
       <div class="item">
-        <b><label class="wb-pick-wrap"><input type="checkbox" class="wb-pick" data-id="${w.id}"/></label> ${esc(w.title)}${w.annihilated ? ' <span class="anni-flag" title="变式歼灭已通过">💥</span>' : ""}</b>
+        <b><label class="wb-pick-wrap"><input type="checkbox" class="wb-pick" data-id="${w.id}"/></label> ${esc(w.title)}${w.annihilated ? ` <span class="anni-flag" title="变式歼灭已通过">${UiIcon.svg("target", 13)}</span>` : ""}</b>
         <div class="meta">${esc(w.kaodian || w.module || "")} · 错 ${w.wrongs}/${w.tries} 次 · 上次选 ${esc(w.last_selected || "-")}</div>
         <input class="wn-note" data-id="${w.id}"
           placeholder="一句话记下坑因，如：把基期当现期（失焦即存）"
@@ -2604,7 +2604,7 @@ async function drawWrong(box, tok) {
           <button class="btn w-one" data-id="${w.id}">重做此题</button>
           <button class="btn w-out" data-id="${w.id}">移出</button>
         </div>
-        <div class="row"><button class="btn btn-primary btn-block w-anni" data-id="${w.id}">${w.annihilated ? "💥 再歼灭一轮" : "⚔ 变式歼灭（AI 出 3 题）"}</button></div>
+        <div class="row"><button class="btn btn-primary btn-block w-anni" data-id="${w.id}">${UiIcon.html("target", 14)}${w.annihilated ? "再歼灭一轮" : "变式歼灭（AI 出 3 题）"}</button></div>
       </div>`).join("")}`;
 
   $("#wAll").onclick = () =>
@@ -2742,7 +2742,7 @@ function annihilateFlow(docId, wrongBox, wrongTok) {
   const failView = msg => {
     body.innerHTML = `
       <div class="anni-result">
-        <div class="anni-trophy">📚</div>
+        <div class="anni-trophy">${UiIcon.svg("trophy", 52)}</div>
         <h3>没能开始歼灭</h3>
         <p>${esc(msg)}</p>
         <button class="btn btn-primary btn-block" id="anniFailBtn">知道了</button>
@@ -2770,7 +2770,7 @@ function annihilateFlow(docId, wrongBox, wrongTok) {
       const q = r.items[idx];
       body.innerHTML = `
         <div class="anni-head">
-          <span class="anni-prog">⚔ 第 ${idx + 1}/${r.items.length} 题</span>
+          <span class="anni-prog">${UiIcon.html("target", 14)}第 ${idx + 1}/${r.items.length} 题</span>
           <span class="anni-tip">${tag} ${esc(r.tip || "")}</span>
         </div>
         <div class="anni-stem">${md(q.stem)}</div>
@@ -2805,13 +2805,13 @@ ${rawHtml(String(q.analysis || "（AI 未给出解析）"))}</div>
       }
       body.innerHTML = pass ? `
         <div class="anni-result">
-          <div class="anni-trophy">💥</div>
+          <div class="anni-trophy">${UiIcon.svg("trophy", 52)}</div>
           <h3>变式歼灭成功！</h3>
           <p>${r.items.length} 道同考点变式题全部答对，<br>这道错题算真正拿下了。</p>
           <button class="btn btn-primary btn-block" id="anniDone">完成</button>
         </div>` : `
         <div class="anni-result">
-          <div class="anni-trophy">📚</div>
+          <div class="anni-trophy">${UiIcon.svg("trophy", 52)}</div>
           <h3>还差一口气</h3>
           <p>有变式题答错，考点还没彻底掌握，<br>建议看完解析后再来一轮。</p>
           <button class="btn btn-primary btn-block" id="anniAgain">再来一轮</button>
@@ -3695,7 +3695,7 @@ async function renderImport() {
       </div>
       <div id="tabWeb" hidden>
         <p class="muted">粘贴真题网页地址，或直接粘贴网页文字，由 AI 抽取结构化题目</p>
-        <p class="muted" style="color:var(--amber)">💡 手机网络受限时，网址可能抓取失败——此时请直接在浏览器里打开该网页，
+        <p class="muted" style="color:var(--amber)">${UiIcon.html("bulb", 14)}手机网络受限时，网址可能抓取失败——此时请直接在浏览器里打开该网页，
           长按全选复制正文，粘贴到下面的文本框再抽取，效果相同。</p>
         <input id="webUrl" class="m-input" placeholder="https://…（留空则用粘贴文本）"/>
         <textarea id="webText" class="m-area" rows="7" style="margin-top:8px"
@@ -3966,7 +3966,7 @@ async function renderSettings() {
         <div class="muted">deepseek-flash（默认，快且支持看图）/ deepseek-v4-pro（更强，费用更高）</div>
       </div>
       <div class="key-guide">
-        <b>🔑 免费申请 DeepSeek Key（约 2 分钟）</b>
+        <b>${UiIcon.html("key", 15)}免费申请 DeepSeek Key（约 2 分钟）</b>
         <ol class="guide-steps">
           <li>浏览器打开 <b>platform.deepseek.com</b>，手机号注册并登录</li>
           <li>左侧菜单进入「API keys」→「创建 API key」</li>
@@ -4808,7 +4808,7 @@ async function renderSpeed() {
         <h3>${cfg.challenge ? "60 秒挑战结束" : "本轮完成"}</h3>
         ${recordInfo ? `<div class="record-banner ${recordInfo.new_record ? "new" : ""}">
           ${recordInfo.new_record
-            ? `🏆 刷新个人纪录！`
+            ? `${UiIcon.html("trophy", 14)}刷新个人纪录！`
             : (recordInfo.first ? "已建立个人纪录基准" : "个人纪录")}
           ${Math.floor(recordInfo.best_ms / 60000)}分
           ${Math.round((recordInfo.best_ms % 60000) / 1000)}秒
@@ -5096,9 +5096,9 @@ async function renderMe() {
         之后从桌面图标打开即是全屏 App 形态。
       </p>
     </div>
-    <a class="entry" href="/api/app-apk"><span class="ei">⬇</span>
+    <a class="entry" href="/api/app-apk"><span class="ei">${UiIcon.svg("download", 20)}</span>
       <span class="et"><b>下载安卓安装包</b><small>APK · 允许安装未知来源后打开</small></span><span class="go">›</span></a>
-    <a class="entry" href="/" target="_blank"><span class="ei">🖥</span>
+    <a class="entry" href="/" target="_blank"><span class="ei">${UiIcon.svg("desktop", 20)}</span>
       <span class="et"><b>电脑完整版</b><small>新标签页打开桌面端</small></span><span class="go">›</span></a>` : ""}`;
 
     const hb = $("#hostBtn");
@@ -5139,7 +5139,7 @@ async function renderArgument() {
   const qs = ov.quiz_stats;
   view.innerHTML = `
     <div class="card arg-quiz-entry">
-      <b>⚡ 错误辨析快练</b>
+      <b>${UiIcon.html("scale", 14)}错误辨析快练</b>
       <div class="meta">${qs.total ? `累计 ${qs.total} 题 · 答对 ${qs.right}` : "给一句论证判断错在哪类，每组 5 题"}</div>
       <button class="btn btn-primary btn-block" id="argGoQuiz">开练</button>
     </div>
@@ -5259,7 +5259,7 @@ async function renderArgumentDo(mid) {
           <div class="meta">标准：${esc(d.std_type)} ｜ 你：${d.user_type ? esc(d.user_type) : "未标注"}</div>
           <div class="arg-flaw-line">A：${esc(d.a)}</div>
           <div class="arg-flaw-line">B：${esc(d.b)}</div>
-          ${r.ai_comments && r.ai_comments[k] ? `<div class="arg-ai-line">🤖 ${esc(r.ai_comments[k])}</div>` : ""}
+          ${r.ai_comments && r.ai_comments[k] ? `<div class="arg-ai-line">${UiIcon.html("chat", 13)}${esc(r.ai_comments[k])}</div>` : ""}
         </div>`).join("");
       $("#argResult").innerHTML = `
         <div class="card" style="text-align:center">
@@ -5520,7 +5520,7 @@ async function renderShizheng() {
             <span class="sz-step">② 自测 10 题</span><span class="sz-step-arrow">→</span>
             <span class="sz-step">③ 错题进错题本</span>
           </div>
-          <button class="btn btn-sm sz-quiz-btn" data-p="${esc(it.period)}">📝 开始自测</button>
+          <button class="btn btn-sm sz-quiz-btn" data-p="${esc(it.period)}">${UiIcon.html("pen", 14)}开始自测</button>
           <div class="sz-quiz-box" data-p="${esc(it.period)}"></div>
         </details>
       </div>`).join("") : "";
@@ -5585,11 +5585,11 @@ async function renderShizheng() {
         btn.disabled = true; btn.textContent = "加载自测题…";
         try {
           const g = await api("/api/shizheng/quiz", { period: p });
-          if (!g.ok) { btn.disabled = false; btn.textContent = "📝 自测 10 题"; return toast(g.error); }
+          if (!g.ok) { btn.disabled = false; btn.textContent = "自测 10 题"; return toast(g.error); }
           if (!box.innerHTML) renderQuiz(box, g.items);
           btn.textContent = "已加载自测题";
         } catch (e) {
-          btn.disabled = false; btn.textContent = "📝 自测 10 题";
+          btn.disabled = false; btn.textContent = "自测 10 题";
           toast(e.message);
         }
       };
@@ -5777,7 +5777,7 @@ async function renderGrade() {
     </div>
     <div class="card">
       <select id="gZhenti" class="g-field">
-        <option value="">📄 从真题库选题（${qs.items.length} 道）…</option>
+        <option value="">从真题库选题（${qs.items.length} 道）…</option>
         ${qs.items.map(q => `<option value="${esc(q.id)}">[${esc(q.exam)}] ${esc(q.title)}（${q.total_score}分）</option>`).join("")}
       </select>
       <select id="gCat" class="g-field"></select>
@@ -5793,7 +5793,7 @@ async function renderGrade() {
     <div id="gOut"></div>
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-        <h3 class="sec" style="margin:0">📈 提分曲线</h3>
+        <h3 class="sec" style="margin:0">${UiIcon.html("chart", 15)}提分曲线</h3>
         <select id="gTrendCat" class="g-field" style="width:auto;margin:0;padding:5px 8px;font-size:calc(12.5px * var(--fs))">
           <option value="">全部题型</option>
           ${rub.items.map(r => `<option value="${r.key}">${esc(r.name)}</option>`).join("")}
@@ -5919,7 +5919,7 @@ async function renderGrade() {
       <div class="card self-grade">
         <h3>对照自评 · ${esc(r0 ? r0.name : "")}（满分 ${total} 分）</h3>
         ${curRef
-          ? `<details class="sg-ref" open><summary>📖 参考答案（先自己打分再对照）</summary>
+          ? `<details class="sg-ref" open><summary>${UiIcon.html("book", 14)}参考答案（先自己打分再对照）</summary>
                <div class="md-body">${md(curRef)}</div></details>`
           : `<p class="muted">未载入真题参考答案，请按下方评分细则自评</p>`}
         <div class="cfg-label">评分细则逐项勾选（做到的打勾）</div>
@@ -6077,7 +6077,7 @@ async function renderAiAsk() {
           style="flex:1;resize:none;border:1px solid var(--line,#ddd);border-radius:10px;padding:8px;font-size:calc(15px * var(--fs));font-family:inherit;background:transparent;color:inherit"></textarea>
         <button class="btn" id="aiGo" style="padding:8px 14px">发送</button>
       </div>
-      <button class="btn btn-block" id="aiNew" style="margin-top:8px">🧹 新对话</button>
+      <button class="btn btn-block" id="aiNew" style="margin-top:8px">${UiIcon.html("chat", 14)}新对话</button>
       <p style="text-align:center;color:var(--ink-2,#999);font-size:calc(12px * var(--fs));margin:8px 0 0">内容由 AI 生成，仅供参考</p>
     </div>`;
 
@@ -6192,7 +6192,7 @@ async function renderAiAsk() {
 
     let full = "";
     const b = bubble("ai", "");
-    b.innerHTML = `<div style="color:var(--ink-2,#999);font-size:calc(12.5px * var(--fs))">🤔 思考中…</div>`;
+    b.innerHTML = `<div style="color:var(--ink-2,#999);font-size:calc(12.5px * var(--fs))">${UiIcon.html("clock", 13)}思考中…</div>`;
 
     try {
       const r = await fetch("/api/ai/ask", {
@@ -6834,7 +6834,7 @@ async function renderXcNotes() {
     if (!exs.length) return "";
     return `
       <div class="nx-ex">
-        <button type="button" class="nx-ex-btn" aria-expanded="false">📄 真题范例 ${exs.length} 例（点开看要点）</button>
+        <button type="button" class="nx-ex-btn" aria-expanded="false">${UiIcon.html("paper", 13)}真题范例 ${exs.length} 例（点开看要点）</button>
         <div class="nx-ex-body" hidden>
           ${exs.map(ex => `
             <div class="nx-ex-item">
@@ -7078,7 +7078,7 @@ async function renderXcNotes() {
         const b = box.querySelector(".nx-ex-body");
         b.hidden = !b.hidden;
         btn.setAttribute("aria-expanded", b.hidden ? "false" : "true");
-        btn.textContent = (b.hidden ? "📄 真题范例 " : "📄 收起范例 ") + btn.dataset.n + " 例";
+        btn.textContent = (b.hidden ? "真题范例 " : "收起范例 ") + btn.dataset.n + " 例";
       };
     });
     $$(".nx-drill", el).forEach(btn => {
@@ -7206,7 +7206,7 @@ async function renderSlNotes() {
     if (!exs.length) return "";
     return `
       <div class="nx-ex">
-        <button type="button" class="nx-ex-btn" aria-expanded="false">📄 真题范例 ${exs.length} 例（点开看要点）</button>
+        <button type="button" class="nx-ex-btn" aria-expanded="false">${UiIcon.html("paper", 13)}真题范例 ${exs.length} 例（点开看要点）</button>
         <div class="nx-ex-body" hidden>
           ${exs.map(ex => `
             <div class="nx-ex-item">
@@ -7446,7 +7446,7 @@ async function renderSlNotes() {
         const b = box.querySelector(".nx-ex-body");
         b.hidden = !b.hidden;
         btn.setAttribute("aria-expanded", b.hidden ? "false" : "true");
-        btn.textContent = (b.hidden ? "📄 真题范例 " : "📄 收起范例 ") + btn.dataset.n + " 例";
+        btn.textContent = (b.hidden ? "真题范例 " : "收起范例 ") + btn.dataset.n + " 例";
       };
     });
     $$(".sl-toggle", el).forEach(btn => {
