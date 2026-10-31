@@ -28,11 +28,12 @@
 - **断点续做**：中途退出自动存草稿，回来接着做（节流写入 + 心跳 + 切页兜底保存）
 - **单手翻题**：移动端底部操作栏 + 左右滑动翻题，底栏跟随每屏重挂
 - **搜题历史**：记录最近 20 次搜索，去重置顶，一键再搜
-- **行测速查**：5 模块 **58 个考点**手册（公式 / 规律 / 速算技巧），搜索过滤 + 目录跳转
+- **行测速查**：6 模块 **138 个考点**手册（资料 / 数量 / 判断 / 言语 / 常识 / 政治理论，含 201 道速查题），搜索过滤 + 目录跳转
 
 ### 综应专区
 - 申论综应练习、论证评价、科技文献阅读、时政自测、AI 批改、面试模拟
 - **综应考点**：6 板块 **159 个知识点**（科技文献 / 实验设计 / 论证评价 / 校阅改错 / 科普议论文 / 常识速记），搜索过滤 + 手风琴展开
+- **申论速查**：6 模块 **56 个考点**（答题总纲 + 归纳概括 / 综合分析 / 提出对策 / 贯彻执行 / 文章写作），正文与答题提示分层，搜索过滤 + 分类折叠
 - **AI 批改**：作文 / 综合应用材料智能评分批改
 - **真题采分点**：命中真题库时按**固定子项清单**逐条踩点打分（子项分值之和=题目满分），
   未命中则 AI 自拟要点并在结果里标明「采分点来源：真题库 / AI 自拟」；失分点自动进
@@ -83,7 +84,7 @@
 - **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-flash`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 1072 条 + 16 个前端静态校验器（node）+ Playwright 移动端 E2E；ruff 全绿，覆盖率 60%
+- **测试**：pytest 1261 条 + 16 个前端静态校验器（node）+ Playwright 移动端 E2E；ruff 全绿，覆盖率 60%
 
 ## 快速开始（首次使用顺序）
 
@@ -228,7 +229,8 @@ GOSHORE/
 │   ├── ai_eval.py         # AI 输出离线评测（golden set 跑批）
 │   ├── accounts.py        # 多账号（移动端 accounts.db + data_<uid>.db）
 │   ├── sync_webdav.py     # 多设备加密同步（信封加密 + WebDAV 客户端）
-│   ├── xingce_notes.py    # 行测速查内容源（5 模块 58 考点）
+│   ├── xingce_notes.py    # 行测速查内容源（6 模块 138 考点）
+│   ├── shenlun_notes.py   # 申论速查内容源（6 模块 56 考点）
 │   ├── zy_notes.py        # 综应考点内容源（6 板块 159 考点）
 │   ├── print_export.py    # 错题导出可打印页
 │   ├── cube_vision.py     # 折纸盒拍照识别
@@ -250,7 +252,7 @@ GOSHORE/
 │   ├── goshor.db          # 单库模式的老布局（与新布局二选一，见下）
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（1072 条）
+├── tests/                 # pytest 用例（1261 条）
 ├── tools/                 # 校验器（16 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── migrate_split.py       # 老单库 → content.db + user.db
@@ -288,7 +290,7 @@ python tools/migrate_split.py             # 真迁移（约 15~45 秒）
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（1072 条，跑在临时库上，不碰 data/*.db）
+# 后端单元 / 接口测试（1261 条，跑在临时库上，不碰 data/*.db）
 python -m pytest tests -q
 
 # 静态检查与覆盖率（配置见 pyproject.toml；开发依赖 pip install -r requirements-dev.txt）
@@ -308,11 +310,11 @@ node tools/check_appearance.mjs    # 夜间模式 + 字号四档
 node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致性
 # …共 16 个，全部退出码 0
 
-# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 79 项断言）
+# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 88 项断言）
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 1072 passed**、**`ruff check .` 全绿**、**覆盖率 60%**、**AI 评测 33 条全过（100.00 分）**、**16 个静态校验器全 EXIT=0**、**E2E 79 项断言全通过**。
+当前基线：**pytest 1261 passed**、**`ruff check .` 全绿**、**覆盖率 60%**、**AI 评测 33 条全过（100.00 分）**、**16 个静态校验器全 EXIT=0**、**E2E 88 项断言全通过**。
 
 ## 常见问题
 

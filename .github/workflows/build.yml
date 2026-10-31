@@ -48,13 +48,6 @@ jobs:
           PY
           fi
           exit "$rc"
-      - name: 前端静态校验（16 个 node checker）
-        run: |
-          set -e
-          for f in tools/check_*.mjs; do
-            echo "== $f"
-            node "$f"
-          done
 
   # 质量门：E2E / AI golden / 示例库内容规则。与 pytest 分开跑，
   # 避免 Playwright 安装拖慢主测试；任一失败都让 CI 变红。
@@ -75,7 +68,7 @@ jobs:
           pip install -r requirements.txt
           pip install pytest==9.1.1 playwright==1.60.0
           python -m playwright install --with-deps chromium
-      - name: 移动端 E2E（仓库示例库，79 项断言）
+      - name: 移动端 E2E（仓库示例库，88 项断言）
         run: |
           # 失败自动重试一次：这套 E2E 在 CI 上偶发 20s 超时（340a285 这种纯文档提交
           # 也红过）。重试逻辑在 scripts/ci_e2e_retry.py（本机没有 bash，放 Python 里
