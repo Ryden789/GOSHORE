@@ -5,10 +5,11 @@ import base64
 import binascii
 import json
 import re
+import time
 
 import httpx
 
-from . import db
+from . import db, shenlun_notes, xingce_notes
 from .config import load_settings, vision_model
 from .parser import WIKILINK_RE
 
@@ -112,7 +113,316 @@ ASK_SYSTEM = """你是一名公务员国考/省考与事业单位全科备考答
 4. 回答用 Markdown：先给结论再展开，简洁分点，不写套话。
 5. 遇到超纲或与备考无关的问题，简短回应后引导回备考话题。
 6. 当用户上传图片时，你应仔细观察图片中的题目（题干、选项、图形/图表），独立分析后给出答案与解析。不要盲目附和用户给出的答案——如果你分析后认为答案与用户不同，应明确指出并说明理由。先给出你的判断依据，再给结论。
+7. 若提问末尾附带了【行测方法论底稿】【申论方法论底稿】【时政底稿】【图形推理底稿】【个人错题本】，这些是本机知识库与个人记录的真实原文：讲对应模块的方法、公式、速算口径时以底稿为准，不要与之冲突；底稿没覆盖的部分再补通用解法，并说明「底稿未收录」。
+8. 图形推理题必须先把规律穷举一遍再下结论：位置类（平移/旋转/翻转）、样式类（遍历/加减同异/黑白运算）、数量类（点线面角素）、属性类（对称/曲直/开闭/一笔画）。黑白方块类先验证「同位置黑白叠加」（黑+黑=白、白+白=白、黑白相异=黑，即去同存异），按行或按列逐格对齐验证；只用「黑块数量」往往选不出唯一答案，不能作为唯一依据。
+9. 遇到黑白格/黑白叠加类图推，先把九宫格 9 格和每个选项逐格转写成 3×3 的黑白表（■ 黑、□ 白），再用转写结果推规律、验证选项；转写与推理必须自洽。图像看不清时直接说明「图太小/格线看不清，请放大或分块截图」，不要凭印象编造每一格的黑白，也不要写出与实际不符的"✓ 验证通过"。
+10. 当用户问「你和普通 AI 有什么不同」时，据实说明你的本地优势：接入了本机题库（可检索真题考点与出处）、本机《行测/申论速查手册》（方法与口径优先于模型记忆）、本机时政库（含近期会议与政策原文）、用户个人错题本与作答记录。没有接入的项目不要吹，也不要声称能联网查最新公告。
 """
+
+# 自由答疑的时政底稿：命中这些词才注入，避免每道题都多付一段输入 token
+SHIZHENG_HINTS = (
+    "时政", "全会", "会议", "讲话", "公报", "决议", "政策", "新规", "印发", "出台",
+    "二十大", "二十届", "十五五", "两会", "政府工作报告", "新闻", "最新",
+)
+
+# 行测方法论底稿：《行测速查手册》6 模块 138 个考点。答疑只按模块路由注入
+# 最相关的几条——全量 7.4 万字灌进去既稀释指令，也把每次提问的输入费抬上去。
+_XC_HINTS: dict[str, tuple[str, ...]] = {
+    "ziliao": (
+        "资料分析", "资料", "增长率", "增长量", "比重", "基期", "现期", "年均", "倍数",
+        "平均数", "截位", "直除", "百化分", "拉动", "贡献率", "顺差", "逆差", "指数", "翻番",
+    ),
+    "shuliang": (
+        "数量关系", "数量", "工程", "行程", "相遇", "追及", "流水", "利润", "浓度", "排列",
+        "组合", "概率", "容斥", "最值", "牛吃草", "鸡兔", "数列", "几何", "年龄", "植树",
+        "方阵", "周期", "余数", "不定方程", "赋值", "代入排除",
+    ),
+    "panduan": (
+        "判断推理", "判断", "图形", "定义", "类比", "削弱", "加强", "假设", "前提", "真假",
+        "翻译", "选言", "二难", "智力推理", "三视图", "截面", "拼合", "归因",
+    ),
+    "yanyu": (
+        "言语", "逻辑填空", "片段", "语句", "排序", "衔接", "成语", "实词", "虚词", "主旨",
+        "意图", "细节", "标题", "病句", "下文推断", "词句理解",
+    ),
+    "changshi": (
+        "常识判断", "常识", "法律", "宪法", "民法典", "刑法", "行政法", "历史", "文学",
+        "地理", "物理", "化学", "生物", "科技", "航天", "经济常识", "公文", "传统节日", "考古",
+    ),
+    "zhengzhi": (
+        "政治理论", "马哲", "马克思主义", "唯物", "辩证法", "矛盾", "认识论", "党史",
+        "毛泽东思想", "中特", "习思想", "中国式现代化", "新发展", "依法治国", "从严治党",
+        "一国两制", "核心价值观",
+    ),
+}
+
+
+def _ask_user_text(messages: list[dict]) -> str:
+    """把所有 user 消息拼成纯文本（多模态 content 只取 text 片段）。"""
+    parts = []
+    for m in messages:
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            parts.append(c)
+        elif isinstance(c, list):
+            parts.append(" ".join(
+                p.get("text", "") for p in c
+                if isinstance(p, dict) and isinstance(p.get("text"), str)
+            ))
+    return " ".join(parts)
+
+
+def _xc_point_score(point: dict, question: str, hints: tuple[str, ...]) -> float:
+    """考点与问题的相关度：命中词出现在标题里权重最高，正文里次之。"""
+    title = str(point.get("title") or "")
+    body = str(point.get("body") or "")
+    score = 0.0
+    for h in hints:
+        if h in question:
+            score += 3 if h in title else 0
+            score += 1 if h in body else 0
+    # 题干里出现考点标题的相邻两字（如「截位直除」），也算相关
+    for i in range(len(title) - 1):
+        if title[i:i + 2] in question:
+            score += 2
+    return score
+
+
+def ask_xingce_block(messages: list[dict], max_modules: int = 2, max_points: int = 3,
+                     max_chars: int = 3200, body_chars: int = 700) -> str:
+    """按问题命中模块注入本地《行测速查手册》的考点正文。
+
+    题库只存「题」，做题方法全在手册里；不注入的话，答疑只能凭模型记忆给个
+    泛泛的「一般用公式法」，和 App 里速查页的口径对不上。
+    """
+    question = _ask_user_text(messages)
+    if not question:
+        return ""
+    groups = (xingce_notes.NOTES.get("groups") or [])
+    by_key = {g.get("key"): g for g in groups if g.get("key")}
+
+    # 1) 先定模块：模块名权重最高，其余关键词按出现次数累加
+    scores: dict[str, float] = {}
+    for key, hints in _XC_HINTS.items():
+        group = by_key.get(key)
+        if not group:
+            continue
+        name = str(group.get("name") or "")
+        s = question.count(name) * 3 if name else 0
+        s += sum(question.count(h) for h in hints)
+        if s:
+            scores[key] = s
+    if not scores:
+        return ""
+    picked = sorted(scores, key=lambda k: scores[k], reverse=True)[:max_modules]
+
+    # 2) 再挑考点：相关度排序，全不沾边时退回该模块前两条
+    out = ["【行测方法论底稿·本地《行测速查手册》】",
+           "以下方法来自本机速查手册，讲该模块的公式、口径与速算时以此为准；"
+           "手册没覆盖的再补通用解法。"]
+    used = len(out[0]) + len(out[1])
+    for key in picked:
+        group = by_key[key]
+        name = str(group.get("name") or key)
+        desc = str(group.get("desc") or "")
+        out.append(f"\n## {name}" + (f"\n{desc}" if desc else ""))
+        used += len(out[-1])
+        points = group.get("points") or []
+        hints = _XC_HINTS[key]
+        ranked = sorted(points,
+                        key=lambda p: _xc_point_score(p, question, hints), reverse=True)
+        top = [p for p in ranked if _xc_point_score(p, question, hints) > 0][:max_points]
+        if not top:
+            top = points[:2]
+        for p in top:
+            body = re.sub(r"\s*\n\s*", "\n", str(p.get("body") or "")).strip()
+            tips = [str(t).strip() for t in (p.get("tips") or []) if str(t).strip()][:2]
+            chunk = f"\n### {p.get('title')}\n{body[:body_chars]}"
+            if tips:
+                chunk += "\n易错：" + "；".join(tips)
+            if used + len(chunk) > max_chars:
+                break
+            out.append(chunk)
+            used += len(chunk)
+    return "\n".join(out)
+
+
+def has_image(messages: list[dict]) -> bool:
+    """提问里是否带图（多模态 content 中的 image_url 片段）。"""
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            for part in c:
+                if isinstance(part, dict) and part.get("type") in ("image_url", "input_image"):
+                    return True
+    return False
+
+
+def ask_graph_block(max_chars: int = 2600, body_chars: int = 420) -> str:
+    """图片题的图形推理底稿（手册里 7 个图形考点 ≈ 3 千字）。
+
+    图片题没有文字关键词可以路由，而图推是图片提问里最常见的一类；
+    不注入的话模型容易只数黑块数量就下结论（同一道黑白格九宫格就出过这种误判）。
+    """
+    group = next((g for g in (xingce_notes.NOTES.get("groups") or [])
+                  if g.get("key") == "panduan"), None)
+    if not group:
+        return ""
+    out = ["【图形推理底稿·本地《行测速查手册》】",
+           "先穷举四大类规律（位置 / 样式 / 数量 / 属性）再逐条验证；黑白方块类优先试"
+           "「同位置黑白叠加（去同存异、去异存同）」，按行或按列对齐比；只数黑块数量通常选不出唯一答案。"]
+    used = sum(len(s) for s in out)
+    for p in group.get("points") or []:
+        if "图形" not in str(p.get("title") or ""):
+            continue
+        body = re.sub(r"\s*\n\s*", "\n", str(p.get("body") or "")).strip()
+        chunk = f"\n### {p.get('title')}\n{body[:body_chars]}"
+        if used + len(chunk) > max_chars:
+            break
+        out.append(chunk)
+        used += len(chunk)
+    return "\n".join(out)
+
+
+def ask_shizheng_block(messages: list[dict], max_periods: int = 2, per_chars: int = 700) -> str:
+    """把本地时政库最近两期拼成一段底稿，供自由答疑引用。
+
+    答疑链路此前完全不碰时政库，问"最近开了什么会"只能靠模型内部知识（有截止日）。
+    这里只在问题命中 SHIZHENG_HINTS 时注入，其余提问零成本。
+    """
+    text = _ask_user_text(messages)
+    if not text or not any(k in text for k in SHIZHENG_HINTS):
+        return ""
+    try:
+        rows = db.list_shizheng()
+    except Exception:
+        return ""
+    parts = []
+    for r in rows[:max_periods]:            # list_shizheng 已按 period 倒序
+        body = re.sub(r"\s*\n\s*", "\n", str(r.get("content") or "")).strip()
+        if body:
+            parts.append(f"【{r.get('period')}】\n{body[:per_chars]}")
+    if not parts:
+        return ""
+    return (
+        "【时政底稿·本地时政库最近两期】\n"
+        + "\n\n".join(parts)
+        + "\n以上是该库已收录的全部近期内容；库中未收录的日期/会议/数据不要编造，"
+          "明确说明需以官方发布为准。"
+    )
+
+
+# 申论 / 综应方法论底稿：《申论速查手册》6 模块 71 个考点，按题型路由注入
+_SL_HINTS: dict[str, tuple[str, ...]] = {
+    "zonggang": (
+        "申论", "综应", "阅卷", "评分", "审题", "时间分配", "卷面", "扣分", "字数", "题型",
+    ),
+    "gaikuo": (
+        "归纳概括", "概括", "归纳", "要点", "提炼", "找点", "争议", "焦点", "变化", "特点",
+    ),
+    "fenxi": (
+        "综合分析", "分析题", "理解", "评析", "评价", "观点", "词句", "异同", "比较", "启示",
+    ),
+    "duice": (
+        "提出对策", "对策", "建议", "措施", "怎么办", "可行性", "教训",
+    ),
+    "guanche": (
+        "贯彻执行", "公文", "通知", "报告", "请示", "函", "倡议书", "讲话稿", "发言稿",
+        "提纲", "简报", "纪要", "调研", "公开信", "新闻稿", "工作方案", "编者按", "宣传稿",
+    ),
+    "zuowen": (
+        "大作文", "作文", "文章写作", "申发论述", "议论文", "分论点", "立意", "标题",
+        "开头", "结尾", "论证", "素材", "策论文",
+    ),
+}
+
+
+def ask_shenlun_block(messages: list[dict], max_modules: int = 2, max_points: int = 2,
+                      max_chars: int = 3000, body_chars: int = 700) -> str:
+    """按问题命中模块注入本地《申论速查手册》的考点正文。
+
+    与行测底稿同一套路由逻辑：只给最相关的两三条，避免把整本手册灌进上下文。
+    """
+    question = _ask_user_text(messages)
+    if not question:
+        return ""
+    groups = (shenlun_notes.NOTES.get("groups") or [])
+    by_key = {g.get("key"): g for g in groups if g.get("key")}
+
+    scores: dict[str, float] = {}
+    for key, hints in _SL_HINTS.items():
+        group = by_key.get(key)
+        if not group:
+            continue
+        name = str(group.get("name") or "")
+        s = question.count(name) * 3 if name else 0
+        s += sum(question.count(h) for h in hints)
+        if s:
+            scores[key] = s
+    if not scores:
+        return ""
+    picked = sorted(scores, key=lambda k: scores[k], reverse=True)[:max_modules]
+
+    out = ["【申论方法论底稿·本地《申论速查手册》】",
+           "以下方法来自本机速查手册（含评分规则与扣分项），讲申论/综应答法时以此为准；"
+           "手册没覆盖的再补通用解法。"]
+    used = len(out[0]) + len(out[1])
+    for key in picked:
+        group = by_key[key]
+        name = str(group.get("name") or key)
+        desc = str(group.get("desc") or "")
+        out.append(f"\n## {name}" + (f"\n{desc}" if desc else ""))
+        used += len(out[-1])
+        points = group.get("points") or []
+        hints = _SL_HINTS[key]
+        ranked = sorted(points,
+                        key=lambda p: _xc_point_score(p, question, hints), reverse=True)
+        top = [p for p in ranked if _xc_point_score(p, question, hints) > 0][:max_points]
+        if not top:
+            top = points[:2]
+        for p in top:
+            body = re.sub(r"\s*\n\s*", "\n", str(p.get("body") or "")).strip()
+            tips = [str(t).strip() for t in (p.get("tips") or []) if str(t).strip()][:2]
+            chunk = f"\n### {p.get('title')}\n{body[:body_chars]}"
+            if tips:
+                chunk += "\n易错：" + "；".join(tips)
+            if used + len(chunk) > max_chars:
+                break
+            out.append(chunk)
+            used += len(chunk)
+    return "\n".join(out)
+
+
+# 命中这些词才注入个人错题本：普通提问不把用户的学习数据带进模型
+WRONG_HINTS = ("错题", "错题本", "老错", "总是错", "一直错", "薄弱", "查漏", "弱项", "我的错")
+
+
+def ask_wrong_block(messages: list[dict], limit: int = 8, max_chars: int = 1500) -> str:
+    """注入本机错题本的最近错题，这是普通 DeepSeek 拿不到的个人数据。
+
+    只给标题与所属模块，不给整题 JSON：模型据此点名「你在资料分析·比重这一块
+    反复错」即可，具体题目内容用户自己看得到。
+    """
+    text = _ask_user_text(messages)
+    if not text or not any(k in text for k in WRONG_HINTS):
+        return ""
+    try:
+        rows = db.list_wrong_book(limit)
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    lines = ["【个人错题本·本机记录】以下是用户最近答错的题（题名｜所属模块）："]
+    for r in rows[:limit]:
+        mod = " / ".join(x for x in (str(r.get("module") or ""),
+                                     str(r.get("kaodian") or "")) if x)
+        title = str(r.get("title") or "（无标题）")
+        lines.append(f"- {title}" + (f"｜{mod}" if mod else ""))
+    lines.append("讲薄弱环节时可以点名关联这些题；错题本里没有的不要编造。")
+    return "\n".join(lines)[:max_chars]
+
 
 # 图片答疑输入上限：手机端压缩后单张通常 < 1 MB，这里留足余量并防止
 # 恶意客户端把任意 URL / 超大 base64 透传给上游模型（SSRF / 计费放大）。
@@ -589,7 +899,11 @@ async def stream_chat_with_temp(messages: list[dict], temperature: float):
 async def stream_chat(messages: list[dict], use_vision: bool = False):
     """yield ('delta'|'think'|'error'|'done', payload)。
 
-    use_vision=True 时切换到 deepseek-flash（V4.1 原生多模态）并关闭思考模式。"""
+    use_vision=True 时切换到多模态模型并**关闭思考模式**：图纸题让模型先"想"五分钟
+    再开口，用户只会以为卡死（实测图形题连续思考 5 分钟没有正文输出）。
+    非视觉问答保留思考，但整体有墙钟上限：流式只在有数据时才走循环，
+    读超时（120s）挡不住"一直在输出思考"的长时间生成，必须自己掐。
+    """
     s = load_settings()
     if not s["deepseek_api_key"]:
         yield "error", "未配置 DeepSeek API Key，请到「设置」中填写。"
@@ -603,8 +917,15 @@ async def stream_chat(messages: list[dict], use_vision: bool = False):
     }
     if use_vision:
         payload["max_tokens"] = 4096
+        payload["thinking"] = {"type": "disabled"}
     headers = {"Authorization": f"Bearer {s['deepseek_api_key']}"}
     url = s["deepseek_base_url"].rstrip("/") + "/chat/completions"
+    # 图形题关掉思考后正常 10~30 秒；纯文字题允许更长的推理
+    deadline = 60.0 if use_vision else 150.0
+    started = time.monotonic()
+    timed_out = False
+    answered = False
+    finish = None
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
@@ -616,22 +937,41 @@ async def stream_chat(messages: list[dict], use_vision: bool = False):
                     yield "error", f"API 返回 {resp.status_code}：{body.decode('utf-8','ignore')[:500]}"
                     return
                 async for line in resp.aiter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
+                    if line.startswith("data:"):
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choice = chunk.get("choices", [{}])[0]
+                        delta = choice.get("delta", {})
+                        finish = choice.get("finish_reason") or finish
+                        if delta.get("reasoning_content"):
+                            yield "think", delta["reasoning_content"]
+                        if delta.get("content"):
+                            answered = True
+                            yield "delta", delta["content"]
+                    # 只在「还没开始出正文」时掐：正文一旦开始就让它讲完，
+                    # 避免把一份正常的长解析从中间截断
+                    if not answered and time.monotonic() - started > deadline:
+                        timed_out = True
                         break
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    choice = chunk.get("choices", [{}])[0]
-                    delta = choice.get("delta", {})
-                    if delta.get("reasoning_content"):
-                        yield "think", delta["reasoning_content"]
-                    if delta.get("content"):
-                        yield "delta", delta["content"]
     except httpx.HTTPError as e:
         yield "error", f"网络请求失败：{e}"
+        return
+    if timed_out:
+        yield "error", (f"本次生成超过 {int(deadline)} 秒，已自动停止（模型一直在推理，"
+                        f"迟迟没有给出正文）。可以换个更具体的问法，或把题目中的关键区域单独截图再问。")
+        return
+    # 一个字正文都没出就结束了：思考把输出额度吃光（finish_reason=length）是最常见的
+    # 情况，界面若只挂着「思考中…」用户会以为卡死，这里必须给出明确结论。
+    if not answered:
+        if finish == "length":
+            yield "error", ("模型这次把输出长度全用在思考上了，没来得及给正文（思考+正文共用同一个"
+                            "输出上限）。把提问缩短、或只截关键图形再问会好很多。")
+        else:
+            yield "error", "本次没有生成正文（模型提前结束），请重试或换个问法。"
         return
     yield "done", ""

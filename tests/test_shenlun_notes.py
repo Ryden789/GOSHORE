@@ -233,8 +233,11 @@ def test_mobile_route_title_and_hub_entry():
 
 
 def test_desktop_home_quick_link():
+    """首页「常用工具」默认包含申论速查；入口改为可自定义列表后，默认项仍必须保留。"""
     js = _text(APP_JS)
-    assert '<a href="#/sl-notes">' in js, "首页常用工具没有申论速查入口"
+    assert 'QUICK_TOOLS_DEFAULT = ["xc-notes", "sl-notes", "ai-ask"]' in js, \
+        "首页常用工具默认项缺少申论速查入口"
+    assert "bindQuickTools" in js, "常用工具未实现可添加/移除"
 
 
 def test_module_icons_registered():
