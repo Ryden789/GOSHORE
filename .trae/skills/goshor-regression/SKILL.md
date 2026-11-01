@@ -53,7 +53,7 @@ python .trae/skills/goshor-regression/scripts/regression.py
 - 环境是 Windows PowerShell：不要用 bash heredoc、不要依赖 `&&` 链式命令。
 - POST JSON 不要用 curl 内联引号（PowerShell 会吞引号）；脚本内部用 urllib 发请求，无此问题。
 - 不要用 esprima 检查 JS（不支持可选链等 ES2020 语法会误报）；以无头浏览器 pageerror 为准。
-- 脚本不创建任何临时文件；测试写入的列式结算记录会立即从 `data/goshor.db` 删除，切勿把数据库提交到 git。
+- 脚本不创建任何临时文件；测试写入的列式结算记录会立即从 `data/user.db` 删除，切勿把数据库提交到 git。
 
 ## 维护
 

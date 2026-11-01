@@ -127,6 +127,34 @@ async function api(path, body) {
   return r.json();
 }
 
+/* 导出 PDF：服务端用 Chromium 把同一份打印页渲染成 PDF，这里按二进制下载。
+   返回 "ok" / "nopdf"（本机没装 Chromium，调用方退回可打印网页）/ "error"。 */
+async function exportPdf(p, filename) {
+  let r;
+  try {
+    r = await fetch("/api/export/pdf?" + p.toString());
+  } catch (e) {
+    toast("导出失败：本机服务未启动或已停止");
+    return "error";
+  }
+  if (!r.ok) {
+    if (r.status === 501) return "nopdf";
+    let msg = `${r.status}`;
+    try { msg = (await r.json()).detail || msg; } catch (e) {}
+    toast(`导出 PDF 失败（${r.status}）：${msg}`, 6000);
+    return "error";
+  }
+  const blob = await r.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename || "题库导出.pdf";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  return "ok";
+}
+
 /* ---------- 富文本净化（题库内容不可信） ----------
    白名单重建实现已收敛到 /shared/sanitize.js（桌面与移动共用一份），由 index.html
    在本文件之前加载；这里只保留 rawHtml() 调用点，不要再把实现复制回来。 */
@@ -305,6 +333,33 @@ function bindSetupPanel() {
     const p = $("#setupPanel");
     if (p) p.remove();
   };
+}
+
+/* 套卷下拉加搜索：库里 500 多套卷，光靠 select 翻找不动，前面给个过滤框。
+   空格分隔的多个词按「同时包含」匹配（「2021 江苏」= 卷名里既有 2021 又有江苏）；
+   卷名里写的是「国家公务员」「…省公务员」，所以「国考 / 省考」按别名换成正式写法。
+   只重排 option、不改 value 语义，下游仍读 `sel.value`（整卷练 / 整卷导出都用它）。
+   `emptyLabel` 是「不按整卷」这类空选项的文案（值固定为 ""）。 */
+const EXAM_SEARCH_ALIAS = { 国考: "国家公务员", 省考: "省公务员", 事业编: "事业单位" };
+
+function bindExamSearch(input, sel, exams, emptyLabel = "") {
+  const render = () => {
+    const prev = sel.value;   // 每次过滤前取当前选择，过滤后仍在候选里就还原
+    const words = input.value.trim().toLowerCase().split(/\s+/)
+      .filter(Boolean).map(w => EXAM_SEARCH_ALIAS[w] || w);
+    const hit = exams.filter(e => words.every(w => e.exam.toLowerCase().includes(w)));
+    if (!hit.length) {
+      sel.innerHTML = `<option value="">没有匹配的卷名</option>`;
+      return;
+    }
+    sel.innerHTML = (emptyLabel ? `<option value="">${esc(emptyLabel)}</option>` : "")
+      + hit.map(e =>
+        `<option value="${esc(e.exam)}">${e.is_ai ? "【AI模拟】" : ""}${esc(e.exam)}（${e.c} 题）</option>`
+      ).join("");
+    if (hit.some(e => e.exam === prev)) sel.value = prev;   // 过滤后仍保留原来选中的那套
+  };
+  input.oninput = render;
+  render();
 }
 
 /* 与手机端 m.js 同名的本地偏好读写（键前缀 g:），
@@ -1511,8 +1566,9 @@ async function renderWrong() {
   };
   const expBtn = $("#wbExport");
   if (expBtn) expBtn.onclick = () => {
-    const ids = [...picked].slice(0, 50);
+    const ids = [...picked].slice(0, 200);
     if (!ids.length) return toast("先勾选要导出的错题（可点「全选」）");
+    if (picked.size > 200) toast("单次最多导出 200 题，已取前 200 题");
     const p = new URLSearchParams({
       doc_ids: ids.join(","),
       heading: "错题本导出",
@@ -2145,6 +2201,7 @@ async function renderPaper(auto = "") {
           <div style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin-top:6px">
             智能模式按掌握度加权抽题（错得多、久未练的优先）；随机模式纯随机；顺序模式按题目编号推进；考场模式＝全屏 + 答题卡 + 交卷统一判分
           </div>
+          <div id="genMsg" style="font-size:calc(12.5px * var(--fs));color:var(--ink-3);margin-top:4px"></div>
         </div>
         <div><button class="btn btn-primary" id="gen">开始组卷</button></div>
       </div>
@@ -2178,6 +2235,8 @@ async function renderPaper(auto = "") {
         <div class="cfg-group">
           <div class="cfg-label">真题套卷（按当年卷面顺序整卷练，自动计时）</div>
           <div class="cfg-inline" id="examRow">
+            <input type="search" class="exam-search" id="examQuery" autocomplete="off"
+                   placeholder="搜卷名 / 年份 / 省份，如「2021 江苏」">
             <select id="examSel" style="min-width:280px"><option value="">加载中…</option></select>
             <button class="btn btn-primary" id="examStart" disabled>开始整卷</button>
           </div>
@@ -2201,7 +2260,7 @@ async function renderPaper(auto = "") {
     </div>
     <div id="paperBody"></div>`;
 
-  // 真题套卷下拉
+  // 真题套卷下拉（带搜索：卷名/年份/省份都能筛）
   api("/api/exams").then(r => {
     const sel = $("#examSel");
     if (!sel) return;   // 已切到其他页面，旧回调放弃（元素随旧视图一起移除）
@@ -2209,8 +2268,7 @@ async function renderPaper(auto = "") {
       sel.innerHTML = `<option value="">题库中暂无成套试卷</option>`;
       return;
     }
-    sel.innerHTML = r.items.map(e =>
-      `<option value="${esc(e.exam)}">${e.is_ai ? "【AI模拟】" : ""}${esc(e.exam)}（${e.c} 题）</option>`).join("");
+    bindExamSearch($("#examQuery"), sel, r.items);
     $("#examStart").disabled = false;
     $("#examMsg").textContent = `共 ${r.items.length} 套可选 · 每题约 53 秒的实战节奏自动计时`;
   });
@@ -2495,7 +2553,25 @@ async function renderPaper(auto = "") {
     const path = mode === "adaptive" ? "/api/paper/adaptive"
       : mode === "sequential" ? "/api/paper/sequential" : "/api/paper";
     const res = await api(path, payload);
-    if (!res.ids.length) return alert("该范围内没有真题");
+    const hint = $("#genMsg");
+    if (!res.ids.length) {
+      if (hint) hint.textContent = "该范围内没有真题，换个模块或考点试试";
+      return toast("该范围内没有真题");
+    }
+    // 题量不足会由后端从题库逐级补真题（绝不 AI 生成），这里把补齐口径说清楚
+    if (hint) {
+      const want = res.requested || res.ids.length;
+      const pool = typeof res.strict_pool === "number" ? res.strict_pool : want;
+      if (res.ids.length < want) {
+        hint.style.color = "var(--amber)";
+        hint.textContent = `题库真题不足：要 ${want} 道，只凑到 ${res.ids.length} 道（全部取自题库，未用 AI 生成）`;
+      } else if (pool < want) {
+        hint.style.color = "var(--ink-3)";
+        hint.textContent = `该范围严格匹配只有 ${pool} 道，已按「同考点大类 → 同模块 → 全库」补到 ${res.ids.length} 道（全部取自题库，未用 AI 生成）`;
+      } else {
+        hint.textContent = "";
+      }
+    }
     const examMode = !!($("#pExam .type-check.on"));
     const minutes = +$("#pMin").value || 0;
     runPaper(res.ids, examMode ? { examMode: true, minutes, fullscreen: true, title: "考场模式" } : {});
@@ -3892,6 +3968,11 @@ function syncLastText(s) {
 
 async function renderSettings() {
   const s = await api("/api/settings");
+  // 地区改成下拉：地区来自题库 facets，避免用户手输「国家/国考/北京」各种写法筛不到题
+  if (!facetsCache) {
+    try { facetsCache = await api("/api/facets"); } catch (e) { facetsCache = { regions: [] }; }
+  }
+  const regions = (facetsCache && facetsCache.regions) || [];
   view.innerHTML = `
     <div class="page-head rise">
       <h1 class="page-title">设置</h1>
@@ -4048,15 +4129,20 @@ async function renderSettings() {
     </div>
     <div class="panel rise rise-5" id="sec-export">
       <h3 style="margin:0 0 10px">题库导出 PDF <span class="save-tag now">即时生成</span></h3>
-      <p class="hint" style="margin:0 0 10px">按筛选条件生成可打印页面，在浏览器里 Ctrl+P 另存为 PDF（题库在前、答案解析在后）</p>
+      <p class="hint" style="margin:0 0 10px">按筛选条件或整卷导出，默认直接下载 PDF（分页、图片与网页打印一致）；也可选「可打印网页」再 Ctrl+P 另存。试题在前、答案与解析在后，资料分析会带上给定材料</p>
       <div class="cfg-inline">
+        <span>整卷 <input type="search" class="exam-search" id="expExamQuery" autocomplete="off"
+                        placeholder="搜卷名/年份/省份"></span>
+        <span><select id="expExam" style="min-width:210px"><option value="">（不按整卷）</option></select></span>
         <span>模块 <select id="expModule"><option value="">全部</option>${["常识判断","言语理解与表达","数量关系","判断推理","资料分析"].map(m => `<option>${m}</option>`).join("")}</select></span>
-        <span>地区 <input id="expRegion" placeholder="如：国家" style="width:90px"/></span>
-        <span>年份 <input id="expYear" placeholder="如：2024" style="width:80px"/></span>
-        <span>题量 <select id="expLimit"><option>50</option><option selected>100</option><option>200</option><option>500</option></select></span>
+        <span>地区 <select id="expRegion"><option value="">全部</option>${regions.map(r => `<option>${esc(r)}</option>`).join("")}</select></span>
+        <span>年份 <select id="expYear"><option value="">全部</option>${((facetsCache && facetsCache.years) || []).map(y => `<option>${esc(y)}</option>`).join("")}</select></span>
+        <span>题量 <select id="expLimit"><option>50</option><option selected>100</option><option>200</option><option>500</option><option value="all">全部（最多 2000）</option></select></span>
+        <span>格式 <select id="expFmt"><option value="pdf">PDF 文件（直接下载）</option><option value="html">可打印网页</option></select></span>
         <span><label style="font-size:calc(13px * var(--fs))"><input type="checkbox" id="expAns" checked/> 附答案解析</label></span>
-        <button class="btn btn-primary" id="expGo">生成导出页</button>
+        <button class="btn btn-primary" id="expGo">导出</button>
       </div>
+      <div class="hint" id="expMsg" style="margin-top:6px">选「整卷」时导出该套全部题目，忽略模块/地区/年份筛选</div>
     </div>
     <div class="panel rise rise-6 danger-zone" id="sec-danger">
       <h3 style="margin:0 0 10px">危险区 · 数据清空 <span class="save-tag danger">不可恢复</span></h3>
@@ -4111,15 +4197,57 @@ async function renderSettings() {
   FontFace.bindPicker($("#fontFacePick"));
   $("#fontLoose").onchange = e => FontSize.setLoose(e.target.checked);
 
-  $("#expGo").onclick = () => {
+  // 整卷下拉：按套卷名导出该套全部题（与模块/地区/年份筛选互斥），带搜索过滤
+  api("/api/exams").then(r => {
+    const sel = $("#expExam");
+    if (!sel) return;   // 已切走页面
+    bindExamSearch($("#expExamQuery"), sel, r.items || [], "（不按整卷）");
+  }).catch(() => {});
+
+  $("#expGo").onclick = async () => {
+    const exam = $("#expExam").value;
+    const lim = $("#expLimit").value;
     const p = new URLSearchParams({
-      module: $("#expModule").value,
-      region: $("#expRegion").value.trim(),
-      year: $("#expYear").value.trim(),
-      limit: $("#expLimit").value,
       with_answer: $("#expAns").checked ? "1" : "0",
     });
-    window.open("/api/export/print?" + p.toString(), "_blank");
+    const msg = $("#expMsg");
+    if (exam) {
+      p.set("exam", exam);               // 整卷：后端按模块顺序取全套，不受题量限制
+    } else {
+      p.set("module", $("#expModule").value);
+      p.set("region", $("#expRegion").value.trim());
+      p.set("year", $("#expYear").value.trim());
+      if (lim === "all") p.set("full", "1");   // 全量：后端分页取完筛选结果
+      else p.set("limit", lim);
+    }
+    const label = exam || (lim === "all" ? "全量筛选结果" : `本次最多 ${lim} 题`);
+    const openPrint = () => window.open("/api/export/print?" + p.toString(), "_blank");
+
+    if ($("#expFmt").value === "html") {
+      msg.textContent = `正在打开可打印网页：${label}`;
+      openPrint();
+      return;
+    }
+    // 默认直接出 PDF（后端用 Chromium 渲染同一份打印页）
+    const btn = $("#expGo");
+    const busy = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "生成中…";
+    msg.textContent = `正在生成 PDF：${label}（整卷约 20~30 秒，请稍候）`;
+    const name = (exam || $("#expModule").value || "题库导出")
+      .replace(/[\\/:*?"<>|\s]+/g, "").slice(0, 60) || "题库导出";
+    const st = await exportPdf(p, `${name}.pdf`);
+    btn.disabled = false;
+    btn.textContent = busy;
+    if (st === "ok") { msg.textContent = `PDF 已开始下载：${label}`; return; }
+    if (st === "nopdf") {
+      // 本机没装 Playwright/Chromium：退回老的可打印网页，别让导出功能失效
+      toast("当前环境不支持直接生成 PDF，已改为打开可打印网页");
+      msg.textContent = "已打开可打印网页：Ctrl+P → 另存为 PDF";
+      openPrint();
+      return;
+    }
+    msg.textContent = "导出失败，请查看提示后重试";
   };
 
   const status = (t, cls) => {
@@ -4921,7 +5049,6 @@ async function renderReview() {
    半月时政
 ===================================================== */
 
-let shizhengGenerating = false;
 let szBusy = false;   // 批量生成串行锁：同一时刻只允许一个期次在生成
 
 async function renderShizheng() {
@@ -4956,14 +5083,15 @@ async function renderShizheng() {
         </details>
       </div>`).join("") : "";
 
-    // 缺失期次生成区
-    const missing = (r.missing_periods || []).filter(p => p !== r.current);
+    // 待生成期次（含本期）：一律显式点击，不自动请求，避免进页面就被长时间请求锁住
+    const missing = (r.missing_periods || []);
     const missingHtml = missing.length ? `
       <div class="panel rise" style="background:var(--paper-2)">
-        <div style="font-weight:700;margin-bottom:8px">${UiIcon.html("pin", 14)}缺失期次（近半年）—— 点击生成</div>
+        <div style="font-weight:700;margin-bottom:8px">${UiIcon.html("pin", 14)}待生成期次（近半年）—— 点击生成</div>
         <div style="display:flex;flex-wrap:wrap;gap:8px">
-          ${missing.map(p => `<button class="btn btn-sm sz-gen-btn" data-p="${esc(p)}">${esc(p)}</button>`).join("")}
+          ${missing.map(p => `<button class="btn btn-sm sz-gen-btn" data-p="${esc(p)}">${p === r.current ? "🔴 本期 " : ""}${esc(p)}</button>`).join("")}
         </div>
+        <div style="margin-top:8px;font-size:calc(12px * var(--fs));color:var(--ink-3)">生成时页面其他功能仍可正常使用，不会锁死；整个过程约 1 分钟。</div>
       </div>` : "";
 
     // 建议7：一期都没生成时给明确空状态，而不是只剩一排「缺失期次」按钮
@@ -4974,29 +5102,38 @@ async function renderShizheng() {
 
     body.innerHTML = emptyHtml + missingHtml + generated;
 
-    // 绑定生成按钮（串行队列：生成中锁定全部按钮，逐期进行）
+    // 绑定生成按钮（串行队列：生成中锁定全部生成按钮，逐期进行；页面其余功能不受影响）
     $$(".sz-gen-btn", body).forEach(b => {
       b.onclick = async () => {
         if (szBusy) return;
         szBusy = true;
         $$(".sz-gen-btn", body).forEach(x => { x.disabled = true; });
         const p = b.dataset.p;
-        b.textContent = "生成中…";
+        b.dataset.label = b.textContent;
+        const t0 = Date.now();
+        const tick = setInterval(() => {
+          b.textContent = `生成中… ${Math.round((Date.now() - t0) / 1000)}s`;
+        }, 1000);
+        b.textContent = "生成中… 0s";
         try {
           const g = await api("/api/shizheng/generate", { period: p });
           if (g.ok) {
             const fresh = await api("/api/shizheng");
             r.items = fresh.items;
             r.missing_periods = fresh.missing_periods;
+            r.current_exists = fresh.current_exists;
             draw();   // 重绘后按钮自动恢复可用
           } else {
             $$(".sz-gen-btn", body).forEach(x => {
-              x.disabled = false; x.textContent = x.dataset.p + (x === b ? "（失败）" : "");
+              x.disabled = false; x.textContent = x.dataset.label || x.dataset.p;
             });
+            toast(g.error || "生成失败，请重试");
           }
         } catch (e) {
-          $$(".sz-gen-btn", body).forEach(x => { x.disabled = false; x.textContent = x.dataset.p; });
+          $$(".sz-gen-btn", body).forEach(x => { x.disabled = false; x.textContent = x.dataset.label || x.dataset.p; });
+          toast((e && e.message) || "生成失败，请重试");
         } finally {
+          clearInterval(tick);
           szBusy = false;
         }
       };
@@ -5009,9 +5146,15 @@ async function renderShizheng() {
         const p = btn.dataset.p;
         const box = document.querySelector(`.sz-quiz-box[data-p="${CSS.escape(p)}"]`);
         if (!box) return;
-        btn.disabled = true; btn.textContent = "加载自测题…";
+        btn.disabled = true;
+        const t0 = Date.now();
+        const tick = setInterval(() => {
+          btn.textContent = `生成自测题… ${Math.round((Date.now() - t0) / 1000)}s`;
+        }, 1000);
+        btn.textContent = "生成自测题… 0s";
         try {
           const g = await api("/api/shizheng/quiz", { period: p });
+          clearInterval(tick);
           if (!g.ok) { btn.textContent = "生成失败，点此重试"; btn.disabled = false; return toast(g.error || "生成失败"); }
           btn.textContent = g.cached ? "已加载自测题" : "自测题已生成";
           if (!box.innerHTML) {
@@ -5053,6 +5196,7 @@ async function renderShizheng() {
             });
           }
         } catch (e) {
+          clearInterval(tick);
           btn.textContent = "自测 10 题"; btn.disabled = false;
         }
       };
@@ -5060,32 +5204,6 @@ async function renderShizheng() {
   }
 
   draw();
-
-  // 当期若不存在则自动在底部生成
-  if (!r.current_exists && !shizhengGenerating) {
-    shizhengGenerating = true;
-    body.insertAdjacentHTML("beforeend", `
-      <div class="panel" id="szGen" style="border-left:4px solid var(--cinnabar)">⏳ 正在生成本期（${esc(r.current)}）时政常识，约需 1 分钟…</div>`);
-    try {
-      const g = await api("/api/shizheng/generate", { period: r.current });
-      $("#szGen")?.remove();
-      if (g.ok) {
-        const fresh = await api("/api/shizheng");
-        r.items = fresh.items;
-        r.missing_periods = fresh.missing_periods;
-        draw();
-      } else {
-        $("#szGen")?.remove();
-        body.insertAdjacentHTML("beforeend", `
-          <div class="panel" style="border-left:4px solid var(--cinnabar)">
-            本期生成失败：${esc(g.error || "未知错误")}
-            <button class="btn btn-sm" id="szRetry">重试</button>
-          </div>`);
-        $("#szRetry").onclick = renderShizheng;
-      }
-    } catch (e) { $("#szGen")?.remove(); }
-    finally { shizhengGenerating = false; }
-  }
 }
 
 /* =====================================================
@@ -6415,45 +6533,90 @@ async function renderReport() {
 
 const AI_ASK_KEY = "goshor_ai_ask";
 
+// 旧版本地把对话存 localStorage；升级后只用于一次性迁移，随后清空
 function aiAskLoad() {
   try { return JSON.parse(localStorage.getItem(AI_ASK_KEY)) || []; }
   catch { return []; }
 }
-function aiAskSave(msgs) {
-  try { localStorage.setItem(AI_ASK_KEY, JSON.stringify(msgs.slice(-100))); } catch {}
+function aiAskClearLegacy() {
+  try { localStorage.removeItem(AI_ASK_KEY); } catch {}
 }
 
 async function renderAiAsk() {
   const chips = [
     "国考行测怎么分配时间", "申论大作文怎么立意", "行测和职测有什么区别",
     "资料分析常考陷阱有哪些", "数量关系做题慢怎么提速", "C类综应备考规划建议",
+    "你和普通 AI 有什么不同",
   ];
-  let msgs = aiAskLoad();
+  let msgs = [];
+  let sessions = [];
+  let currentId = null;          // 当前会话 id；null = 尚未落库的新对话
   let streaming = false;
+  // 停止生成：fetch 挂 AbortSignal，点「停止」直接断开 SSE，服务端随之关掉上游请求
+  let abortCtl = null;
+
+  // 历史会话落库：换新对话后仍可回看、继续与导出
+  try {
+    const r = await api("/api/ai/sessions");
+    sessions = r.items || [];
+  } catch (e) { sessions = []; }
+  // 旧版把对话存在 localStorage：升级后转成一条正式会话，避免历史丢失
+  const legacy = aiAskLoad();
+  if (legacy.length) {
+    try {
+      const s = await api("/api/ai/sessions", { title: "", messages: legacy });
+      sessions.unshift(s);
+      currentId = s.id;
+      msgs = s.messages || [];
+      aiAskClearLegacy();
+    } catch (e) {}
+  }
+  if (!currentId && sessions.length) {
+    try {
+      const s = await api(`/api/ai/sessions/${sessions[0].id}`);
+      currentId = s.id;
+      msgs = s.messages || [];
+    } catch (e) {}
+  }
 
   view.innerHTML = `
-    <div class="panel" style="max-width:860px;margin:24px auto 0;display:flex;flex-direction:column;height:calc(100vh - 150px)">
-      <div style="display:flex;align-items:center;gap:12px">
-        <h3 style="margin:0;flex:1">AI 答疑
-          <span style="color:var(--ink-2);font-size:calc(13px * var(--fs));font-weight:normal">行测/职测 · 申论/综应 · 国考考情，拍照也能问</span>
-        </h3>
-        <button class="btn" id="aiAskNew">${UiIcon.html("chat", 13)}新对话</button>
-      </div>
-      <div id="aiAskList" style="flex:1;overflow-y:auto;margin-top:14px;padding-right:6px"></div>
-      <div id="aiAskChips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
-        ${chips.map(c => `<button class="btn" data-q="${esc(c)}" style="font-size:calc(12.5px * var(--fs));padding:5px 12px">${esc(c)}</button>`).join("")}
-      </div>
-      <div id="aiAskPreviews" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px"></div>
-      <div style="display:flex;gap:10px;margin-top:12px;align-items:flex-end">
-        <label id="aiAskImgBtn" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border:1px solid var(--line-soft);border-radius:8px;flex-shrink:0" title="上传图片或文件（txt / md / docx / pdf）">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-          <input type="file" accept="image/*,.txt,.text,.md,.markdown,.csv,.json,.docx,.pdf" multiple style="display:none" id="aiAskFile">
-        </label>
-        <textarea id="aiAskInput" rows="2" placeholder="随便问点什么…（Enter 发送，Shift+Enter 换行）"
-          style="flex:1;resize:none;padding:10px;border:1px solid var(--line-soft);border-radius:8px;font-family:inherit;font-size:calc(14px * var(--fs));background:transparent;color:inherit"></textarea>
-        <button class="btn btn-primary" id="aiAskGo">发送</button>
-      </div>
-      <p style="text-align:center;color:var(--ink-2);font-size:calc(12px * var(--fs));margin:8px 0 0">内容由 AI 生成，仅供参考</p>
+    <div class="ai-ask-shell">
+      <aside class="panel ai-ask-side">
+        <button class="btn btn-primary ai-ask-new" id="aiAskNew">${UiIcon.html("chat", 13)}新对话</button>
+        <div class="ai-ask-sessions" id="aiSessList"></div>
+        <p class="ai-ask-side-tip">会话自动保存在本机，换新对话后可随时回看、继续。<br>导出支持 Markdown / 纯文本 / JSON / 可打印 HTML。</p>
+      </aside>
+      <section class="panel ai-ask-main">
+        <div class="ai-ask-head">
+          <h3>AI 答疑<span>接本机题库 · 行测/申论速查 · 时政库 · 你的错题本，与通用 AI 不同</span></h3>
+          <div class="ai-ask-actions">
+            <button class="btn btn-sm" id="aiAskRename" title="重命名当前对话">重命名</button>
+            <div class="ai-ask-export-wrap">
+              <button class="btn btn-sm" id="aiAskExport">导出 ▾</button>
+              <div class="ai-ask-export-menu" id="aiExportMenu" hidden>
+                <button data-fmt="md">Markdown（.md）</button>
+                <button data-fmt="txt">纯文本（.txt）</button>
+                <button data-fmt="json">JSON（.json）</button>
+                <button data-fmt="html">HTML（可打印 / 存 PDF）</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="aiAskList" class="ai-ask-list"></div>
+        <div id="aiAskChips" class="ai-ask-chips">
+          ${chips.map(c => `<button class="btn" data-q="${esc(c)}">${esc(c)}</button>`).join("")}
+        </div>
+        <div id="aiAskPreviews" class="ai-ask-previews"></div>
+        <div class="ai-ask-inputrow">
+          <label id="aiAskImgBtn" class="ai-ask-attach" title="上传图片或文件（txt / md / docx / pdf）">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            <input type="file" accept="image/*,.txt,.text,.md,.markdown,.csv,.json,.docx,.pdf" multiple style="display:none" id="aiAskFile">
+          </label>
+          <textarea id="aiAskInput" rows="2" placeholder="随便问点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button class="btn btn-primary" id="aiAskGo">发送</button>
+        </div>
+        <p class="ai-ask-foot">内容由 AI 生成，仅供参考</p>
+      </section>
     </div>`;
 
   // 全部 DOM 引用在渲染期一次性捕获：流式回调里只写闭包变量，
@@ -6464,6 +6627,75 @@ async function renderAiAsk() {
   const newBtn = $("#aiAskNew");
   const fileInput = $("#aiAskFile");
   const previewBox = $("#aiAskPreviews");
+  const sessList = $("#aiSessList");
+
+  // ---------- 会话列表 / 落库 ----------
+  const sessionTitle = () => {
+    const s = sessions.find(x => x.id === currentId);
+    if (s && s.title) return s.title;
+    const first = msgs.find(m => m.role === "user");
+    return first ? first.content.replace(/^[\s　]*[\[【][^】\]]*[】\]][\s　]*/, "").slice(0, 24) : "新对话";
+  };
+  const drawSessions = () => {
+    if (!sessions.length) {
+      sessList.innerHTML = `<p class="ai-ask-empty">还没有历史对话。<br>发送第一条问题后会自动保存。</p>`;
+      return;
+    }
+    sessList.innerHTML = sessions.map(s => `
+      <div class="ai-ask-session${s.id === currentId ? " active" : ""}" data-id="${s.id}">
+        <b>${esc(s.title || "未命名对话")}</b>
+        <small>${s.count || 0} 问 · ${new Date((s.updated_at || 0) * 1000).toLocaleDateString("zh-CN")}</small>
+        <span class="ai-ask-session-del" data-del="${s.id}" role="button" tabindex="0" title="删除该对话">×</span>
+      </div>`).join("");
+    sessList.querySelectorAll(".ai-ask-session").forEach(el => {
+      el.onclick = async ev => {
+        if (ev.target.closest("[data-del]")) return;
+        await openSession(+el.dataset.id);
+      };
+      el.querySelector("[data-del]").onclick = async ev => {
+        ev.stopPropagation();
+        const sid = +el.dataset.del;
+        const s = sessions.find(x => x.id === sid);
+        if (!confirm(`删除对话「${s ? s.title : sid}」？删除后不可恢复。`)) return;
+        try {
+          await fetch(`/api/ai/sessions/${sid}`, { method: "DELETE" });
+          sessions = sessions.filter(x => x.id !== sid);
+          if (sid === currentId) { currentId = null; msgs = []; }
+          drawSessions(); drawAll();
+          toast("已删除");
+        } catch (e) { toast("删除失败：" + e.message); }
+      };
+    });
+  };
+  const openSession = async sid => {
+    if (streaming) { toast("正在回答中，稍候再切换对话"); return; }
+    try {
+      const s = await api(`/api/ai/sessions/${sid}`);
+      currentId = s.id;
+      msgs = s.messages || [];
+      drawSessions();
+      drawAll();
+    } catch (e) { toast("打开对话失败：" + e.message); }
+  };
+  // 每轮回答结束后统一落库：新建会话先建再写，失败只提示、不影响已看到的回答
+  const persist = async () => {
+    if (!msgs.length) return;
+    try {
+      if (!currentId) {
+        const s = await api("/api/ai/sessions", { title: "", messages: msgs });
+        currentId = s.id;
+        sessions.unshift({ id: s.id, title: s.title, updated_at: s.updated_at, count: s.count });
+      } else {
+        const s = await api(`/api/ai/sessions/${currentId}`, { title: "", messages: msgs });
+        const row = { id: s.id, title: s.title, updated_at: s.updated_at, count: s.count };
+        const i = sessions.findIndex(x => x.id === s.id);
+        if (i >= 0) sessions[i] = row; else sessions.unshift(row);
+      }
+      sessions.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+      drawSessions();
+    } catch (e) { toast("会话保存失败：" + e.message); }
+  };
+
   let attachedImages = [];
   // 文件附件只保留解析出的文本，不进 localStorage：几万字的材料会撑爆配额
   let attachedFiles = [];
@@ -6568,7 +6800,11 @@ async function renderAiAsk() {
     const files = attachedFiles.slice();
     if ((!ask && !imgs.length && !files.length) || streaming) return;
     streaming = true;
-    goBtn.disabled = true;
+    abortCtl = new AbortController();
+    // 发送键就地变「停止」：长思考时能随时掐断，不必干等
+    goBtn.textContent = "停止";
+    goBtn.disabled = false;
+    goBtn.onclick = () => { try { abortCtl.abort(); } catch (e) {} };
     input.value = "";
     attachedImages = [];
     attachedFiles = [];
@@ -6610,13 +6846,22 @@ async function renderAiAsk() {
 
     let thinkBox = null, think = "", full = "";
     const b = bubble("ai", "");
-    b.innerHTML = `<div style="color:var(--ink-2);font-size:calc(12.5px * var(--fs))">${UiIcon.html("clock", 13)}思考中…</div>`;
+    const t0 = Date.now();
+    // 秒数必须动起来：模型长时间只在推理时，界面若只写「思考中…」不动，
+    // 用户会以为程序卡死。有了秒数 + 下面的 think 正文，等待是可见的。
+    const waitTimer = setInterval(() => {
+      if (!full && !think) {
+        b.innerHTML = `<div style="color:var(--ink-2);font-size:calc(12.5px * var(--fs))">${UiIcon.html("clock", 13)}思考中… ${Math.round((Date.now() - t0) / 1000)}s</div>`;
+      }
+    }, 1000);
+    b.innerHTML = `<div style="color:var(--ink-2);font-size:calc(12.5px * var(--fs))">${UiIcon.html("clock", 13)}思考中… 0s</div>`;
     b.classList.add("cursor-blink");
 
     try {
       const r = await fetch("/api/ai/ask", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: his }),
+        signal: abortCtl.signal,
       });
       if (!r.ok) throw new Error(await r.text());
       const reader = r.body.getReader();
@@ -6639,7 +6884,7 @@ async function renderAiAsk() {
               b.prepend(thinkBox);
             }
             think += ev.text;
-            thinkBox.textContent = "思考中：" + think;
+            thinkBox.textContent = `思考中 ${Math.round((Date.now() - t0) / 1000)}s：` + think;
           } else if (ev.type === "delta") {
             full += ev.text;
             b.innerHTML = md(full);
@@ -6651,9 +6896,20 @@ async function renderAiAsk() {
         }
       }
     } catch (e) {
-      full += `\n\n**⚠ ${aiErrorHint(e.message)}**`;
-      b.innerHTML = md(full) +
-        `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
+      if (e.name === "AbortError") {
+        // 主动停止：保留已生成的部分，不给"去设置"这种失败指引
+        b.innerHTML = md(full ? full + "\n\n（已停止生成）" : "（已停止生成）");
+      } else {
+        full += `\n\n**⚠ ${aiErrorHint(e.message)}**`;
+        b.innerHTML = md(full) +
+          `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
+      }
+    } finally {
+      clearInterval(waitTimer);
+      abortCtl = null;
+      goBtn.textContent = "发送";
+      goBtn.onclick = send;
+      goBtn.disabled = false;
     }
     b.classList.remove("cursor-blink");
     list.scrollTop = list.scrollHeight;
@@ -6662,7 +6918,7 @@ async function renderAiAsk() {
     const savedContent = savedTag ? `${savedTag} ${ask}`.trim() : ask;
     msgs = [...msgs, { role: "user", content: savedContent }];
     if (full.trim()) msgs = [...msgs, { role: "assistant", content: full }];
-    aiAskSave(msgs);
+    persist();
     streaming = false;
     goBtn.disabled = false;
   };
@@ -6675,10 +6931,107 @@ async function renderAiAsk() {
   $$("#aiAskChips button").forEach(x => x.onclick = () => { input.value = x.dataset.q; send(); });
   newBtn.onclick = () => {
     if (streaming) { toast("正在回答中，稍候再开新对话"); return; }
+    // 新对话只是新建草稿：发出第一条问题才落库，避免列表里堆一串空会话
+    currentId = null;
     msgs = [];
-    aiAskSave(msgs);
     drawAll();
+    drawSessions();
+    input.focus();
   };
+
+  // 重命名当前对话（空对话不落库，也就没有可改的名字）
+  $("#aiAskRename").onclick = async () => {
+    if (!currentId) { toast("当前还是新对话，发送第一条问题后再重命名"); return; }
+    const t = prompt("给这个对话起个名字：", sessionTitle());
+    if (t === null) return;
+    const name = t.trim();
+    if (!name) return;
+    try {
+      const s = await api(`/api/ai/sessions/${currentId}`, { title: name, messages: msgs });
+      const i = sessions.findIndex(x => x.id === s.id);
+      if (i >= 0) sessions[i] = { ...sessions[i], title: s.title };
+      drawSessions();
+      toast("已重命名");
+    } catch (e) { toast("重命名失败：" + e.message); }
+  };
+
+  // 导出：Markdown / 纯文本 / JSON / HTML（可直接打印成 PDF）
+  const menu = $("#aiExportMenu");
+  const closeExportMenu = e => {
+    if (!e.target.closest(".ai-ask-export-wrap")) menu.hidden = true;
+  };
+  $("#aiAskExport").onclick = () => {
+    if (!msgs.length) { toast("当前对话还是空的，先问点什么"); return; }
+    menu.hidden = !menu.hidden;
+  };
+  document.addEventListener("click", closeExportMenu);
+  window.addEventListener("hashchange", () => document.removeEventListener("click", closeExportMenu), { once: true });
+  $$("#aiExportMenu button").forEach(b => {
+    b.onclick = () => {
+      menu.hidden = true;
+      aiAskExport(msgs, sessionTitle(), b.dataset.fmt);
+    };
+  });
+
+  drawSessions();
+}
+
+/* AI 答疑导出：md / txt / json / html（html 可直接打印成 PDF） */
+function aiAskExport(msgs, title, fmt) {
+  const stamp = new Date();
+  const date = stamp.toISOString().split("T")[0];
+  const safe = `${title || "AI答疑"}-${date}`.replace(/[\\/:*?"<>|\s]+/g, "_");
+  const when = stamp.toLocaleString("zh-CN");
+  const rows = msgs.filter(m => (m.content || "").trim());
+  let content = "", mime = "text/plain;charset=utf-8", ext = "txt";
+
+  if (fmt === "md") {
+    ext = "md"; mime = "text/markdown;charset=utf-8";
+    content = `# AI 答疑 · ${title || "对话"}\n\n> 导出时间：${when}\n\n` +
+      rows.map(m => `## ${m.role === "user" ? "我" : "AI"}\n\n${m.content}\n`).join("\n");
+  } else if (fmt === "json") {
+    ext = "json"; mime = "application/json;charset=utf-8";
+    content = JSON.stringify({ title: title || "对话", exported_at: when, messages: rows }, null, 2);
+  } else if (fmt === "html") {
+    ext = "html"; mime = "text/html;charset=utf-8";
+    const body = rows.map(m => `
+      <section class="turn ${m.role === "user" ? "me" : "ai"}">
+        <h2>${m.role === "user" ? "我" : "AI"}</h2>
+        <div>${m.role === "user" ? esc(m.content).replace(/\n/g, "<br>") : md(m.content)}</div>
+      </section>`).join("");
+    content = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>AI 答疑 · ${esc(title || "对话")}</title>
+<style>
+  body{margin:0;background:#f7f3ec;color:#2f2a24;font-family:"Noto Serif SC","Songti SC","Microsoft YaHei",serif;line-height:1.85}
+  .wrap{max-width:820px;margin:0 auto;padding:48px 28px 72px}
+  h1{font-size:1.5rem;margin:0 0 6px;letter-spacing:.02em}
+  .meta{color:#8a8073;font-size:.8125rem;margin-bottom:28px}
+  .turn{background:#fffdf8;border:1px solid #e7e0d5;border-radius:10px;padding:16px 20px;margin-bottom:16px}
+  .turn.me{border-left:4px solid #b23a30}
+  .turn.ai{border-left:4px solid #324d6e}
+  .turn h2{font-size:.8125rem;font-weight:600;color:#8a8073;margin:0 0 8px;letter-spacing:.08em}
+  .turn div{font-size:.9375rem}
+  pre{background:#f2ede3;padding:10px;border-radius:6px;overflow:auto}
+  code{background:#f2ede3;padding:1px 4px;border-radius:3px}
+  blockquote{border-left:3px solid #d8cfc0;margin:8px 0;padding-left:10px;color:#6b6358}
+  @media print{body{background:#fff}.turn{break-inside:avoid;box-shadow:none}}
+</style></head><body><div class="wrap">
+<h1>AI 答疑 · ${esc(title || "对话")}</h1>
+<div class="meta">导出时间：${esc(when)} · 共 ${rows.length} 条消息</div>
+${body}
+</div></body></html>`;
+  } else {
+    content = `AI 答疑 · ${title || "对话"}\n导出时间：${when}\n\n` +
+      rows.map(m => `[${m.role === "user" ? "我" : "AI"}]\n${m.content}\n`).join("\n");
+  }
+
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `${safe}.${ext}`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  toast(`已导出 ${ext.toUpperCase()}：${safe}.${ext}`);
 }
 
 /* =====================================================
@@ -8097,6 +8450,21 @@ async function renderInterview() {
   const noQ = !(qdata.categories || []).length;   // 建议7：题目表为空 → 渲染空状态
   let curQ = null, busy = false;
   let timerH = null, timerLeft = 0, timerPhase = "", answerTotal = qdata.answer_seconds;
+  // 语音模拟：考官朗读 / 语音作答 / 录音回放。全部走浏览器原生能力，
+  // 音频与录音不出本机；离开页面统一释放（见 voiceStop）。
+  let micH = null, recH = null, recStream = null, recUrl = null;
+
+  function voiceStop() {
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
+    try { if (micH) { micH.onresult = null; micH.onend = null; micH.onerror = null; micH.stop(); } } catch (e) {}
+    micH = null;
+    try { if (recH && recH.state !== "inactive") recH.stop(); } catch (e) {}
+    recH = null;
+    try { if (recStream) recStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    recStream = null;
+    if (recUrl) { try { URL.revokeObjectURL(recUrl); } catch (e) {} recUrl = null; }
+  }
+  window.addEventListener("hashchange", voiceStop, { once: true });
 
   const fmt = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   const stopTimer = () => { if (timerH) { clearInterval(timerH); timerH = null; } };
@@ -8195,8 +8563,13 @@ async function renderInterview() {
         <button class="btn btn-sm" id="ivThink">${UiIcon.html("clock", 14)}开始思考（${qdata.think_seconds}s）</button>
         <button class="btn btn-sm" id="ivAnswer">${UiIcon.html("pen", 14)}开始作答（${qdata.answer_seconds}s）</button>
         <button class="btn btn-sm" id="ivRef">${UiIcon.html("book", 14)}看参考思路</button>
+        <button class="btn btn-sm" id="ivSpeak" title="用系统语音朗读题干，模拟考官提问">考官朗读</button>
+        <button class="btn btn-sm" id="ivMic" title="把口头作答实时转成文字">语音作答</button>
+        <button class="btn btn-sm" id="ivRec" title="录下作答回放，听语速与口头禅">录音回放</button>
       </div>
-      <textarea id="ivA" rows="8" placeholder="写下你的作答（一期为文字作答；结构化面试建议分点作答：亮观点 → 分层论证 → 结合岗位表态）" style="width:100%"></textarea>
+      <textarea id="ivA" rows="8" placeholder="写下你的作答，或点「语音作答」直接说（结构化面试建议分点：亮观点 → 分层论证 → 结合岗位表态）" style="width:100%"></textarea>
+      <div id="ivAudioWrap" style="display:none;margin-top:8px"></div>
+      <div id="ivVoiceTip" style="font-size:calc(11.5px * var(--fs));color:var(--ink-3);margin-top:6px;line-height:1.7"></div>
       <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
         <button class="btn btn-primary" id="ivGo">请 AI 考官点评</button>
         <span id="gTipIv" style="font-size:calc(12.5px * var(--fs));color:var(--ink-3)"></span>
@@ -8215,6 +8588,100 @@ async function renderInterview() {
       }
     };
     $("#ivGo").onclick = submit;
+
+    // ---------------- 语音模拟（浏览器原生：朗读 / 听写 / 录音回放）
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const canSpeak = "speechSynthesis" in window && typeof SpeechSynthesisUtterance !== "undefined";
+    const canRec = !!(navigator.mediaDevices && window.MediaRecorder);
+    const speakBtn = $("#ivSpeak"), micBtn = $("#ivMic"), recBtn = $("#ivRec"), tip = $("#ivVoiceTip");
+    // 能力缺失就隐藏按钮，避免点了没反应让人以为卡死
+    if (!canSpeak) speakBtn.hidden = true;
+    if (!SR) micBtn.hidden = true;
+    if (!canRec) recBtn.hidden = true;
+    tip.textContent = [
+      canSpeak ? "「考官朗读」用系统语音读题干" : "",
+      SR ? "「语音作答」把口头作答实时转成文字" : "当前浏览器不支持语音听写，请用 Chrome / Edge 桌面版",
+      canRec ? "「录音回放」可录下作答听语速与口头禅，录音只在本页临时保存" : "",
+    ].filter(Boolean).join("；");
+
+    if (canSpeak) speakBtn.onclick = () => {
+      if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+        speakBtn.textContent = "考官朗读";
+        return;
+      }
+      const u = new SpeechSynthesisUtterance(curQ.question);
+      u.lang = "zh-CN"; u.rate = 0.95;
+      u.onend = () => { speakBtn.textContent = "考官朗读"; };
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+      speakBtn.textContent = "停止朗读";
+    };
+
+    if (SR) {
+      let micOn = false;
+      micBtn.onclick = () => {
+        const ta = $("#ivA");
+        if (micOn) { try { micH.stop(); } catch (e) {} return; }
+        micH = new SR();
+        micH.lang = "zh-CN";
+        micH.continuous = true;
+        micH.interimResults = true;
+        let base = ta.value ? ta.value.replace(/\s*$/, "") + "，" : "";
+        micH.onresult = e => {
+          let finalTxt = "", interim = "";
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            const r = e.results[i];
+            if (r.isFinal) finalTxt += r[0].transcript; else interim += r[0].transcript;
+          }
+          if (finalTxt) base += finalTxt;
+          ta.value = base + interim;
+        };
+        micH.onerror = ev => {
+          micOn = false; micBtn.textContent = "语音作答";
+          const map = {
+            "not-allowed": "麦克风权限被拒绝，请在浏览器地址栏允许后重试",
+            "no-speech": "没有听到声音，请靠近麦克风再试",
+            "network": "语音识别依赖浏览器联网服务，当前不可用，请改用文字作答",
+          };
+          toast(map[ev.error] || `语音识别失败：${ev.error}`);
+        };
+        micH.onend = () => { micOn = false; micBtn.textContent = "语音作答"; };
+        try { micH.start(); } catch (e) { toast("语音识别启动失败，请改用文字作答"); return; }
+        micOn = true; micBtn.textContent = "停止听写";
+      };
+    }
+
+    if (canRec) {
+      let recOn = false;
+      recBtn.onclick = async () => {
+        if (recOn) { try { recH.stop(); } catch (e) {} return; }
+        try {
+          recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (e) {
+          toast("无法开始录音：请检查麦克风权限");
+          return;
+        }
+        const rec = new MediaRecorder(recStream);
+        recH = rec;
+        const chunks = [];
+        rec.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+        rec.onstop = () => {
+          recOn = false; recBtn.textContent = "录音回放";
+          try { recStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+          recStream = null;
+          if (recUrl) { try { URL.revokeObjectURL(recUrl); } catch (e) {} }
+          recUrl = URL.createObjectURL(new Blob(chunks, { type: rec.mimeType || "audio/webm" }));
+          const wrap = $("#ivAudioWrap");
+          if (!wrap) return;
+          wrap.style.display = "";
+          wrap.innerHTML = `<audio controls src="${recUrl}" style="width:100%"></audio>
+            <div style="font-size:calc(11.5px * var(--fs));color:var(--ink-3);margin-top:4px">回放听自己的语速与口头禅；录音只在本页临时保存，切页即释放</div>`;
+        };
+        rec.start();
+        recOn = true; recBtn.textContent = "停止录音";
+      };
+    }
   }
 
   function drawLogs() {
@@ -8339,7 +8806,7 @@ async function renderHome() {
     </section><aside><section class="panel"><div class="study-section-head"><h2>今日概况</h2><a href="#/reports">完整报告 →</a></div>
       <div class="study-home-stats"><div><b>${s.today_answers}<small>题</small></b><span>今日作答 · 对 ${s.today_correct}</span></div><div><b>${st.today_minutes}<small>分钟</small></b><span>今日学习时长</span></div></div>
       <p class="study-muted">连续学习 ${s.streak} 天 · 待处理错题 ${s.wrong_count} 道</p></section>
-      <div data-slot="goal"></div><section class="panel"><h2>常用工具</h2><div class="study-quick-grid"><a href="#/xc-notes"><b>行测速查</b><small>公式与解题方法</small></a><a href="#/sl-notes"><b>申论速查</b><small>题型方法与答题框架</small></a><a href="#/ai-ask"><b>AI 答疑</b><small>文字与图片提问</small></a></div></section>
+      <div data-slot="goal"></div><section class="panel"><div class="study-section-head"><h2>常用工具</h2><span class="study-muted" style="font-size:calc(11.5px * var(--fs))">可自定义</span></div><div class="study-quick-grid" id="quickTools"></div><div id="quickPicker"></div></section>
     </aside></div><section class="panel"><div class="study-section-head"><h2>最近学习</h2><a href="#/history">全部记录 →</a></div>${recent.items.length ? recent.items.map(it=>`<a class="study-recent-row" href="#/doc/${Number(it.doc_id)}"><span><b>${esc(it.title)}</b><small>${esc(it.module || "")} · ${it.correct ? "答对" : "答错"}</small></span><span>回顾解析 →</span></a>`).join("") : `<p class="study-muted">还没有作答记录，完成练习后可在这里回顾。</p>`}<a class="study-more" href="#/overview">详细学习总览：趋势、模块正确率与高频错题 →</a></section><div data-slot="setup"></div>`;
   const slot = key => frame.querySelector(`[data-slot="${key}"]`);
   if (setup) slot("setup").append(setup);
@@ -8349,6 +8816,63 @@ async function renderHome() {
   if (rec) { rec.className = "btn btn-sm"; rec.textContent = "开始练习"; slot("rec").append(rec); }
   if (!drafts.length) slot("resume").innerHTML = `<section class="panel study-resume"><div><span class="study-eyebrow">开始今天的学习</span><h2>从一次专注练习开始</h2><p class="study-muted">自由选择模块与考点，或按今日安排练习。</p></div><a class="btn btn-primary" href="#/practice">进入练习中心 →</a></section>`;
   view.replaceChildren(frame);
+  bindQuickTools();
+}
+
+/* ---------- 常用工具：可添加 / 移除（本地偏好，跨会话保留） ---------- */
+const QUICK_TOOLS_KEY = "goshor_quick_tools";
+const QUICK_TOOLS_DEFAULT = ["xc-notes", "sl-notes", "ai-ask"];
+
+function quickToolRoutes() {
+  try {
+    const v = JSON.parse(localStorage.getItem(QUICK_TOOLS_KEY));
+    if (Array.isArray(v)) return v.filter(x => typeof x === "string").slice(0, 8);
+  } catch (e) {}
+  return QUICK_TOOLS_DEFAULT.slice();
+}
+function quickToolSave(list) {
+  try { localStorage.setItem(QUICK_TOOLS_KEY, JSON.stringify(list.slice(0, 8))); } catch (e) {}
+}
+function bindQuickTools() {
+  const box = $("#quickTools");
+  const picker = $("#quickPicker");
+  if (!box || !picker) return;
+  const all = (StudyLayout.groups || []).flatMap(g => g.items || []);
+  let list = quickToolRoutes();
+
+  const draw = () => {
+    const cards = list.map(r => {
+      const it = all.find(x => x.route === r);
+      if (!it) return "";
+      return `<a class="study-quick-tool" href="#/${r}"><b>${esc(it.title)}</b><small>${esc(it.desc)}</small>` +
+        `<span class="study-quick-del" data-del="${esc(r)}" role="button" tabindex="0" aria-label="移除 ${esc(it.title)}">×</span></a>`;
+    }).join("");
+    box.innerHTML = cards +
+      `<button type="button" class="study-quick-add" id="quickAdd">＋ 添加工具</button>`;
+    box.querySelectorAll("[data-del]").forEach(el => {
+      el.onclick = ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        list = list.filter(r => r !== el.dataset.del);
+        quickToolSave(list); picker.innerHTML = ""; draw();
+      };
+    });
+    $("#quickAdd").onclick = () => {
+      if (picker.innerHTML) { picker.innerHTML = ""; return; }
+      const left = all.filter(x => !list.includes(x.route));
+      if (!left.length) { toast("全部工具都已添加"); return; }
+      picker.innerHTML = `<div class="quick-picker"><div class="quick-picker-head">点一下加入常用工具</div>` +
+        left.map(x => `<button type="button" class="quick-pick-item" data-add="${esc(x.route)}"><b>${esc(x.title)}</b><small>${esc(x.desc)}</small></button>`).join("") +
+        `</div>`;
+      picker.querySelectorAll("[data-add]").forEach(b => {
+        b.onclick = () => {
+          if (list.length >= 8) { toast("最多 8 个常用工具，先移除一个"); return; }
+          list.push(b.dataset.add);
+          quickToolSave(list); picker.innerHTML = ""; draw();
+        };
+      });
+    };
+  };
+  draw();
 }
 
 function renderStudyCenter(kind) {

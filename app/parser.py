@@ -162,7 +162,12 @@ def parse(rel_path: str, text: str) -> Parsed:
     title_m = re.search(r"^#\s+(.+)$", body, re.M)
     p.title = (title_m.group(1).strip() if title_m else parts[-1].replace(".md", ""))
 
-    data: dict = {"preamble": preamble.strip(), "sections": sec_map}
+    # 题号：整卷导出按试卷原顺序排版，不按入库顺序（导入的真题卷带「第 N 题」）。
+    # 来源科目：一份真题卷在源库里按科目分文件，同一模块可能来自两个文件
+    # （常识判断 = 01-政治理论 + 02-常识判断），各自第 1 题重新编号，所以排序
+    # 必须先分文件、再按题号（见 db.exam_paper_ids）。
+    data: dict = {"preamble": preamble.strip(), "sections": sec_map,
+                  "no": fm.get("题号", ""), "src": fm.get("来源科目", "")}
 
     if p.kind == "真题":
         wenfa = WENFA_RE.search(body)

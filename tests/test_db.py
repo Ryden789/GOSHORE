@@ -129,13 +129,19 @@ def test_my_documents_list_and_delete(mobile_db):
 # ---------------- 组卷 ----------------
 
 def test_random_paper_respects_module(temp_db):
+    """够题时严格按模块取；不够时按「同模块 → 全库」补真题（不 AI 生成）。"""
     conn = temp_db.connect()
     seed_docs(conn, [
         _one_doc("a", "资料分析"), _one_doc("b", "资料分析"), _one_doc("c", "判断推理"),
     ])
     conn.close()
-    ids = temp_db.random_paper(module="资料分析", n=5)
+    ids = temp_db.random_paper(module="资料分析", n=2)
     assert set(ids) <= {1, 2}
+    # 严格匹配不足 5 道：原模块的题全在卷内，缺口从全库真题补齐
+    ids = temp_db.random_paper(module="资料分析", n=5)
+    assert {1, 2} <= set(ids)
+    assert len(ids) == 3
+    assert temp_db.count_paper_pool(module="资料分析") == 2
 
 
 # ---------------- 掌握度 / 自适应推题（1.1）与图谱（1.4） ----------------
@@ -276,8 +282,9 @@ def test_adaptive_paper_respects_filters(temp_db):
         _one_doc("a", "资料分析"), _one_doc("b", "资料分析"), _one_doc("c", "判断推理"),
     ])
     conn.close()
-    ids = temp_db.adaptive_paper(module="判断推理", n=5)
-    assert ids == [3]
+    assert temp_db.adaptive_paper(module="判断推理", n=1) == [3]
+    # 池子不足 n 时补真题（不 AI 生成）：原模块题仍优先在卷内
+    assert 3 in temp_db.adaptive_paper(module="判断推理", n=5)
 
 
 def test_sequential_paper_order(temp_db):

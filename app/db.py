@@ -284,6 +284,15 @@ CREATE TABLE IF NOT EXISTS shizheng_quiz (
     quiz TEXT
 );
 
+-- AI 答疑会话（个人数据：每条会话一份 messages JSON）
+CREATE TABLE IF NOT EXISTS ai_ask_sessions (
+    id INTEGER PRIMARY KEY,
+    title TEXT DEFAULT '',
+    created_at REAL,
+    updated_at REAL,
+    messages TEXT DEFAULT '[]'
+);
+
 -- Schema 版本号（版本化迁移用）
 CREATE TABLE IF NOT EXISTS _meta (
     key TEXT PRIMARY KEY,
@@ -3093,8 +3102,16 @@ def adaptive_paper(module: str = "", n: int = 15, kaodian: str = "") -> list[int
     - 仅从真题（kind='真题'）中抽；module / kaodian 可选过滤。
     - 权重 = 1 - 掌握度，设 MASTERY_WEIGHT_FLOOR 下限避免已掌握题完全抽不到。
     - 加权无放回抽样，返回 doc_id 列表。
+    - 池子里题不够时按「同考点大类 → 同模块 → 全库」补真题（不 AI 生成）。
     """
-    return weighted_sample(adaptive_pool(module, kaodian), n)
+    ids = weighted_sample(adaptive_pool(module, kaodian), n)
+    if len(ids) < n:
+        conn = connect()
+        try:
+            ids.extend(_supplement_paper_ids(conn, module, kaodian, n - len(ids), ids))
+        finally:
+            conn.close()
+    return ids
 
 
 def _kaodian_mastery_all(module: str = "") -> list[dict]:
@@ -3257,6 +3274,100 @@ def sequential_paper(module: str = "", kaodian: str = "", n: int = 10) -> list[i
     return [r["id"] for r in rows]
 
 
+def _supplement_paper_ids(conn, module: str, kaodian: str, need: int,
+                          taken: list[int]) -> list[int]:
+    """严格筛选凑不满题量时，按「同考点大类 → 同模块 → 全库」逐级补真题。
+
+    只抽题库里的真题（kind='真题'），**不调用 AI 生成**——组卷的题必须能在
+    「题目详情」里查到原卷出处。补入题会排除 taken 与本次已补的题，不会重复。
+    资料分析始终整篇材料补（material_fp 分组），不把同一篇材料的几个小题拆散；
+    其他模块只取独立题（material_fp=''），避免把资料分析小题混进行测卷。
+    """
+    out: list[int] = []
+    if need <= 0:
+        return out
+
+    def _take(where: str, args: tuple, limit: int) -> list[int]:
+        if limit <= 0:
+            return []
+        cur = list(set(taken) | set(out))
+        excl = f" AND id NOT IN ({','.join('?' * len(cur))})" if cur else ""
+        rows = conn.execute(
+            f"SELECT id FROM documents WHERE kind='真题' AND {where}{excl}"
+            " ORDER BY RANDOM() LIMIT ?",
+            tuple(args) + tuple(cur) + (limit,),
+        ).fetchall()
+        return [r["id"] for r in rows]
+
+    def _pick_single(where: str, args: tuple) -> None:
+        out.extend(_take(where + " AND material_fp=''", args, need - len(out)))
+
+    def _pick_material(where: str, args: tuple) -> None:
+        # 一次抽一整篇材料，直到凑够 need 或题库里没有别的材料
+        while need - len(out) > 0:
+            cur = list(set(taken) | set(out))
+            excl = f" AND id NOT IN ({','.join('?' * len(cur))})" if cur else ""
+            fp = conn.execute(
+                "SELECT DISTINCT material_fp FROM documents WHERE kind='真题'"
+                f" AND material_fp!='' AND {where}{excl} ORDER BY RANDOM() LIMIT 1",
+                tuple(args) + tuple(cur),
+            ).fetchone()
+            if not fp:
+                return
+            for s in conn.execute(
+                "SELECT id FROM documents WHERE kind='真题' AND material_fp=? ORDER BY id",
+                (fp["material_fp"],),
+            ).fetchall():
+                if s["id"] in taken or s["id"] in out:
+                    continue
+                out.append(s["id"])
+                if need - len(out) <= 0:
+                    return
+
+    big = (kaodian or "").split(" / ")[0].strip()
+    steps: list[tuple[str, tuple]] = []
+    if big and module:
+        steps.append(("module=? AND kaodian LIKE ?", (module, big + "%")))
+    elif big:
+        steps.append(("kaodian LIKE ?", (big + "%",)))
+    if module:
+        steps.append(("module=?", (module,)))
+    steps.append(("1", ()))                       # 兜底：全库
+
+    whole = module == "资料分析"
+    for where, args in steps:
+        if need - len(out) <= 0:
+            break
+        if whole and "module=?" in where:
+            _pick_material(where, args)
+        else:
+            _pick_single(where, args)
+    return out
+
+
+def count_paper_pool(module: str = "", kaodian: str = "", trap: bool = False) -> int:
+    """严格筛选命中的真题数（组卷页提示「题量不足」用，不抽题、不生成）。
+
+    这是**上界**：资料分析同一篇材料的各小题都算 1 道可抽题。前端只用它判断
+    「严格匹配够不够」，补题与否由 random_paper / _supplement_paper_ids 决定。
+    """
+    conn = connect()
+    where, args = ["kind='真题'"], []
+    if trap:
+        where.append("qid IN (SELECT qid FROM doubts WHERE status='confirmed')")
+    if module:
+        where.append("module=?"); args.append(module)
+    if kaodian:
+        where.append("kaodian LIKE ?"); args.append(kaodian + "%")
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*) c FROM documents WHERE {' AND '.join(where)}",
+            tuple(args)).fetchone()
+        return int(row["c"] or 0)
+    finally:
+        conn.close()
+
+
 def random_paper(module: str = "", kaodian: str = "", n: int = 10, trap: bool = False) -> list[int]:
     """随机组卷：返回 doc_id 列表（真题）。
     资料分析按整篇材料抽取（同材料小题连续出现）。
@@ -3314,8 +3425,11 @@ def random_paper(module: str = "", kaodian: str = "", n: int = 10, trap: bool = 
                 tuple(args) + (r["material_fp"],),
             ).fetchall()
             ids.extend(s["id"] for s in sub)
-        # 若指定模块就是资料分析，直接返回
+        # 若指定模块就是资料分析，直接返回；材料不够整篇时按材料补齐
         if module == "资料分析":
+            if len(ids) < n:
+                ids.extend(_supplement_paper_ids(
+                    conn, module, kaodian, n - len(ids), ids))
             conn.close()
             return ids[:n]
     else:
@@ -3329,6 +3443,10 @@ def random_paper(module: str = "", kaodian: str = "", n: int = 10, trap: bool = 
         tuple(args) + (n - len(ids),),
     ).fetchall()
     ids.extend(r["id"] for r in rows)
+
+    # 题库凑不满：按「同考点大类 → 同模块 → 全库」补真题（全部来自题库）
+    if len(ids) < n:
+        ids.extend(_supplement_paper_ids(conn, module, kaodian, n - len(ids), ids))
 
     # 按考试模块顺序排序（常识→言语→数量→判断→资料→综合）
     if ids:
@@ -4649,14 +4767,29 @@ def next_doc_id(doc_id: int) -> int | None:
 
 # ---------------- 半月时政 ----------------
 
+def _shizheng_key(period: str) -> tuple[int, int, int]:
+    """「2026年10月上半月」→ (2026, 10, 1)，用来做真正的时间排序。
+
+    表里 period 是字符串，SQL 的 ORDER BY period DESC 比的是字节序：
+    "2026年1" 小于 "2026年9"，10/11/12 月会被排到 9 月之后。
+    答疑取「最近两期」时就会拿到旧的一期。
+    """
+    m = _re.search(r"(\d{4})\s*年\s*(\d{1,2})\s*月", str(period))
+    year, month = (int(m[1]), int(m[2])) if m else (0, 0)
+    half = 1 if "上" in str(period) else 2 if "下" in str(period) else 0
+    return (year, month, half)
+
+
 def list_shizheng() -> list[dict]:
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT period, title, content, created_at FROM shizheng ORDER BY period DESC").fetchall()
+            "SELECT period, title, content, created_at FROM shizheng").fetchall()
     finally:
         conn.close()
-    return [dict(r) for r in rows]
+    # 按解析出的时间键倒序（最近一期在前），别用字符串排序
+    return sorted((dict(r) for r in rows),
+                  key=lambda r: _shizheng_key(r["period"]), reverse=True)
 
 
 def get_shizheng(period: str) -> dict | None:
@@ -4757,6 +4890,107 @@ def get_shizheng_quiz(period: str) -> str:
             "SELECT quiz FROM shizheng WHERE period=?", (period,)).fetchone()
     conn.close()
     return (row["quiz"] if row else "") or ""
+
+
+# ---------------- AI 答疑会话 ----------------
+
+AI_SESSION_MAX_MESSAGES = 200
+
+
+def _ai_session_row(row) -> dict:
+    try:
+        msgs = json.loads(row["messages"] or "[]")
+    except ValueError:
+        msgs = []
+    if not isinstance(msgs, list):
+        msgs = []
+    first_user = ""
+    for m in msgs:
+        if isinstance(m, dict) and m.get("role") == "user":
+            c = m.get("content")
+            if isinstance(c, str) and c.strip():
+                first_user = c.strip()
+                break
+    preview = _re.sub(r"[【\[].*?[】\]]", "", first_user).strip().replace("\n", " ")
+    title = (row["title"] or "").strip() or (preview[:24] + ("…" if len(preview) > 24 else ""))
+    return {
+        "id": row["id"],
+        "title": title or "未命名对话",
+        "created_at": row["created_at"] or 0,
+        "updated_at": row["updated_at"] or 0,
+        "count": sum(1 for m in msgs if isinstance(m, dict) and m.get("role") == "user"),
+        "preview": preview[:80],
+        "messages": msgs,
+    }
+
+
+def list_ai_sessions() -> list[dict]:
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id,title,created_at,updated_at,messages FROM ai_ask_sessions"
+            " ORDER BY updated_at DESC").fetchall()
+    finally:
+        conn.close()
+    items = [_ai_session_row(r) for r in rows]
+    # 列表接口不返回完整正文，避免一次把几百条会话的全文塞给前端
+    for it in items:
+        it.pop("messages", None)
+    return items
+
+
+def get_ai_session(sid: int) -> dict | None:
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id,title,created_at,updated_at,messages FROM ai_ask_sessions WHERE id=?",
+            (sid,)).fetchone()
+    finally:
+        conn.close()
+    return _ai_session_row(row) if row else None
+
+
+def create_ai_session(title: str = "", messages: list | None = None) -> dict:
+    now = time.time()
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO ai_ask_sessions(title,created_at,updated_at,messages) VALUES(?,?,?,?)",
+            ((title or "").strip(), now, now,
+             json.dumps(messages or [], ensure_ascii=False)))
+        conn.commit()
+        sid = cur.lastrowid
+    finally:
+        conn.close()
+    return get_ai_session(int(sid)) or {"id": sid}
+
+
+def save_ai_session(sid: int, messages: list, title: str | None = None) -> dict | None:
+    msgs = messages if isinstance(messages, list) else []
+    msgs = msgs[-AI_SESSION_MAX_MESSAGES:]
+    conn = connect()
+    try:
+        row = conn.execute("SELECT title FROM ai_ask_sessions WHERE id=?", (sid,)).fetchone()
+        if not row:
+            return None
+        new_title = (title or "").strip() if title is not None else (row["title"] or "")
+        conn.execute(
+            "UPDATE ai_ask_sessions SET messages=?, title=?, updated_at=? WHERE id=?",
+            (json.dumps(msgs, ensure_ascii=False), new_title, time.time(), sid))
+        conn.commit()
+    finally:
+        conn.close()
+    return get_ai_session(sid)
+
+
+def delete_ai_session(sid: int) -> bool:
+    conn = connect()
+    try:
+        cur = conn.execute("DELETE FROM ai_ask_sessions WHERE id=?", (sid,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
 
 
 # ---------------- 申论/综应 批改记录 ----------------
@@ -5308,39 +5542,86 @@ def interview_stats() -> dict:
 
 # ---------------- 真题套卷 ----------------
 
-def list_exams() -> list[dict]:
-    """可用真题套卷：同 exam 名 ≥15 题才算一套。"""
+def _exam_key(exam: str) -> str:
+    """抹掉「（网友回忆版）」这类后缀，用来识别同一份真题的两个卷名。
+
+    老库里同一套卷有两个卷名：一个是截断/无后缀的旧名（`…（地市级`、`…《行测》题`），
+    只收了一部分题；另一个是导入库里的完整卷名（`…（网友回忆版）`）。两者不是两套
+    卷，只是同一份真题的残片，列表里只留完整的那一套，否则选到旧名必然「题目不全」。
+    """
+    return exam.replace("网友回忆版", "").rstrip("（）() ")
+
+
+def list_exams(limit: int = 600) -> list[dict]:
+    """可用真题套卷：同 exam 名 ≥15 题才算一套。
+
+    导入整套真题后库内套卷有 590 套，原来的 LIMIT 60 会让下拉里只剩最新
+    60 套、其余卷既不能练也不能导出，这里放宽到 600（仍在同一查询里截断，
+    避免客户端拿到无限长的列表）。
+    """
     conn = connect()
     rows = conn.execute(
         """SELECT exam, COUNT(*) c FROM documents
            WHERE kind='真题' AND exam!='' AND module NOT IN ('申论','综合分析')
-           GROUP BY exam HAVING c>=15 ORDER BY exam DESC LIMIT 60""").fetchall()
+           GROUP BY exam HAVING c>=15""").fetchall()
     conn.close()
+
+    # 同一份真题的残片旧卷名不列出来（题量不到完整卷一半的才算残片；
+    # 联考各省卷、AB 卷这类真正不同的卷，卷名不同、key 也就不同）
+    groups: dict[str, list] = {}
+    for r in rows:
+        groups.setdefault(_exam_key(r["exam"]), []).append(r)
+    kept = []
+    for group in groups.values():
+        group.sort(key=lambda r: -r["c"])
+        full = group[0]["c"]
+        kept.append(group[0])
+        kept.extend(r for r in group[1:] if r["c"] * 2 > full)
+
+    kept.sort(key=lambda r: r["exam"], reverse=True)
     return [{"exam": r["exam"], "c": r["c"], "is_ai": r["exam"].startswith("AI模拟")}
-            for r in rows]
+            for r in kept[:limit]]
 
 
 MODULE_ORDER = ["常识判断", "言语理解", "数量关系", "判断推理", "资料分析", "综合分析"]
 
+# 源库把一份真题卷按科目拆成多个文件，同一模块可能来自两个文件：
+# 常识判断 = `01-政治理论` + `02-常识判断`，两个文件各自从「第 1 题」开始编号。
+# 所以模块内排序要「先按来源文件、再按该文件的题号」；政治理论在真题卷里排在
+# 常识判断之前（2025 年后国考新增的政治理论 20 题就是整卷第 1—20 题）。
+# 没有来源科目的（人工整理的老笔记）按 0，与单文件模块的导入题同位次，靠题号归位。
+SRC_RANK = {"01-政治理论": 0, "02-常识判断": 1}
+
 
 def exam_paper_ids(exam: str) -> list[int]:
-    """整卷题目 id，按模块固定顺序 + id 排序。"""
+    """整卷题目 id，按真题卷的科目顺序 + 各科原题号排（没题号的退回入库顺序）。
+
+    源库按科目分文件，题号是每科从 1 开始的，所以排序必须「先科目、再来源
+    文件、最后题号」；早年只按 id 排，靠入库顺序碰巧对得上，一旦补录题就会插
+    错位置。笔记带 `题号` / `来源科目` 字段后，同一科内严格按原卷顺序，缺题号
+    的老题仍退回 id 顺序。
+    """
     conn = connect()
-    ids: list[int] = []
-    for mod in MODULE_ORDER:
-        rows = conn.execute(
-            "SELECT id FROM documents WHERE kind='真题' AND exam=? AND module=? ORDER BY id",
-            (exam, mod)).fetchall()
-        ids.extend(r["id"] for r in rows)
-    # 兜底：不在常规模块里的题
     rows = conn.execute(
-        """SELECT id FROM documents WHERE kind='真题' AND exam=? AND id NOT IN
-           (SELECT id FROM documents WHERE kind='真题' AND exam=? AND module IN
-            ('常识判断','言语理解','数量关系','判断推理','资料分析','综合分析'))
-           ORDER BY id""", (exam, exam)).fetchall()
-    ids.extend(r["id"] for r in rows)
+        "SELECT id, module, data FROM documents WHERE kind='真题' AND exam=?",
+        (exam,)).fetchall()
     conn.close()
-    return ids
+
+    def sort_key(r) -> tuple:
+        mod = r["module"]
+        mi = MODULE_ORDER.index(mod) if mod in MODULE_ORDER else len(MODULE_ORDER)
+        try:
+            d = json.loads(r["data"] or "{}")
+        except json.JSONDecodeError:
+            d = {}
+        try:
+            no = int(d.get("no") or 0)
+        except (TypeError, ValueError):
+            no = 0
+        sr = SRC_RANK.get(d.get("src") or "", 0)
+        return (mi, sr, no if no > 0 else 10 ** 6, r["id"])
+
+    return [r["id"] for r in sorted(rows, key=sort_key)]
 
 
 # ---------------- 学习时长统计 ----------------

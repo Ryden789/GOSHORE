@@ -915,6 +915,21 @@ async function renderInterview() {
   const noQ = !(qdata.categories || []).length;   // 建议7：题目表为空 → 渲染空状态
   let curQ = null, busy = false;
   let timerH = null, timerLeft = 0, timerPhase = "", answerTotal = qdata.answer_seconds;
+  // 语音模拟：考官朗读 / 语音作答 / 录音回放。能力不支持时按钮隐藏，
+  // 切页统一释放（WebView 里语音听写多半不可用，只在桌面浏览器完整可用）。
+  let micH = null, recH = null, recStream = null, recUrl = null;
+
+  function voiceStop() {
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
+    try { if (micH) { micH.onresult = null; micH.onend = null; micH.onerror = null; micH.stop(); } } catch (e) {}
+    micH = null;
+    try { if (recH && recH.state !== "inactive") recH.stop(); } catch (e) {}
+    recH = null;
+    try { if (recStream) recStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    recStream = null;
+    if (recUrl) { try { URL.revokeObjectURL(recUrl); } catch (e) {} recUrl = null; }
+  }
+  window.addEventListener("hashchange", voiceStop, { once: true });
 
   const fmt = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   const stopTimer = () => { if (timerH) { clearInterval(timerH); timerH = null; } };
@@ -993,8 +1008,13 @@ async function renderInterview() {
           <button class="btn btn-sm" id="ivThink">${UiIcon.html("clock", 14)}思考</button>
           <button class="btn btn-sm" id="ivAnswer">${UiIcon.html("pen", 14)}作答</button>
           <button class="btn btn-sm" id="ivRef">${UiIcon.html("book", 14)}参考思路</button>
+          <button class="btn btn-sm" id="ivSpeak">考官朗读</button>
+          <button class="btn btn-sm" id="ivMic">语音作答</button>
+          <button class="btn btn-sm" id="ivRec">录音回放</button>
         </div>
-        <textarea id="ivA" rows="7" placeholder="写下你的作答（建议分点：亮观点 → 分层论证 → 结合岗位表态）"></textarea>
+        <textarea id="ivA" rows="7" placeholder="写下你的作答，或点「语音作答」直接说（建议分点：亮观点 → 分层论证 → 结合岗位表态）"></textarea>
+        <div id="ivAudioWrap" style="display:none;margin-top:8px"></div>
+        <div id="ivVoiceTip" class="muted" style="margin-top:5px"></div>
         <button class="btn btn-primary btn-block" id="ivGo" style="margin-top:10px">请 AI 考官点评</button>
         <span id="gTipIv" class="muted"></span>
         <div id="ivRefBox" style="display:none;margin-top:10px;padding:9px 11px;background:var(--paper);border-radius:8px;font-size:calc(13px * var(--fs));line-height:1.75"></div>
@@ -1011,6 +1031,99 @@ async function renderInterview() {
       }
     };
     $("#ivGo").onclick = submit;
+
+    // 语音模拟（与桌面端同口径；WebView 不支持的能力直接隐藏按钮）
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const canSpeak = "speechSynthesis" in window && typeof SpeechSynthesisUtterance !== "undefined";
+    const canRec = !!(navigator.mediaDevices && window.MediaRecorder);
+    const speakBtn = $("#ivSpeak"), micBtn = $("#ivMic"), recBtn = $("#ivRec"), tip = $("#ivVoiceTip");
+    if (!canSpeak) speakBtn.hidden = true;
+    if (!SR) micBtn.hidden = true;
+    if (!canRec) recBtn.hidden = true;
+    tip.textContent = [
+      canSpeak ? "考官朗读：系统语音读题干" : "",
+      SR ? "语音作答：口头作答实时转文字" : "当前环境不支持语音听写，请用文字作答",
+      canRec ? "录音回放：录音只在本页临时保存" : "",
+    ].filter(Boolean).join("；");
+
+    if (canSpeak) speakBtn.onclick = () => {
+      if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+        speakBtn.textContent = "考官朗读";
+        return;
+      }
+      const u = new SpeechSynthesisUtterance(curQ.question);
+      u.lang = "zh-CN"; u.rate = 0.95;
+      u.onend = () => { speakBtn.textContent = "考官朗读"; };
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+      speakBtn.textContent = "停止朗读";
+    };
+
+    if (SR) {
+      let micOn = false;
+      micBtn.onclick = () => {
+        const ta = $("#ivA");
+        if (micOn) { try { micH.stop(); } catch (e) {} return; }
+        micH = new SR();
+        micH.lang = "zh-CN";
+        micH.continuous = true;
+        micH.interimResults = true;
+        let base = ta.value ? ta.value.replace(/\s*$/, "") + "，" : "";
+        micH.onresult = e => {
+          let finalTxt = "", interim = "";
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            const r = e.results[i];
+            if (r.isFinal) finalTxt += r[0].transcript; else interim += r[0].transcript;
+          }
+          if (finalTxt) base += finalTxt;
+          ta.value = base + interim;
+        };
+        micH.onerror = ev => {
+          micOn = false; micBtn.textContent = "语音作答";
+          const map = {
+            "not-allowed": "麦克风权限被拒绝，请在系统设置里允许",
+            "no-speech": "没有听到声音，请靠近麦克风再试",
+            "network": "语音识别依赖联网服务，当前不可用，请改用文字作答",
+          };
+          toast(map[ev.error] || `语音识别失败：${ev.error}`);
+        };
+        micH.onend = () => { micOn = false; micBtn.textContent = "语音作答"; };
+        try { micH.start(); } catch (e) { toast("语音识别启动失败，请改用文字作答"); return; }
+        micOn = true; micBtn.textContent = "停止听写";
+      };
+    }
+
+    if (canRec) {
+      let recOn = false;
+      recBtn.onclick = async () => {
+        if (recOn) { try { recH.stop(); } catch (e) {} return; }
+        try {
+          recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (e) {
+          toast("无法开始录音：请检查麦克风权限");
+          return;
+        }
+        const rec = new MediaRecorder(recStream);
+        recH = rec;
+        const chunks = [];
+        rec.ondataavailable = ev => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+        rec.onstop = () => {
+          recOn = false; recBtn.textContent = "录音回放";
+          try { recStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+          recStream = null;
+          if (recUrl) { try { URL.revokeObjectURL(recUrl); } catch (e) {} }
+          recUrl = URL.createObjectURL(new Blob(chunks, { type: rec.mimeType || "audio/webm" }));
+          const wrap = $("#ivAudioWrap");
+          if (!wrap) return;
+          wrap.style.display = "";
+          wrap.innerHTML = `<audio controls src="${recUrl}" style="width:100%"></audio>
+            <div class="muted" style="margin-top:4px">回放听语速与口头禅；录音只在本页临时保存</div>`;
+        };
+        rec.start();
+        recOn = true; recBtn.textContent = "停止录音";
+      };
+    }
   }
   function drawLogs() {
     $("#ivLogs").innerHTML = logs.length ? logs.map(l => {
@@ -1797,6 +1910,8 @@ async function renderPractice(auto = "") {
     <div class="card">
       <h3>真题套卷</h3>
       <p class="muted" style="margin:0 0 10px;font-size:calc(12px * var(--fs))">按当年卷面顺序整卷练习，自动计时</p>
+      <input type="search" id="examQuery" class="m-input" autocomplete="off"
+             placeholder="搜卷名 / 年份 / 省份" style="width:100%;margin-bottom:8px">
       <select id="examSel" class="exam-sel" style="width:100%;margin-bottom:10px"><option value="">加载中…</option></select>
       <button class="btn btn-primary btn-block" id="examGo" disabled>开始整卷</button>
     </div>
@@ -1871,6 +1986,11 @@ async function renderPractice(auto = "") {
         : pmode === "sequential" ? "/api/paper/sequential" : "/api/paper";
       const r = await api(path, { module: mod, n });
       if (!r.ids.length) return toast("该范围暂无真题");
+      // 题库凑不满时后端会从「同考点大类 → 同模块 → 全库」补真题（不 AI 生成）
+      const want = r.requested || r.ids.length;
+      if (typeof r.strict_pool === "number" && r.strict_pool < want && r.ids.length >= want) {
+        toast(`该范围严格匹配只有 ${r.strict_pool} 道，已从题库补充到 ${want} 道`);
+      }
       const label = pmode === "adaptive" ? "智能推题" : pmode === "sequential" ? "顺序练习" : "随机";
       runPaper(r.ids, pExam
         ? { title: "考场模式", examMode: true, minutes: pMin }
@@ -1880,13 +2000,25 @@ async function renderPractice(auto = "") {
     }
   };
 
-  // 真题套卷下拉
+  // 真题套卷下拉（带搜索：500 多套卷靠 select 翻不动）
   api("/api/exams").then(r => {
     const sel = $("#examSel");
     if (!sel) return;
     if (!r.items.length) { sel.innerHTML = `<option value="">题库中暂无成套试卷</option>`; return; }
-    sel.innerHTML = r.items.map(e =>
-      `<option value="${esc(e.exam)}">${e.is_ai ? "【AI模拟】" : ""}${esc(e.exam)}（${e.c} 题）</option>`).join("");
+    const search = $("#examQuery");
+    const ALIAS = { 国考: "国家公务员", 省考: "省公务员", 事业编: "事业单位" };
+    const render = () => {
+      const words = ((search && search.value) || "").trim().toLowerCase().split(/\s+/)
+        .filter(Boolean).map(w => ALIAS[w] || w);
+      const hit = r.items.filter(e => words.every(w => e.exam.toLowerCase().includes(w)));
+      sel.innerHTML = hit.length
+        ? hit.map(e =>
+            `<option value="${esc(e.exam)}">${e.is_ai ? "【AI模拟】" : ""}${esc(e.exam)}（${e.c} 题）</option>`
+          ).join("")
+        : `<option value="">没有匹配的卷名</option>`;
+    };
+    if (search) search.oninput = render;
+    render();
     const go = $("#examGo"); if (go) go.disabled = false;
   }).catch(() => {});
   $("#examGo").onclick = async () => {
@@ -2641,8 +2773,9 @@ async function drawWrong(box, tok) {
   };
   const expBtn = $("#wbExport");
   if (expBtn) expBtn.onclick = async () => {
-    const ids = [...picked].slice(0, 50);
+    const ids = [...picked].slice(0, 200);
     if (!ids.length) return toast("先勾选要导出的错题（可点「全选」）");
+    if (picked.size > 200) toast("单次最多导出 200 题，已取前 200 题");
     expBtn.disabled = true;
     expBtn.textContent = "生成中…";
     try {
@@ -6216,6 +6349,9 @@ async function renderAiAsk() {
   ];
   let msgs = aiAskLoad();
   let streaming = false;
+  // 停止生成：fetch 带 AbortSignal，点「停止」即断开 SSE；服务端据此关掉上游请求
+  let abortCtl = null;
+  let stopHandler = null;
 
   view.innerHTML = `
     <div class="card" style="display:flex;flex-direction:column;min-height:72vh">
@@ -6374,7 +6510,12 @@ async function renderAiAsk() {
     const files = attachedFiles.slice();
     if ((!ask && !imgs.length && !files.length) || streaming) return;
     streaming = true;
-    goBtn.disabled = true;
+    abortCtl = new AbortController();
+    stopHandler = () => { try { abortCtl.abort(); } catch (e) {} };
+    // 发送键就地变「停止」：长思考时用户能随时掐断，不必等它自己结束
+    goBtn.textContent = "停止";
+    goBtn.disabled = false;
+    goBtn.onclick = stopHandler;
     input.value = "";
     attachedImages = [];
     attachedFiles = [];
@@ -6409,13 +6550,23 @@ async function renderAiAsk() {
     his = his.slice(-ASK_MAX_MESSAGES);
 
     let full = "";
+    let think = "";
     const b = bubble("ai", "");
-    b.innerHTML = `<div style="color:var(--ink-2,#999);font-size:calc(12.5px * var(--fs))">${UiIcon.html("clock", 13)}思考中…</div>`;
+    const t0 = Date.now();
+    const paintWait = () => {
+      if (full) return;
+      const sec = Math.round((Date.now() - t0) / 1000);
+      b.innerHTML = `<div style="color:var(--ink-2,#999);font-size:calc(12.5px * var(--fs))">${UiIcon.html("clock", 13)}思考中… ${sec}s`
+        + (think ? ` · 已思考 ${think.length} 字` : "") + `</div>`;
+    };
+    paintWait();
+    const waitTimer = setInterval(paintWait, 1000);
 
     try {
       const r = await fetch("/api/ai/ask", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: his }),
+        signal: abortCtl.signal,
       });
       if (!r.ok) throw new Error(await r.text());
       const reader = r.body.getReader(), dec = new TextDecoder();
@@ -6430,7 +6581,11 @@ async function renderAiAsk() {
           const line = f.split("\n").find(l => l.startsWith("data:"));
           if (!line) continue;
           const ev = JSON.parse(line.slice(5).trim());
-          if (ev.type === "delta") {
+          // deepseek-flash 默认开思考模式：把思考进度透出来，否则长思考时
+          // 界面只有一句「思考中…」，用户会以为卡死（这是本页之前最像"卡住"的地方）
+          if (ev.type === "think") {
+            think += ev.text;
+          } else if (ev.type === "delta") {
             full += ev.text;
             b.innerHTML = md(full);
           } else if (ev.type === "error") {
@@ -6440,9 +6595,21 @@ async function renderAiAsk() {
         }
       }
     } catch (e) {
-      full += `\n\n⚠ ${aiErrorHint(e.message)}`;
-      b.innerHTML = md(full) +
-        `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
+      if (e.name === "AbortError") {
+        // 主动停止：保留已生成的部分，不再提示"去设置"（那是失败才给的指引）
+        b.innerHTML = md(full ? full + "\n\n（已停止生成）" : "（已停止生成）");
+      } else {
+        full += `\n\n⚠ ${aiErrorHint(e.message)}`;
+        b.innerHTML = md(full) +
+          `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
+      }
+    } finally {
+      clearInterval(waitTimer);
+      abortCtl = null;
+      stopHandler = null;
+      goBtn.textContent = "发送";
+      goBtn.onclick = send;
+      goBtn.disabled = false;
     }
     list.scrollTop = list.scrollHeight;
     const savedTag = [imgs.length ? "[图片]" : "", files.length ? `[附件 ${files.length} 个]` : ""]

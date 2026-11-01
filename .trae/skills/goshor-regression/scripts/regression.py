@@ -15,7 +15,11 @@ from pathlib import Path
 
 BASE = "http://127.0.0.1:8765"
 REPO = Path(__file__).resolve().parents[4]
-DB_PATH = REPO / "data" / "goshor.db"
+# 个人数据已从单库 goshor.db 拆到 data/user.db（见 app/db.py 的 split 模式）；
+# goshor.db 现在可能只是一个 0 字节的空壳，formula_rounds 等个人表都在 user.db。
+DB_PATH = REPO / "data" / "user.db"
+if not DB_PATH.exists():
+    DB_PATH = REPO / "data" / "goshor.db"
 
 failures = []
 
@@ -155,7 +159,7 @@ def deep_report(pg):
     pg.wait_for_selector(".rp-card", timeout=5000)
     cards = pg.locator(".rp-card").count()
     rows = pg.locator("#rpBody table tr").count()
-    return cards == 4 and rows >= 2, f"汇总卡 {cards}/4，对比表 {rows} 行（含表头）"
+    return cards >= 4 and rows >= 2, f"汇总卡 {cards} 个（≥4），对比表 {rows} 行（含表头）"
 
 
 DEEP_CHECKS = {
@@ -178,6 +182,9 @@ def check_pages():
     with urllib.request.urlopen(BASE + "/", timeout=10) as resp:
         html = resp.read().decode("utf-8")
     routes = list(dict.fromkeys(re.findall(r'href="#(/[^"#?]*)"', html)))
+    # 侧栏改版后部分页面（列式 / 判断专项 / 科技文献 / 周报）不再挂在侧栏，
+    # 但深度断言仍需要它们，这里显式补进来，避免覆盖面悄悄缩水。
+    routes += [r for r in DEEP_CHECKS if r not in routes]
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
@@ -211,6 +218,24 @@ def check_sidebar(pg):
     # /home：5 组齐全，且仅「总览」组展开
     pg.goto(BASE + "#/home", wait_until="domcontentloaded")
     pg.wait_for_timeout(800)
+    if pg.locator(".nav-group").count() == 0:
+        # 新版扁平侧栏（没有手风琴分组）：学习空间 6 项 + 工具与设置 2 项，
+        # 当前路由只高亮一项（aria-current="page" 供读屏播报）。
+        main = pg.locator(".study-main-nav a[data-route]").count()
+        tools = pg.locator(".study-tools-nav a[data-route]").count()
+        home_on = pg.locator(
+            '.study-main-nav a[data-route="home"]').get_attribute("aria-current") == "page"
+        pg.goto(BASE + "#/practice", wait_until="domcontentloaded")
+        pg.wait_for_timeout(800)
+        practice_on = pg.locator(
+            '.study-main-nav a[data-route="practice"]').get_attribute("aria-current") == "page"
+        only_one = pg.locator(".study-main-nav a.active").count() == 1
+        ok = main == 6 and tools == 2 and home_on and practice_on and only_one
+        record(ok, "侧边栏",
+               f"学习空间 {main} 项，工具与设置 {tools} 项，"
+               f"首页高亮={home_on}，练习页高亮={practice_on}，唯一高亮={only_one}")
+        return
+
     five = pg.locator(".nav-group").count() == 5
     only_one = pg.locator(".nav-group:not(.collapsed)").count() == 1
     overview_open = pg.locator('[data-group="overview"]:not(.collapsed)').count() == 1

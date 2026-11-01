@@ -19,3 +19,7 @@ python-docx==1.2.0     # Word 题库导入
 pandas==3.0.5          # Excel 题库导入
 openpyxl==3.1.5        # pandas.read_excel 的 .xlsx 引擎（缺了 xlsx 导入必炸）
 xlrd==2.0.2            # pandas.read_excel 的 .xls 引擎（老格式 Excel）
+# PDF 导出（/api/export/pdf）：用 Chromium 打印引擎渲染导出页，与网页打印一致。
+# 装完还要执行一次 `python -m playwright install chromium`；缺失时导出面板
+# 会自动退回「可打印网页」（不会报错，只是不能一键出 PDF）。
+playwright==1.60.0

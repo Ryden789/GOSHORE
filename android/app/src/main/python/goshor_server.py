@@ -1228,7 +1228,7 @@ class _Handler(BaseHTTPRequestHandler):
                     _x = _x.strip()
                     if _x.isdigit():
                         _ids.append(int(_x))
-                _ids = _ids[:50]
+                _ids = _ids[:200]
                 _brief = db.get_docs_brief(_ids)
                 _items = []
                 for _i in _ids:
@@ -1242,6 +1242,8 @@ class _Handler(BaseHTTPRequestHandler):
                     _items.append({
                         "title": _d.get("title", ""), "module": _d.get("module", ""),
                         "exam": _d.get("exam", ""), "stem": _data.get("stem", ""),
+                        # 资料分析等题的给定材料（与桌面导出同口径，缺了材料整题没法做）
+                        "material": _data.get("material") or "",
                         "options": _opts, "answer": _ans,
                         "analysis": _data.get("official") or _data.get("reasoning") or "",
                     })
@@ -1311,10 +1313,15 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/auth/logout":
                 self._json(accounts.logout())
             elif path == "/api/paper":
+                _pn = max(1, min(30, int(b.get("n", 10)))
                 ids = db.random_paper(
-                    b.get("module", ""), b.get("kaodian", ""),
-                    max(1, min(30, int(b.get("n", 10)))))
-                self._json({"ids": ids})
+                    b.get("module", ""), b.get("kaodian", ""), _pn)
+                # 与桌面 /api/paper 同构：题库凑不满时 db 层已按
+                # 「同考点大类 → 同模块 → 全库」补真题（不 AI 生成），
+                # 这里回传严格题池，前端可提示「补足了多少道」。
+                self._json({"ids": ids, "requested": _pn, "returned": len(ids),
+                            "strict_pool": db.count_paper_pool(
+                                b.get("module", ""), b.get("kaodian", ""))})
             elif path == "/api/paper/adaptive":
                 ids = db.adaptive_paper(
                     b.get("module", ""), max(1, min(30, int(b.get("n", 15)))),
@@ -1819,6 +1826,20 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self._err(400, str(e))
         messages = [{"role": "system", "content": ai.ASK_SYSTEM}] + msgs
+        # 与桌面端一致的本机知识底稿：行测/申论方法论 + 时政 + 个人错题本
+        blocks = [x for x in (ai.ask_xingce_block(msgs), ai.ask_shenlun_block(msgs),
+                              ai.ask_shizheng_block(msgs), ai.ask_wrong_block(msgs)) if x]
+        if ai.has_image(msgs):
+            graph = ai.ask_graph_block()
+            if graph:
+                blocks.append(graph)
+        if blocks:
+            extra = "\n\n".join(blocks)
+            last = messages[-1]
+            if isinstance(last.get("content"), str):
+                last["content"] = last["content"] + "\n\n" + extra
+            elif isinstance(last.get("content"), list):
+                last["content"] = last["content"] + [{"type": "text", "text": extra}]
 
         async def gen():
             async for kind, payload in ai.stream_chat(messages, use_vision=use_vision):

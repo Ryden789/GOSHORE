@@ -6,6 +6,7 @@ import html
 import json
 import mimetypes
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -13,7 +14,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, quote, urlencode
 
 # PWA（功能 3.1）：.webmanifest 需专用 MIME，否则浏览器拒绝安装
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -24,6 +25,7 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
@@ -79,6 +81,8 @@ from .logging_setup import get_logger
 # 可打印导出页（G5）：与手机端 goshor_server.py 共用同一份拼装逻辑。
 # esc/rich_text 也从这里引入，别再在本模块另写一份（会漂移）。
 from .print_export import render_html
+# PDF 导出：把上面拼好的打印页交给 Chromium 渲染（可选依赖，缺失时返回 501）
+from .pdf_export import PdfUnavailable, html_to_pdf
 
 log = get_logger(__name__)
 
@@ -872,7 +876,7 @@ class ExplainIn(BaseModel):
 
 
 @app.post("/api/ai/explain")
-async def api_explain(b: ExplainIn):
+async def api_explain(b: ExplainIn, request: Request):
     doc = db.get_doc(b.doc_id)
     if not doc:
         raise HTTPException(404)
@@ -902,11 +906,18 @@ async def api_explain(b: ExplainIn):
     buffer: list[str] = []
 
     async def gen():
+        aborted = False
         async for kind, payload in ai.stream_chat(messages):
+            # 前端点「停止」会断开 SSE；这里随即退出，async-for 关闭上游生成器，
+            # httpx 连接一起释放，避免用户已经不看了还在计费
+            if await request.is_disconnected():
+                aborted = True
+                break
             if kind == "delta":
                 buffer.append(payload)
             yield f"data: {json.dumps({'type': kind, 'text': payload}, ensure_ascii=False)}\n\n"
-        if not b.history and buffer:
+        # 只缓存讲完的首讲；被中止的半截内容不进缓存
+        if not aborted and not b.history and buffer:
             db.set_explain_cache(b.doc_id, b.mode, stuck_key, "".join(buffer))
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -936,11 +947,71 @@ async def api_ai_ask(b: AskIn, request: Request):
         raise HTTPException(400, str(e))
     messages = [{"role": "system", "content": ai.ASK_SYSTEM}] + msgs
 
+    # 本机知识底稿：行测/申论方法论（按模块路由）+ 时政（命中关键词才给）
+    # + 个人错题本（命中关键词才给）。拼在最后一条用户消息尾部，不动 system
+    # 前缀，系统提示的缓存命中不受影响。
+    blocks = [x for x in (ai.ask_xingce_block(msgs), ai.ask_shenlun_block(msgs),
+                          ai.ask_shizheng_block(msgs), ai.ask_wrong_block(msgs)) if x]
+    if ai.has_image(msgs):
+        graph = ai.ask_graph_block()
+        if graph:
+            blocks.append(graph)
+    if blocks:
+        extra = "\n\n".join(blocks)
+        last = messages[-1]
+        if isinstance(last.get("content"), str):
+            last["content"] = last["content"] + "\n\n" + extra
+        elif isinstance(last.get("content"), list):
+            last["content"] = last["content"] + [{"type": "text", "text": extra}]
+
     async def gen():
         async for kind, payload in ai.stream_chat(messages, use_vision=use_vision):
+            # 用户点「停止」断开后立刻收手（见 api_explain 同款说明）
+            if await request.is_disconnected():
+                break
             yield f"data: {json.dumps({'type': kind, 'text': payload}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ---------------- AI 答疑会话（保存 / 历史 / 继续 / 导出） ----------------
+
+class AiSessionIn(BaseModel):
+    title: str = ""
+    messages: list[dict] = []
+
+
+@app.get("/api/ai/sessions")
+def api_ai_sessions():
+    return {"items": db.list_ai_sessions()}
+
+
+@app.get("/api/ai/sessions/{sid}")
+def api_ai_session(sid: int):
+    it = db.get_ai_session(sid)
+    if not it:
+        raise HTTPException(404, "会话不存在或已被删除")
+    return it
+
+
+@app.post("/api/ai/sessions")
+def api_ai_session_new(b: AiSessionIn):
+    return db.create_ai_session(b.title, b.messages)
+
+
+@app.put("/api/ai/sessions/{sid}")
+def api_ai_session_save(sid: int, b: AiSessionIn):
+    it = db.save_ai_session(sid, b.messages, b.title or None)
+    if not it:
+        raise HTTPException(404, "会话不存在或已被删除")
+    return it
+
+
+@app.delete("/api/ai/sessions/{sid}")
+def api_ai_session_delete(sid: int):
+    if not db.delete_ai_session(sid):
+        raise HTTPException(404, "会话不存在或已被删除")
+    return {"ok": True}
 
 
 class GuideIn(BaseModel):
@@ -950,7 +1021,7 @@ class GuideIn(BaseModel):
 
 
 @app.post("/api/ai/guide")
-async def api_ai_guide(b: GuideIn):
+async def api_ai_guide(b: GuideIn, request: Request):
     """2.5 苏格拉底式引导讲题：连续追问，最多 GUIDE_MAX_ROUNDS 轮后必给解析。"""
     doc = db.get_doc(b.doc_id)
     if not doc:
@@ -961,10 +1032,16 @@ async def api_ai_guide(b: GuideIn):
     buffer: list[str] = []
 
     async def gen():
+        aborted = False
         async for kind, payload in ai.stream_chat(messages):
+            if await request.is_disconnected():
+                aborted = True
+                break
             if kind == "delta":
                 buffer.append(payload)
             yield _sse({"type": kind, "text": payload})
+        if aborted:
+            return
         parsed = ai.parse_guide_output("".join(buffer), round_no, force)
         yield _sse({"type": "result", "data": parsed})
 
@@ -1278,8 +1355,13 @@ class PaperIn(BaseModel):
 
 @app.post("/api/paper")
 def api_paper(b: PaperIn):
-    ids = db.random_paper(b.module, b.kaodian, max(1, min(30, b.n)), trap=b.trap)
-    return {"ids": ids}
+    n = max(1, min(30, b.n))
+    ids = db.random_paper(b.module, b.kaodian, n, trap=b.trap)
+    # 严格匹配的题池回传前端：题库凑不满时 random_paper 会按「同考点大类 →
+    # 同模块 → 全库」补真题，前端据此提示「补了几道、全部取自题库」。
+    # strict_pool 不传 trap 的补充口径，只反映用户所选范围的真实题量。
+    pool = db.count_paper_pool(b.module, b.kaodian, trap=b.trap)
+    return {"ids": ids, "requested": n, "returned": len(ids), "strict_pool": pool}
 
 
 @app.post("/api/paper/adaptive")
@@ -3114,24 +3196,58 @@ def api_cards_progress():
 
 # ---------------- 题库导出（打印为 PDF） ----------------
 
+# 导出页是一次性拼成整页 HTML，题数越多内存/渲染越慢：2000 题约 1 万字/题，
+# 已经够打印一本小册子；再往上建议分卷导出。
+EXPORT_LIMIT_MAX = 2000
+# doc_ids 导出（错题本勾选）上限：SQLite 变量上限 999，分批查询兜底
+EXPORT_DOCID_MAX = 200
+
 @app.get("/api/export/print")
 def api_export_print(
     q: str = "", kind: str = "真题", module: str = "", daclass: str = "",
-    region: str = "", year: str = "", limit: int = 100, with_answer: int = 1,
+    region: str = "", year: str = "", exam: str = "",   # exam：整卷导出（一套真题全部题）
+    limit: int = 100, with_answer: int = 1,
+    full: int = 0,          # 1=导出当前筛选条件的全部题（内部批量取，突破 500 上限）
     doc_ids: str = "",  # 逗号分隔的 doc_id 列表（用于单题/多题/错题本导出）
     heading: str = "",  # G5：自定义大标题（如「错题本导出」），留空用「题库导出」
 ):
-    limit = max(1, min(500, limit))
+    limit = max(1, min(EXPORT_LIMIT_MAX, limit))
 
     # 统一「先批量取题、再拼装」：原先逐题调 db.get_doc（每题新建连接 + 查 marks/
     # answers），100 题要 16.3s；改成一次 IN 查询后 0.31s（53×）。
     if doc_ids:
         try:
-            ids = [int(x) for x in doc_ids.split(",") if x.strip().isdigit()][:50]
+            ids = [int(x) for x in doc_ids.split(",") if x.strip().isdigit()][:EXPORT_DOCID_MAX]
         except ValueError:
             ids = []
         brief = db.get_docs_brief(ids)
         picked = [brief[i] for i in ids if i in brief]   # 保持传入顺序
+        total = len(picked)
+    elif exam:
+        # 整卷导出：按模块顺序取该套全部题，不受 limit 限制（一套卷动辄 100+ 题）
+        ids = db.exam_paper_ids(exam)[:EXPORT_LIMIT_MAX]
+        brief = db.get_docs_brief(ids)
+        picked = [brief[i] for i in ids if i in brief]
+        total = len(picked)
+    elif full:
+        # 全量导出：分页取完筛选结果（单页 500，最多 EXPORT_LIMIT_MAX 题）
+        ids = []
+        page = 1
+        total = 0
+        while len(ids) < EXPORT_LIMIT_MAX:
+            rows, total = db.search_docs(
+                q=q, kind=kind, module=module, daclass=daclass,
+                region=region, year=year, page=page, page_size=500,
+            )
+            if not rows:
+                break
+            ids.extend(r["id"] for r in rows)
+            if len(rows) < 500:
+                break
+            page += 1
+        ids = ids[:EXPORT_LIMIT_MAX]
+        brief = db.get_docs_brief(ids)
+        picked = [brief[i] for i in ids if i in brief]
     else:
         rows, total = db.search_docs(
             q=q, kind=kind, module=module, daclass=daclass,
@@ -3146,18 +3262,62 @@ def api_export_print(
         answer = next((o["label"] for o in (data.get("options") or []) if o.get("correct")), "")
         items.append({
             "title": d["title"], "module": d["module"], "exam": d["exam"],
-            "stem": data.get("stem", ""), "options": data.get("options") or [],
+            "stem": data.get("stem", ""),
+            # 资料分析等题的「给定材料」：不带上就只剩孤零零的问题，整卷没法做
+            "material": data.get("material") or "",
+            "options": data.get("options") or [],
             "answer": answer, "analysis": data.get("official") or data.get("reasoning") or "",
         })
-    if doc_ids:
-        total = len(items)
 
-    title_suffix = f"指定 {len(items)} 题" if doc_ids else f"{total} 题（本次 {len(items)} 题）"
+    if doc_ids:
+        title_suffix = f"指定 {len(items)} 题"
+    elif exam:
+        title_suffix = f"整卷 · {len(items)} 题"
+    elif full:
+        title_suffix = f"共 {total} 题（全量已导出 {len(items)} 题）"
+    else:
+        title_suffix = f"{total} 题（本次 {len(items)} 题）"
+    export_heading = heading or ("考试卷导出" if exam else "题库导出")
     # 拼装逻辑与手机端共用（app/print_export.py），题干里的图片标签靠 rich_text 保留
     html = render_html(items, with_answer=bool(with_answer),
-                       heading=heading or "题库导出", title_suffix=title_suffix)
+                       heading=export_heading, title_suffix=title_suffix,
+                       subtitle=exam.strip())
     from fastapi.responses import HTMLResponse
     return HTMLResponse(html)
+
+
+@app.get("/api/export/pdf")
+def api_export_pdf(
+    request: Request,
+    q: str = "", kind: str = "真题", module: str = "", daclass: str = "",
+    region: str = "", year: str = "", exam: str = "",
+    limit: int = 100, with_answer: int = 1, full: int = 0,
+    doc_ids: str = "", heading: str = "",
+):
+    """与 /api/export/print 同参数，但直接返回 PDF 文件（导出面板的默认格式）。
+
+    内容复用打印页拼装逻辑，避免两套导出漂移；本机没装 Playwright/Chromium 时
+    抛 501，前端据此自动退回「可打印网页」。
+    """
+    page = api_export_print(
+        q=q, kind=kind, module=module, daclass=daclass, region=region,
+        year=year, exam=exam, limit=limit, with_answer=with_answer,
+        full=full, doc_ids=doc_ids, heading=heading,
+    )
+    try:
+        pdf = html_to_pdf(page.body.decode("utf-8"), str(request.base_url))
+    except PdfUnavailable as e:
+        raise HTTPException(501, f"{e}；可改用「可打印网页」导出")
+
+    # 文件名按「整卷名 / 自定义标题 / 模块」取名，去掉 Windows 不允许的字符
+    stem = (exam or heading or module or q or "题库导出").strip()
+    stem = re.sub(r'[\\/:*?"<>|\s]+', "", stem)[:60] or "题库导出"
+    headers = {
+        "Content-Disposition":
+            "attachment; filename=\"goshore-export.pdf\"; "
+            f"filename*=UTF-8''{quote(stem + '.pdf')}",
+    }
+    return Response(content=pdf, media_type="application/pdf", headers=headers)
 
 
 # ---------------- 题单分享与好友 PK（功能 3.3） ----------------
