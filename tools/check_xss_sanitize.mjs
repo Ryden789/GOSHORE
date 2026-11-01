@@ -65,7 +65,7 @@ function extractConst(src, name) {
   return out.join("\n");
 }
 
-const CONSTS = ["SANITIZE_TAGS", "SANITIZE_VOID", "escText"];
+const CONSTS = ["SANITIZE_TAGS", "SANITIZE_VOID", "escText", "restoreEntities"];
 
 function pick(src, kind, name) {
   const code = extractBraced(src, `function ${name}(`) || extractConst(src, name);

@@ -78,14 +78,17 @@ function extractConst(src, name) {
 function buildMd(src, kind, sharedSrc = null) {
   const parts = [];
   const need = ["esc", "stripWl"];
-  const sharedNames = ["SANITIZE_TAGS", "SANITIZE_VOID", "sanitizeTag"];
+  const sharedNames = ["SANITIZE_TAGS", "SANITIZE_VOID", "sanitizeTag", "restoreEntities"];
   if (kind === "desktop") {
     // 桌面 md() 的白名单标签要过 sanitizeTag（剥 onerror 等），因此把它连同
     // 依赖的两个常量一起抽出来；移动端 md() 整体转义 HTML，不需要。
     need.push("HTML_WHITELIST", "HTML_WHITELIST_CLOSE", "SANITIZE_TAGS", "SANITIZE_VOID", "sanitizeTag");
+  } else {
+    // 移动端 md() 的实体还原（`&amp;gt;` → `&gt;`）取自 /shared/sanitize.js。
+    need.push("restoreEntities");
   }
   for (const n of need) {
-    const from = (kind === "desktop" && sharedSrc && sharedNames.includes(n)) ? sharedSrc : src;
+    const from = (sharedSrc && sharedNames.includes(n)) ? sharedSrc : src;
     const code = n === "esc" && kind === "mobile"
       ? extractConst(from, "esc")
       : extractBraced(from, `function ${n}(`) || extractConst(from, n);
@@ -100,7 +103,7 @@ function buildMd(src, kind, sharedSrc = null) {
 }
 
 const appMd = buildMd(APP_SRC, "desktop", SHARED_SRC);
-const mobMd = buildMd(M_SRC, "mobile");
+const mobMd = buildMd(M_SRC, "mobile", SHARED_SRC);
 
 /* ---------------- 归一器：HTML → 块序列规范串 ---------------- */
 
@@ -249,7 +252,7 @@ ok(M_MD_SRC.includes("\\d+[.、]"), "D0 移动端 md() 里有有序列表分支�
 
 const tamperedSrc = M_MD_SRC.replace("^\\d+[.、]\\s+(.*)$", "^\\d+\\|\\s+(.*)$");
 ok(tamperedSrc !== M_MD_SRC, "D1 篡改样本已生效（正则被替换）");
-const tamperedMd = new Function(`${extractConst(M_SRC, "esc")}\n\n${extractBraced(M_SRC, "function stripWl(")}\n\n${tamperedSrc}\n\nreturn md;`)();
+const tamperedMd = new Function(`${extractConst(M_SRC, "esc")}\n\n${extractConst(SHARED_SRC, "restoreEntities")}\n\n${extractBraced(M_SRC, "function stripWl(")}\n\n${tamperedSrc}\n\nreturn md;`)();
 const tamperedDetected = canon(tamperedMd("1. 甲\n2. 乙")) !== canon(appMd("1. 甲\n2. 乙"));
 ok(tamperedDetected, "D2 篡改自检：拆掉有序列表分支后必须被检出（当前未被检出，说明校验形同虚设）");
 

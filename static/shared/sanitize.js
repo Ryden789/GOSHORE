@@ -17,6 +17,19 @@ const SANITIZE_VOID = "br hr img".split(" ");
 const escText = s => String(s ?? "").replace(/[&<>"']/g,
   c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+/** 实体还原：题库原文里本来就写着 `&gt;` `&amp;` 这类实体（Excel/富文本转 Markdown
+ *  的产物）。它们经 escText 会变成 `&amp;gt;`，原样塞进 innerHTML 时浏览器只会显示
+ *  字面的 "&gt;"，用户看到的就是「有些字乱码」——和字体无关。
+ *  这里把 `&amp;X;` 还原成 `&X;`：浏览器再按原文渲染成 > 与 &。
+ *  只还原成实体引用、不还原成裸字符，所以 `&lt;script&gt;` 还原后仍渲染成文本。 */
+const restoreEntities = s => String(s ?? "")
+  .replace(/&amp;(nbsp|hellip|mdash|ndash|times|divide|plusmn|deg|frac12|frac14|frac34|middot);/g,
+    (m, name) => ({
+      nbsp: " ", hellip: "…", mdash: "—", ndash: "–", times: "×", divide: "÷",
+      plusmn: "±", deg: "°", frac12: "½", frac14: "¼", frac34: "¾", middot: "·",
+    }[name] || m))
+  .replace(/&amp;([a-zA-Z]{2,10}|#\d+|#x[0-9a-fA-F]+);/gi, "&$1;");
+
 /** 净化单个标签：非白名单标签整只丢弃；白名单标签只保留安全属性。 */
 function sanitizeTag(tag) {
   const m = /^<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>$/.exec(tag);
@@ -83,11 +96,11 @@ function sanitizeHtml(html) {
   let out = "", last = 0, m;
   const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
   while ((m = tagRe.exec(s))) {
-    out += escText(s.slice(last, m.index));
+    out += restoreEntities(escText(s.slice(last, m.index)));
     out += sanitizeTag(m[0]);
     last = tagRe.lastIndex;
   }
-  out += escText(s.slice(last));
+  out += restoreEntities(escText(s.slice(last)));
   return out;
 }
 

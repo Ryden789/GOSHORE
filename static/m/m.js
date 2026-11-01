@@ -53,7 +53,9 @@ function countdownBanner(examDate, daysLeft) {
 
 /* N5/N4/G2/G3/G4/N1/N2 共享逻辑（主题、字号、目标环、笔记、翻页、草稿、提醒）
    已收敛到 /shared/core.js，由 index.html 在本文件之前加载；桌面与移动共用一份，
-   不要再把实现复制回本文件。 *//* 安全富文本：保留题面自带的白名单 HTML（公式/排序图片、表格、上下标等），
+   不要再把实现复制回本文件。 *//* 实体还原 restoreEntities() 由 /shared/sanitize.js 提供（先于本文件加载）。
+
+   安全富文本：保留题面自带的白名单 HTML（公式/排序图片、表格、上下标等），
    其余全部转义；事件属性与 javascript: 协议一律剔除。 */
 const RICH_OPEN = /<(p|br|img|table|thead|tbody|tr|td|th|div|span|sub|sup)(\s[^<>]*?)?\s*\/?>/gi;
 const RICH_CLOSE = /<\/(p|table|thead|tbody|tr|td|th|div|span|sub|sup)>/gi;
@@ -68,6 +70,10 @@ function rich(s) {
   };
   s = s.replace(RICH_OPEN, keep).replace(RICH_CLOSE, keep);
   s = esc(s);
+  // 题库原文自带的实体（如不等式 x&gt;1、R&amp;D）：esc 后变成 &amp;gt; / &amp;amp;，
+  // 若原样输出，浏览器会把它们当普通文本显示成 "&gt;" "&amp;" —— 看起来就是乱码。
+  // 这里还原成实体本身，浏览器再按原文渲染成 > 与 &。与桌面端 md() 的实体还原通道一致。
+  s = restoreEntities(s);
   return s.replace(/\u0001(\d+)\u0002/g, (_, i) => stash[+i]);
 }
 
@@ -4515,7 +4521,7 @@ function stripWl(s) {
 
 function md(text) {
   const lines = stripWl(String(text ?? "")).replace(/\r/g, "").split("\n");
-  const inline = t => esc(t)
+  const inline = t => restoreEntities(esc(t))
     .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, a, u) => `<img alt="${a}" src="${u}">`)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
