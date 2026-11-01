@@ -30,6 +30,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "GOSHORE上岸工作台"
+# exe 属性页里的产品版本。与 android/app/build.gradle 的 versionName 对齐，
+# 两端同一次发布用同一个号，用户看「关于」时不会一个 1.5 一个 1.0。
+EXE_VERSION = "1.5.0.0"
 ENTRY = ROOT / "desktop_entry.py"
 ICON = ROOT / ".tools" / "packaging" / "goshore.ico"
 DIST = ROOT / "dist"
@@ -60,22 +63,23 @@ def _ensure_icon() -> Path:
 
 def _write_version_file() -> Path:
     """生成 PyInstaller 的版本资源脚本（exe 属性页里显示的产品名/说明）。"""
+    _v = ", ".join(EXE_VERSION.split("."))
     out = BUILD / "version_info.txt"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         f"""VSVersionInfo(
-  ffi=FixedFileInfo(filevers=(1, 0, 0, 0), prodvers=(1, 0, 0, 0),
+  ffi=FixedFileInfo(filevers=({_v}), prodvers=({_v}),
                     mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0,
                     date=(0, 0)),
   kids=[
     StringFileInfo([StringTable('080404B0', [
         StringStruct('CompanyName', 'GOSHORE'),
         StringStruct('FileDescription', '{NAME}'),
-        StringStruct('FileVersion', '1.0.0.0'),
+        StringStruct('FileVersion', '{EXE_VERSION}'),
         StringStruct('InternalName', 'GOSHORE'),
         StringStruct('OriginalFilename', '{NAME}.exe'),
         StringStruct('ProductName', '{NAME}'),
-        StringStruct('ProductVersion', '1.0.0.0')])]),
+        StringStruct('ProductVersion', '{EXE_VERSION}')])]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
   ]
 )
