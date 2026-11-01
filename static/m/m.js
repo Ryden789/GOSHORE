@@ -6307,6 +6307,7 @@ async function renderAiAsk() {
         if (attachedImages.length >= 3) { toast("图片最多 3 张"); continue; }
         const compressed = await compressImage(f);
         if (compressed) attachedImages.push(compressed);
+        else toast(`${f.name}：图片读取失败，请换一张或另存为 JPG 再试`);
         continue;
       }
       try {

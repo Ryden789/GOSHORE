@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 NAME = "GOSHORE上岸工作台"
 # exe 属性页里的产品版本。与 android/app/build.gradle 的 versionName 对齐，
 # 两端同一次发布用同一个号，用户看「关于」时不会一个 1.5 一个 1.0。
-EXE_VERSION = "1.5.1.0"
+EXE_VERSION = "1.5.2.0"
 ENTRY = ROOT / "desktop_entry.py"
 ICON = ROOT / ".tools" / "packaging" / "goshore.ico"
 DIST = ROOT / "dist"

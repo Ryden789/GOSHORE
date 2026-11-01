@@ -56,10 +56,38 @@ def _capture_ask(route, captured: dict) -> None:
                   body='data: {"type":"delta","text":"收到"}\n\n')
 
 
+def _msg_text(msg: dict) -> str:
+    """一条消息的纯文本：多模态 content 是 parts 数组，把 text 部分拼起来。"""
+    c = msg.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "".join(x.get("text", "") for x in c
+                       if isinstance(x, dict) and x.get("type") == "text")
+    return ""
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def make_png(path: Path, w: int = 240, h: int = 120) -> None:
+    """造一张真 PNG：验证「选图 → 压缩 → 缩略图」这条链路能不能走通。"""
+    import struct
+    import zlib
+
+    raw = b"".join(b"\x00" + bytes([200, 60, 50] * w) for _ in range(h))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
 def make_long_docx(path: Path, chars: int) -> int:
@@ -172,7 +200,7 @@ def import_docx_via_bar(page, bar_sel: str, docx: Path, target_sel: str) -> None
         timeout=20000)
 
 
-def run_desktop(browser, base: str, docx: Path, long_docx: Path) -> None:
+def run_desktop(browser, base: str, docx: Path, long_docx: Path, png: Path) -> None:
     print("\n[桌面端] 申论批改 · 附件导入")
     ctx = browser.new_context(viewport={"width": 1360, "height": 900})
     page = ctx.new_page()
@@ -197,6 +225,22 @@ def run_desktop(browser, base: str, docx: Path, long_docx: Path) -> None:
     accept = page.locator("#aiAskFile").get_attribute("accept") or ""
     check("文件选择放开 docx/pdf", ".docx" in accept and ".pdf" in accept, accept)
 
+    # 图片上传：桌面端 compressImageFile 曾漏了 img.src，Promise 永挂，
+    # 表现为「选完图什么都没发生」——缩略图不出，后面的文件也不处理。
+    print("\n[桌面端] AI 答疑 · 图片上传")
+    try:
+        with page.expect_file_chooser(timeout=8000) as fc_img:
+            page.locator("#aiAskImgBtn").click()
+        fc_img.value.set_files(str(png))
+        page.wait_for_selector("#aiAskPreviews img", timeout=15000)
+        thumbs = page.locator("#aiAskPreviews img").count()
+        thumb_src = page.locator("#aiAskPreviews img").first.get_attribute("src") or ""
+        check("选图后出现缩略图", thumbs == 1, f"{thumbs} 张")
+        check("缩略图是压缩后的 data URL", thumb_src.startswith("data:image/jpeg"), thumb_src[:32])
+        page.screenshot(path=str(SMOKE / "attach-ai-img.png"), full_page=False)
+    except Exception as exc:                      # noqa: BLE001 - 挂住也必须继续跑后面的项
+        check("选图后出现缩略图", False, f"等待缩略图失败：{exc}")
+
     with page.expect_file_chooser(timeout=8000) as fc:
         page.locator("#aiAskImgBtn").click()
     fc.value.set_files(str(long_docx))
@@ -220,14 +264,21 @@ def run_desktop(browser, base: str, docx: Path, long_docx: Path) -> None:
     page.unroute("**/api/ai/ask")
 
     msgs = (captured.get("body") or {}).get("messages") or []
-    texts = [m["content"] if isinstance(m["content"], str) else "" for m in msgs]
+    texts = [_msg_text(m) for m in msgs]
     attach = [t for t in texts if t.startswith("【附件：")]
     body_chars = sum(len(t) for t in attach)
     check("附件正文分成多条消息", len(attach) >= 2, f"{len(attach)} 条")
     check("单条消息不越过后端 4000 字", all(len(t) <= 4000 for t in texts),
           f"最长 {max((len(t) for t in texts), default=0)} 字")
     check("附件全文都进了请求", body_chars >= min(LONG_CHARS, 8000), f"{body_chars} 字")
-    check("最后一条是用户提问", texts and texts[-1].strip().endswith("？"), (texts[-1][:20] if texts else ""))
+    check("最后一条是用户提问", bool(texts) and texts[-1].strip().endswith("？"),
+          (texts[-1][:20] if texts else ""))
+    # 有图时最后一条是多模态数组：图片必须以 image_url 真正跟出去，
+    # 而不是只在界面上画了张缩略图
+    last = msgs[-1]["content"] if msgs else None
+    parts = last if isinstance(last, list) else []
+    has_img = any(isinstance(x, dict) and x.get("type") == "image_url" for x in parts)
+    check("图片以 image_url 随请求发出", has_img, f"末条结构 {type(last).__name__}")
 
     check("桌面端零 JS 报错", not errs, str(errs[:2]))
     ctx.close()
@@ -263,6 +314,8 @@ def main() -> int:
     tmp = isolate_data()
     docx = tmp / "作答样例.docx"
     make_docx(docx)
+    png = tmp / "截图.png"
+    make_png(png)
     long_docx = tmp / "长材料.docx"
     n = make_long_docx(long_docx, LONG_CHARS)
     print(f"长材料 {n} 字")
@@ -277,7 +330,7 @@ def main() -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
-            run_desktop(browser, f"http://127.0.0.1:{dport}", docx, long_docx)
+            run_desktop(browser, f"http://127.0.0.1:{dport}", docx, long_docx, png)
         finally:
             pass
         m, mport = start_mobile(tmp)

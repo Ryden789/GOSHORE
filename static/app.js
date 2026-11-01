@@ -5325,8 +5325,12 @@ async function extractFileText(file) {
 function compressImageFile(file, maxW = 1024) {
   return new Promise(resolve => {
     const reader = new FileReader();
+    // 任何一步失败都要 resolve("")：这个 Promise 会被 await 串在图片处理链上，
+    // 一旦永挂，后面的 renderPreviews / 发请求全都不会执行，表现为「点了没反应」。
+    reader.onerror = () => resolve("");
     reader.onload = e => {
       const img = new Image();
+      img.onerror = () => resolve("");
       img.onload = () => {
         let w = img.width, h = img.height;
         if (w > maxW) { h = h * maxW / w; w = maxW; }
@@ -5335,8 +5339,9 @@ function compressImageFile(file, maxW = 1024) {
         canvas.getContext("2d").drawImage(img, 0, 0, w, h);
         resolve(canvas.toDataURL("image/jpeg", 0.8));
       };
-      reader.readAsDataURL(file);
+      img.src = e.target.result;   // 缺这一行 img 永不 onload，Promise 永挂
     };
+    reader.readAsDataURL(file);
   });
 }
 
@@ -5400,6 +5405,7 @@ function bindAttachBars(root) {
             setHint("识别中，约 5-20 秒…");
             try {
               const dataUrl = await compressImageFile(f);
+              if (!dataUrl) throw new Error("图片读取失败，请换一张或另存为 JPG 再试");
               const r = await fetch("/api/ocr", {
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ image: dataUrl, mode: ocrMode }),
@@ -6497,7 +6503,9 @@ async function renderAiAsk() {
     for (const f of Array.from(fileInput.files || [])) {
       if (f.type.startsWith("image/")) {
         if (attachedImages.length >= 3) { toast("图片最多 3 张"); continue; }
-        attachedImages.push(await compressImageFile(f));
+        const src = await compressImageFile(f);
+        if (!src) { toast(`${f.name}：图片读取失败，请换一张或另存为 JPG 再试`); continue; }
+        attachedImages.push(src);
         continue;
       }
       try {
