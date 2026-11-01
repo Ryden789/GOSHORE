@@ -153,3 +153,102 @@ def test_docx_hint_mentions_shortcut_on_mobile():
     """手机端 PDF 明确指向电脑端，别让用户以为是网络问题。"""
     text = (ROOT / "app" / "attach.py").read_text(encoding="utf-8")
     assert "电脑端" in text
+
+
+# ---------------- 附件正文不被 /api/ai/ask 静默截断 ----------------
+# 历史缺陷：前端把「提问 + 8000 字附件」拼成同一条 content，后端
+# normalize_ask_messages 按 ASK_MAX_TEXT=4000 静默截断，于是附件后半段
+# 永远到不了模型，用户也拿不到任何提示。修法是前端按条切块。
+
+def _js_chunk(path):
+    import re
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"const ASK_CHUNK = (\d+);", text)
+    assert m, f"{path.name} 缺 ASK_CHUNK 常量"
+    return int(m.group(1))
+
+
+@pytest.mark.parametrize("path", [APP_JS, M_JS])
+def test_attach_chunks_fit_backend_limit(path):
+    from app.ai import ASK_MAX_TEXT
+
+    chunk = _js_chunk(path)
+    # 分块必须小于后端单条上限，且留得下「【附件：xx（第 1/3 段）】」这类标题
+    assert chunk <= ASK_MAX_TEXT - 100, f"{path.name} 的 ASK_CHUNK={chunk} 太贴近 {ASK_MAX_TEXT}"
+
+
+@pytest.mark.parametrize("path", [APP_JS, M_JS])
+def test_attach_text_is_chunked_not_concatenated(path):
+    text = path.read_text(encoding="utf-8")
+    # 旧写法：把附件拼进提问再一起发
+    assert "${ask}\n\n${attachText}" not in text, f"{path.name} 又把附件拼回提问里了"
+    # 新写法：按 ASK_CHUNK 逐段 push 独立消息
+    assert "i += ASK_CHUNK" in text, f"{path.name} 缺分块循环"
+
+
+@pytest.mark.parametrize("path", [APP_JS, M_JS])
+def test_attach_over_budget_truncates_instead_of_rejecting(path):
+    text = path.read_text(encoding="utf-8")
+    assert "const room = ATTACH_TEXT_BUDGET - used;" in text, f"{path.name} 超额应取剩余额度而非整份拒绝"
+
+
+def test_chunked_attach_reaches_backend_intact():
+    """8000 字附件按前端策略切块后，经后端规范化应一字不少。"""
+    from app.ai import normalize_ask_messages
+
+    chunk = _js_chunk(APP_JS)
+    body = "材料" * 4000            # 8000 字
+    total = max(1, -(-len(body) // chunk))
+    msgs = []
+    for i in range(0, len(body), chunk):
+        k = i // chunk + 1
+        head = f"【附件：材料.docx（第 {k}/{total} 段）】\n" if total > 1 else "【附件：材料.docx】\n"
+        msgs.append({"role": "user", "content": head + body[i:i + chunk]})
+    msgs.append({"role": "user", "content": "核心论点是什么？"})
+
+    before = sum(len(m["content"]) for m in msgs)
+    out, _ = normalize_ask_messages(msgs)
+    after = sum(len(m["content"]) for m in out)
+
+    assert after == before, f"分块后仍被截断：送出 {before} 字，到达 {after} 字"
+    assert out[-1]["content"] == "核心论点是什么？"
+    assert all(len(m["content"]) <= 4000 for m in out)
+
+
+def test_single_giant_message_still_capped():
+    """保留后端守卫：单条超长消息仍被截断（这是防计费放大的兜底，别为了
+    附件顺手把这个限制去掉）。"""
+    from app.ai import ASK_MAX_TEXT, normalize_ask_messages
+
+    out, _ = normalize_ask_messages([{"role": "user", "content": "字" * 9000}])
+    assert len(out[-1]["content"]) == ASK_MAX_TEXT
+
+
+@pytest.mark.parametrize("path", [APP_JS, M_JS])
+def test_message_window_matches_backend(path):
+    """附件块会占用消息位。后端只取最后 ASK_MAX_MESSAGES 条，前端必须用同一个
+    数值先截断，否则被切掉的是最早的对话而不是附件。"""
+    import re
+
+    from app.ai import ASK_MAX_MESSAGES
+
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"const ASK_MAX_MESSAGES = (\d+);", text)
+    assert m, f"{path.name} 缺 ASK_MAX_MESSAGES 常量"
+    assert int(m.group(1)) == ASK_MAX_MESSAGES, f"{path.name} 与后端 {ASK_MAX_MESSAGES} 不一致"
+    assert "his = his.slice(-ASK_MAX_MESSAGES);" in text, f"{path.name} 没按窗口截断"
+
+
+@pytest.mark.parametrize("path", [APP_JS, M_JS])
+def test_message_window_matches_backend(path):
+    """附件块会占用消息位。后端只取最后 ASK_MAX_MESSAGES 条，前端必须用同一个
+    数值先截断，否则被切掉的是最早的对话而不是附件。"""
+    import re
+
+    from app.ai import ASK_MAX_MESSAGES
+
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"const ASK_MAX_MESSAGES = (\d+);", text)
+    assert m, f"{path.name} 缺 ASK_MAX_MESSAGES 常量"
+    assert int(m.group(1)) == ASK_MAX_MESSAGES, f"{path.name} 与后端 {ASK_MAX_MESSAGES} 不一致"
+    assert "his = his.slice(-ASK_MAX_MESSAGES);" in text, f"{path.name} 没按窗口截断"

@@ -6253,6 +6253,9 @@ async function renderAiAsk() {
   // 文件只留解析出的文本，不进 localStorage（几万字会撑爆配额）
   let attachedFiles = [];
   const ATTACH_TEXT_BUDGET = 8000;
+  // 后端 app/ai.py 的 ASK_MAX_TEXT=4000 会静默截断超长消息，留余量给小标题
+  const ASK_CHUNK = 3800;
+  const ASK_MAX_MESSAGES = 12;   // 与后端 app/ai.py 一致
 
   const compressImage = (file) => new Promise(resolve => {
     const reader = new FileReader();
@@ -6309,12 +6312,17 @@ async function renderAiAsk() {
       try {
         const d = await extractFileText(f);
         const used = attachedFiles.reduce((n, x) => n + x.chars, 0);
-        if (used + d.chars > ATTACH_TEXT_BUDGET) {
-          toast(`附件正文合计上限 ${ATTACH_TEXT_BUDGET} 字，${f.name} 未加入`);
+        const room = ATTACH_TEXT_BUDGET - used;
+        if (room <= 0) {
+          toast(`附件正文已满 ${ATTACH_TEXT_BUDGET} 字，${f.name} 未加入`);
           continue;
         }
-        attachedFiles.push({ name: f.name, text: d.text, chars: d.chars });
-        if (d.truncated) toast(`${f.name} 内容较长，已截断`);
+        // 超额不整份退回，取剩余额度留下能用的部分（与桌面端同构）
+        const text = d.text.slice(0, room);
+        const cut = text.length < d.text.length;
+        attachedFiles.push({ name: f.name, text, chars: text.length });
+        if (cut) toast(`${f.name} 取前 ${text.length} 字（合计上限 ${ATTACH_TEXT_BUDGET} 字）`);
+        else if (d.truncated) toast(`${f.name} 内容较长，已截断`);
       } catch (e) {
         toast(`${f.name}：${e.message}`);
       }
@@ -6373,20 +6381,31 @@ async function renderAiAsk() {
     const fileLine = files.map(f => `📄 ${f.name}`).join("\n");
     bubble("user", [fileLine, ask].filter(Boolean).join("\n") || "(附件)", imgs);
 
-    const his = msgs.map(m => ({ role: m.role, content: m.content }));
-    // 附件正文只进本次请求，不进历史
-    const attachText = files.length
-      ? files.map(f => `【附件：${f.name}】\n${f.text}`).join("\n\n")
-      : "";
-    const sendText = attachText ? (ask ? `${ask}\n\n${attachText}` : attachText) : ask;
+    let his = msgs.map(m => ({ role: m.role, content: m.content }));
+    // 附件正文只进本次请求，不进历史。后端单条消息只保留 ASK_MAX_TEXT(4000)
+    // 字且静默截断，所以按 ASK_CHUNK 切块、各作一条 user 消息排在提问之前
+    // （与桌面端同构；合成一条会把 8000 字预算砍掉一半）。
+    for (const f of files) {
+      const total = Math.max(1, Math.ceil(f.text.length / ASK_CHUNK));
+      for (let i = 0; i < f.text.length; i += ASK_CHUNK) {
+        const k = i / ASK_CHUNK + 1;
+        const head = total > 1
+          ? `【附件：${f.name}（第 ${k}/${total} 段）】\n`
+          : `【附件：${f.name}】\n`;
+        his.push({ role: "user", content: head + f.text.slice(i, i + ASK_CHUNK) });
+      }
+    }
+    const sendText = ask;
     if (imgs.length) {
       const content = [];
       if (sendText) content.push({ type: "text", text: sendText });
       for (const src of imgs) content.push({ type: "image_url", image_url: { url: src } });
       his.push({ role: "user", content });
     } else {
-      his.push({ role: "user", content: sendText });
+      his.push({ role: "user", content: sendText || "(见上方附件)" });
     }
+    // 与后端 ASK_MAX_MESSAGES 同为 12：先自己截，附件块就不会挤掉更早的历史
+    his = his.slice(-ASK_MAX_MESSAGES);
 
     let full = "";
     const b = bubble("ai", "");

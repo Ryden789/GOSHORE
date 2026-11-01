@@ -34,6 +34,7 @@ SAMPLE_DB = ROOT / ".tools" / "mobile_prep" / "goshor.db"
 if not SAMPLE_DB.exists():
     SAMPLE_DB = ROOT / "assets" / "content-sample.db"
 
+LONG_CHARS = 9000          # 大于前端 8000 字预算，用来验证超额截断 + 分块
 fails: list[str] = []
 
 
@@ -43,10 +44,36 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         fails.append(name)
 
 
+def _capture_ask(route, captured: dict) -> None:
+    """拦下 /api/ai/ask：记下请求体，回一段最小 SSE，不真调模型。"""
+    import json as _json
+
+    try:
+        captured["body"] = _json.loads(route.request.post_data or "{}")
+    except Exception:                       # noqa: BLE001 - 解析失败也要让页面走完
+        captured["body"] = {}
+    route.fulfill(status=200, headers={"Content-Type": "text/event-stream"},
+                  body='data: {"type":"delta","text":"收到"}\n\n')
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def make_long_docx(path: Path, chars: int) -> int:
+    """造一份指定字数的 docx，用来验证 8000 字预算能不能完整送达模型。"""
+    body_txt = ("申论材料长文本用于验证附件分块。" * (chars // 16 + 1))[:chars]
+    head = ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>')
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/document.xml",
+                   head + f"<w:p><w:r><w:t>{body_txt}</w:t></w:r></w:p>" + "</w:body></w:document>")
+    path.write_bytes(buf.getvalue())
+    return len(body_txt)
 
 
 def make_docx(path: Path) -> None:
@@ -145,7 +172,7 @@ def import_docx_via_bar(page, bar_sel: str, docx: Path, target_sel: str) -> None
         timeout=20000)
 
 
-def run_desktop(browser, base: str, docx: Path) -> None:
+def run_desktop(browser, base: str, docx: Path, long_docx: Path) -> None:
     print("\n[桌面端] 申论批改 · 附件导入")
     ctx = browser.new_context(viewport={"width": 1360, "height": 900})
     page = ctx.new_page()
@@ -172,7 +199,7 @@ def run_desktop(browser, base: str, docx: Path) -> None:
 
     with page.expect_file_chooser(timeout=8000) as fc:
         page.locator("#aiAskImgBtn").click()
-    fc.value.set_files(str(docx))
+    fc.value.set_files(str(long_docx))
     page.wait_for_function(
         "() => (document.querySelector('#aiAskPreviews')?.textContent || '').includes('字')",
         timeout=20000)
@@ -180,11 +207,33 @@ def run_desktop(browser, base: str, docx: Path) -> None:
     check("附件条显示文件名与字数", "字" in chip, chip.replace("\n", " ")[:40])
     page.screenshot(path=str(SMOKE / "attach-ai.png"), full_page=False)
 
+    # 真发一轮：拦下请求体，核对附件是否分块、全文是否都进得去。
+    # 以前的写法把「提问 + 附件」拼成一条 content，后端按 4000 字静默截断，
+    # 8000 字预算只有前一半到模型。
+    captured: dict = {}
+    page.route("**/api/ai/ask", lambda route: _capture_ask(route, captured))
+    page.fill("#aiAskInput", "这份材料的核心论点是什么？")
+    page.click("#aiAskGo")
+    page.wait_for_function(
+        "() => (document.querySelector('#aiAskList')?.textContent || '').includes('收到')",
+        timeout=20000)
+    page.unroute("**/api/ai/ask")
+
+    msgs = (captured.get("body") or {}).get("messages") or []
+    texts = [m["content"] if isinstance(m["content"], str) else "" for m in msgs]
+    attach = [t for t in texts if t.startswith("【附件：")]
+    body_chars = sum(len(t) for t in attach)
+    check("附件正文分成多条消息", len(attach) >= 2, f"{len(attach)} 条")
+    check("单条消息不越过后端 4000 字", all(len(t) <= 4000 for t in texts),
+          f"最长 {max((len(t) for t in texts), default=0)} 字")
+    check("附件全文都进了请求", body_chars >= min(LONG_CHARS, 8000), f"{body_chars} 字")
+    check("最后一条是用户提问", texts and texts[-1].strip().endswith("？"), (texts[-1][:20] if texts else ""))
+
     check("桌面端零 JS 报错", not errs, str(errs[:2]))
     ctx.close()
 
 
-def run_mobile(browser, base: str, docx: Path) -> None:
+def run_mobile(browser, base: str, docx: Path, long_docx: Path) -> None:
     print("\n[移动端] 申论批改 · 附件导入")
     ctx = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True,
                               has_touch=True, device_scale_factor=2)
@@ -214,6 +263,9 @@ def main() -> int:
     tmp = isolate_data()
     docx = tmp / "作答样例.docx"
     make_docx(docx)
+    long_docx = tmp / "长材料.docx"
+    n = make_long_docx(long_docx, LONG_CHARS)
+    print(f"长材料 {n} 字")
 
     from playwright.sync_api import sync_playwright
 
@@ -225,14 +277,14 @@ def main() -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
-            run_desktop(browser, f"http://127.0.0.1:{dport}", docx)
+            run_desktop(browser, f"http://127.0.0.1:{dport}", docx, long_docx)
         finally:
             pass
         m, mport = start_mobile(tmp)
         mproc = m
         print(f"移动服务 {mport}")
         try:
-            run_mobile(browser, f"http://127.0.0.1:{mport}", docx)
+            run_mobile(browser, f"http://127.0.0.1:{mport}", docx, long_docx)
         finally:
             browser.close()
     if mproc:
