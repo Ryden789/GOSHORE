@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import ai, main, thinkframe
@@ -89,7 +90,13 @@ def test_image_question_without_text_gets_fallback():
 
 
 def test_sources_point_to_real_materials():
-    """每条框架的出处必须真实存在，避免资料改名后引用烂掉。"""
+    """每条框架的出处必须真实存在，避免资料改名后引用烂掉。
+
+    `知识点综合/` 是本机备考资料（.gitignore 排除、不随仓库分发），
+    CI 上没有这个目录，因此只在本地存在时才校验路径。
+    """
+    if not (ROOT / "知识点综合").exists():
+        pytest.skip("知识点综合/ 为本机资料，未随仓库分发")
     for frame in thinkframe._ORDER:
         head = frame["source"].split("（")[0].strip()
         assert (ROOT / head).exists(), (frame["name"], head)
