@@ -1464,6 +1464,12 @@ mark.nx-hit { background:rgba(176,124,36,.3); color:inherit; padding:0 1px; bord
 .ai-ask-inputrow { display: flex; gap: 10px; margin-top: 12px; align-items: flex-end; }
 .ai-ask-attach { cursor: pointer; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid var(--line-soft); border-radius: 8px; flex-shrink: 0; }
 .ai-ask-inputrow textarea { flex: 1; resize: none; padding: 10px; border: 1px solid var(--line-soft); border-radius: 8px; font-family: inherit; font-size: calc(14px * var(--fs)); background: transparent; color: inherit; }
+/* 深度思考：输入框旁的按次开关（解开时朱砂色，一眼能看出当前是否开） */
+.ai-ask-think { flex-shrink: 0; height: 36px; padding: 0 12px; border: 1px solid var(--line-soft); border-radius: 18px; background: transparent; color: var(--ink-2); font-size: calc(12.5px * var(--fs)); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; transition: color .15s, border-color .15s, background .15s; }
+.ai-ask-think::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+.ai-ask-think[aria-pressed="true"] { border-color: var(--cinnabar); color: var(--cinnabar); background: rgba(178,58,44,.06); }
+.ai-ask-think[aria-pressed="true"]::before { background: var(--cinnabar); }
+.ai-ask-think:hover { border-color: var(--cinnabar); }
 .ai-ask-foot { text-align: center; color: var(--ink-2); font-size: calc(12px * var(--fs)); margin: 8px 0 0; }
 @media (max-width: 900px) {
   .ai-ask-shell { flex-direction: column; height: auto; }

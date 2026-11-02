@@ -23,3 +23,7 @@ xlrd==2.0.2            # pandas.read_excel 的 .xls 引擎（老格式 Excel）
 # 装完还要执行一次 `python -m playwright install chromium`；缺失时导出面板
 # 会自动退回「可打印网页」（不会报错，只是不能一键出 PDF）。
 playwright==1.60.0
+# 黑白格图推本机转写（app/gridread.py）：PIL 解码图片、numpy 做矩阵运算。
+# 缺任何一个时 ask_grid_block 返回空串，自动退回「模型看图」老流程，不影响启动。
+pillow==12.3.0         # 图片解码（import PIL）
+numpy==2.3.5           # 像素矩阵与规则枚举

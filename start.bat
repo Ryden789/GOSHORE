@@ -6,19 +6,20 @@ echo ================================================
 echo   GOSHORE 上岸工作台 启动中...
 echo ================================================
 
-:: 端口以 data/settings.json 为准（run.py 读的就是它）。写死 8765 会导致：
-:: 用户改了端口后，本脚本仍去查 8765、并打开 8765 的空白页。
+rem Port comes from data/settings.json (run.py reads it). Hard-coding 8765 would
+rem make this script check 8765 and open a blank page after the user changes it.
 set PORT=8765
 for /f "usebackq delims=" %%p in (`python -c "from app.config import load_settings; print(int(load_settings()['port']))" 2^>nul`) do set PORT=%%p
 
-:: 检查端口是否已被占用。默认不结束任何进程——只提示，由用户决定。
-:: 用 `:PORT` 结尾精确匹配，避免 :18765 / :28765 被误判成占用。
+rem Check whether the port is already in use. Never kill anything by default:
+rem only warn, and let the user decide. Match ":PORT" at end of line exactly,
+rem so that :18765 / :28765 are not mistaken for the same port.
 set OCCUPIED=
 for /f "tokens=5" %%a in ('netstat -ano -p tcp ^| findstr "LISTENING" ^| findstr /R /C:":%PORT% $"') do (
     set OCCUPIED=%%a
     goto :found
 )
-:: 精确匹配失败时（部分系统 netstat 行尾无空格）退回宽松匹配
+rem Fallback when the exact match fails (some netstat output has no trailing space)
 for /f "tokens=5" %%a in ('netstat -ano -p tcp ^| findstr ":%PORT% " ^| findstr "LISTENING"') do (
     set OCCUPIED=%%a
     goto :found
@@ -63,10 +64,11 @@ pause
 exit /b 0
 
 :launch
-:: 后台等待：端口可连接（服务真正就绪）后再打开浏览器，避免固定延时导致的“无连接”页
+rem Wait in the background until the port is connectable (service really ready),
+rem then open the browser, instead of a fixed delay that may land on a blank page.
 start "" powershell -WindowStyle Hidden -NoProfile -Command "for($i=0;$i -lt 120;$i++){try{$c=New-Object Net.Sockets.TcpClient;$c.Connect('127.0.0.1',%PORT%);$c.Close();Start-Sleep -Milliseconds 300;Start-Process 'http://127.0.0.1:%PORT%';exit}catch{Start-Sleep -Milliseconds 500}}"
 
-:: 启动服务（前台运行，关闭本窗口即停止）
+rem Start the service in the foreground; closing this window stops it.
 python run.py
 
 pause

@@ -105,6 +105,9 @@ DEFAULTS = {
     # 空串表示「跟随 deepseek_model」——这样升级主模型时看图功能自动同步，
     # 不必在 ai.py / cube_vision.py / pdf_visual.py 三处逐一改。
     "deepseek_vision_model": "",
+    # AI 深度思考：默认开。看图答疑曾为求快强制关闭思考，导致同一道题
+    # 模型只看一眼就给结论；用户明确要求恢复，同时保留开关以便换速度。
+    "ai_thinking": True,
     "port": 8765,
     # N3 考试倒计时：'YYYY-MM-DD'，空则首页不显示倒计时横幅
     "exam_date": "",
@@ -243,6 +246,19 @@ def as_bool(value) -> bool | None:
         if s in _FALSY:
             return False
     return None
+
+
+def thinking_patch(raw: dict) -> dict:
+    """AI 深度思考开关：从设置入参里挑出合法值（非法一律丢弃）。
+
+    桌面 pydantic 与手机 dict 两条入口共用，避免两端对同一开关的取值口径不同。
+    """
+    out: dict = {}
+    if "ai_thinking" in raw:
+        b = as_bool(raw["ai_thinking"])
+        if b is not None:
+            out["ai_thinking"] = b
+    return out
 
 
 def reminder_patch(raw: dict) -> dict:

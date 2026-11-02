@@ -18,7 +18,7 @@
 - **无障碍与键盘操作**：可点击的列表行改为原生 `<a>` / `<button>`（Tab 可聚焦、回车可激活），全站有 `:focus-visible` 焦点描边；弹窗打开即聚焦、Tab 焦点内部循环、Esc 关闭、关闭后焦点归还触发位置；移动端设置分区按钮窄屏自动换行
 
 ### 行测精练
-- **组卷**：按模块 / 考点自由组卷，考点下拉支持拼音与别名模糊搜索（如「图推」→ 图形推理）
+- **组卷**：按模块 / 考点自由组卷，考点下拉支持拼音与别名模糊搜索（如「图推」→ 图形推理）；**真题套卷下拉支持关键词搜索**（空格分词、国考 / 省考 / 事业编别名，521 套可选）
 - **C 类整卷**：严格按真实卷面题序（常识→言语→数量→资料→判断→综合分析）
 - **判断专项**：论证类型专练（混抽易混类型对比）、图推 / 定义 / 类比 / 逻辑分题型
 - **列式专项**：资料分析列式训练
@@ -44,7 +44,7 @@
 - **今日复习 / 掌握度图谱 / 学习计划 / 错题本 / 收藏 / 分享 PK**：按遗忘曲线自动排期，错题可标注错因
 - **复习驾驶舱**：错题按模块 / 错因聚合，识别反复错题与未标注题
 - **题目自由笔记**：任意题写笔记，集中浏览、跳回原题
-- **错题导出**：生成可打印页（题干内图片经富文本保留，图形题不丢图）
+- **错题导出**：默认直接下载 **PDF**（Chromium 渲染，A4，题干内图片经富文本保留，图形题不丢图），也可生成可打印网页；PDF 需先 `python -m playwright install chromium`，缺组件时自动退回打印页
 - **辨析卡（词语卡库 1150 张）**：
   - 翻转记忆 / **看词写意（默写）** / **看义选词（测验）** 三种模式
   - 看词写意：默写后基于释义 bigram 匹配**自动评判对错**并显示匹配度，自评可覆盖
@@ -63,17 +63,17 @@
 
 | 类别 | 数量 |
 |---|---|
-| 入库文档总量 | 23,491 篇（真题 12,393 / 考点 10,375 / 材料 717 / 其他 6） |
-| 判断题（判断推理） | 7,721 |
-| 资料分析 | 3,571 |
-| 言语理解 | 441 |
-| 常识判断 | 349 |
-| 数量关系 | 247 |
+| 入库文档总量 | 71,229 篇（真题 60,131 / 考点 10,375 / 材料 717 / 其他 6） |
+| 判断推理 | 16,923 |
+| 言语理解 | 16,441 |
+| 常识判断 | 11,812 |
+| 资料分析 | 8,196 |
+| 数量关系 | 6,695 |
 | 综合分析 | 64 |
 | 词语辨析卡 | 1,150 张（花生高频词 + 扩充词表） |
 
 > 上表「各模块」均为**真题**口径（`documents.kind='真题'`），不含考点篇目。
-> **完整题库是本地私有数据**（`data/content.db`，约 428 MB），不随仓库分发；仓库与 Release 里带的是
+> **完整题库是本地私有数据**（`data/content.db`，约 1.1 GB），不随仓库分发；仓库与 Release 里带的是
 > 240 道真题 + 120 篇考点 + 78 份材料的**示例库**（`assets/content-sample.db`，约 7 MB），首次启动自动种入。
 > 数字口径：`SELECT module, COUNT(*) FROM documents WHERE kind='真题' GROUP BY module`。
 
@@ -84,7 +84,7 @@
 - **AI**：DeepSeek API（讲题 / 答疑 / 批改 / 抽题）。默认模型 `deepseek-flash`；看图（拍照识题、PDF 图形题）走 `deepseek_vision_model`，留空则自动跟随主模型
 - **移动端**：WebView 原生壳（轻量版，依赖电脑服务）；独立版用 Chaquopy 内置 Python 运行时 + three.js 三维渲染
 - **桌面端**：两条路径 —— ① PWA 安装（`manifest-desktop.webmanifest` + Service Worker + 离线页）；② **单文件 exe**（PyInstaller + pywebview/WebView2 原生窗口，免装 Python）
-- **测试**：pytest 1261 条 + 16 个前端静态校验器（node）+ Playwright 移动端 E2E；ruff 全绿，覆盖率 60%
+- **测试**：pytest 1440 条 + 16 个前端静态校验器（node）+ Playwright 移动端 E2E；ruff 全绿，覆盖率 60%
 
 ## 快速开始（首次使用顺序）
 
@@ -94,6 +94,7 @@
 
 ```bash
 pip install -r requirements.txt
+python -m playwright install chromium   # 仅在需要「导出 PDF」时安装（未装会自动退回可打印网页）
 ```
 
 **2. 启动服务**
@@ -192,7 +193,7 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 - **公开示例 APK**：`goshor-sample-20261026-p1.apk`（31,927,969 B，SHA256
   `C646646F…4708A`，versionCode 5 / versionName 1.4，release v2/v3 签名，仅 arm64）。
   它只带 `assets/content-sample.db`（438 篇，其中 240 道精选题）与 8.3 MB payload，
-  安装即用，不再内置 23,491 篇全量题库；已随 [v2026.10.28 Release](https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.28) 分发，
+  安装即用，不再内置 71,229 篇全量题库；已随 [v2026.10.28 Release](https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.28) 分发，
   本地副本仍为 `dist/goshor-sample-20261026-p1.apk`。
 - **完整本地包**：不对外分发。构建时 `python scripts/build_mobile_assets.py`
   生成完整资产，再用默认 `GOSHORE_ASSETS` 构建；旧 300 MB debug 包已归档到
@@ -233,6 +234,7 @@ GOSHORE/
 │   ├── shenlun_notes.py   # 申论速查内容源（6 模块 56 考点）
 │   ├── zy_notes.py        # 综应考点内容源（6 板块 159 考点）
 │   ├── print_export.py    # 错题导出可打印页
+│   ├── pdf_export.py      # 打印页 → PDF（Playwright Chromium）
 │   ├── cube_vision.py     # 折纸盒拍照识别
 │   ├── importer.py / parser.py     # 题库导入与解析
 │   └── ...                # 速算 / 列式 / 论证 / 时政 / 面试 / 批改等模块
@@ -252,7 +254,7 @@ GOSHORE/
 │   ├── goshor.db          # 单库模式的老布局（与新布局二选一，见下）
 │   ├── users/             # 移动端多账号（accounts.db + data_<uid>.db）
 │   └── settings.json      # API Key / WebDAV 口令（DPAPI 加密）
-├── tests/                 # pytest 用例（1261 条）
+├── tests/                 # pytest 用例（1440 条）
 ├── tools/                 # 校验器（16 个 .mjs）+ 打包 / 快捷方式 / 图标脚本
 │   ├── build_desktop_exe.py   # PyInstaller 打包单文件 exe
 │   ├── migrate_split.py       # 老单库 → content.db + user.db
@@ -276,7 +278,7 @@ GOSHORE/
 | **分离**（推荐） | `content.db` + `user.db` 都在 | **0.8 MB / 0.08 秒** |
 | 单库（老） | 只有 `goshor.db` | 142 MB / 8 秒 |
 
-分离之后：题库（23,491 篇，约 430 MB）与被替换无关的个人数据完全分开，所以「导出备份」「WebDAV 同步」只传那 1.8 MB 的个人库，题库可以整体替换或直接分发。
+分离之后：题库（71,229 篇，约 1.1 GB）与被替换无关的个人数据完全分开，所以「导出备份」「WebDAV 同步」只传那 3.4 MB 的个人库，题库可以整体替换或直接分发。
 
 老的 `data/goshor.db` 用一条命令拆开（只跑一次，原库会改名成 `goshor.db.migrated` 保留，不删）：
 
@@ -290,7 +292,7 @@ python tools/migrate_split.py             # 真迁移（约 15~45 秒）
 ## 测试与校验
 
 ```bash
-# 后端单元 / 接口测试（1261 条，跑在临时库上，不碰 data/*.db）
+# 后端单元 / 接口测试（1440 条，跑在临时库上，不碰 data/*.db）
 python -m pytest tests -q
 
 # 静态检查与覆盖率（配置见 pyproject.toml；开发依赖 pip install -r requirements-dev.txt）
@@ -314,7 +316,7 @@ node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 1261 passed**、**`ruff check .` 全绿**、**覆盖率 60%**、**AI 评测 33 条全过（100.00 分）**、**16 个静态校验器全 EXIT=0**、**E2E 88 项断言全通过**。
+当前基线：**pytest 1440 passed**、**`ruff check .` 全绿**、**覆盖率 60%**、**AI 评测 33 条全过（100.00 分）**、**16 个静态校验器全 EXIT=0**、**E2E 88 项断言全通过**。
 
 ## 常见问题
 

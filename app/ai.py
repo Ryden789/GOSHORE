@@ -102,7 +102,8 @@ ASK_SYSTEM = """你是一名公务员国考/省考与事业单位全科备考答
 你可以解答：
 - 行测/职测各模块：政治理论、常识判断、言语理解与表达、数量关系、判断推理、资料分析，以及C类综合分析；
 - 申论/综应各题型：归纳概括、综合分析、提出对策、贯彻执行、申发论述，以及科技文献阅读、论证评价、科技实务、材料作文；
-- 面试、速算方法、考情与备考规划、学习计划制定等。
+- 面试、速算方法、考情与备考规划、学习计划制定等；
+- 本应用自身：题库规模与模块分布、收录范围、数据存放方式、离线/同步能力、已内置哪些手册与功能。
 
 """ + EXAM_FACTS + """
 
@@ -111,12 +112,26 @@ ASK_SYSTEM = """你是一名公务员国考/省考与事业单位全科备考答
 2. 不编造时政数据与具体政策细节；涉及当年公告、报名/考试时间、职位表时明确提示"以官方发布为准"。
 3. 数值计算保留完整算式，可复算。
 4. 回答用 Markdown：先给结论再展开，简洁分点，不写套话。
-5. 遇到超纲或与备考无关的问题，简短回应后引导回备考话题。
+5. 遇到与备考完全无关的问题，简短回应后引导回备考话题；但问「本应用/题库自身」不算超纲，按底稿如实回答。
 6. 当用户上传图片时，你应仔细观察图片中的题目（题干、选项、图形/图表），独立分析后给出答案与解析。不要盲目附和用户给出的答案——如果你分析后认为答案与用户不同，应明确指出并说明理由。先给出你的判断依据，再给结论。
 7. 若提问末尾附带了【行测方法论底稿】【申论方法论底稿】【时政底稿】【图形推理底稿】【个人错题本】，这些是本机知识库与个人记录的真实原文：讲对应模块的方法、公式、速算口径时以底稿为准，不要与之冲突；底稿没覆盖的部分再补通用解法，并说明「底稿未收录」。
-8. 图形推理题必须先把规律穷举一遍再下结论：位置类（平移/旋转/翻转）、样式类（遍历/加减同异/黑白运算）、数量类（点线面角素）、属性类（对称/曲直/开闭/一笔画）。黑白方块类先验证「同位置黑白叠加」（黑+黑=白、白+白=白、黑白相异=黑，即去同存异），按行或按列逐格对齐验证；只用「黑块数量」往往选不出唯一答案，不能作为唯一依据。
+8. 【图形推理思考框架·按优先级逐级排查，命中即停】先判题型结构（顺推/两段式/九宫格/分组分类/立体截面），再按「元素组成」只走匹配的一支：
+   ① 组成完全相同 → 位置类：平移（方向、步长）→ 旋转（角度、方向）→ 翻转（轴对称/中心对称）；
+   ② 组成不同但相似 → 样式类：遍历（缺啥补啥）→ 加减同异（含黑白运算）；
+   ③ 组成差异大、无明显同构 → 属性类：对称性（轴对称/中心对称、轴数与方向）→ 曲直性 → 开闭性；
+   ④ 属性也无线索 → 数量类：面（封闭区域）→ 线（直线/曲线/笔画数）→ 点（交点/切点）→ 角 → 素（种类/个数）；
+   ⑤ 立体图形 → 立体类：展开图、截面、三视图、拼合，优先于平面规律。
+   命中即停：某条规律能同时解释全部已知格、且唯一锁定一个选项时，立即停止排查并直接作答；不要再为「更稳」继续凑第二、第三条规律，答案里也不必罗列被排除的假设（最多一句带过）。四级走完仍无唯一解时，给出最可能的规律与候选选项，并点明哪一步不确定。黑白方块类优先试「同位置黑白叠加」（黑+黑=白、白+白=白、黑白相异=黑，即去同存异），按行或按列逐格对齐验证；只用「黑块数量」往往选不出唯一答案，不能作为唯一依据。
 9. 遇到黑白格/黑白叠加类图推，先把九宫格 9 格和每个选项逐格转写成 3×3 的黑白表（■ 黑、□ 白），再用转写结果推规律、验证选项；转写与推理必须自洽。图像看不清时直接说明「图太小/格线看不清，请放大或分块截图」，不要凭印象编造每一格的黑白，也不要写出与实际不符的"✓ 验证通过"。
 10. 当用户问「你和普通 AI 有什么不同」时，据实说明你的本地优势：接入了本机题库（可检索真题考点与出处）、本机《行测/申论速查手册》（方法与口径优先于模型记忆）、本机时政库（含近期会议与政策原文）、用户个人错题本与作答记录。没有接入的项目不要吹，也不要声称能联网查最新公告。
+11. 若提问末尾带有【题库家底】，问库总量、模块分布、收录范围或离线能力时必须引用其中的数字与结论，不得估算、不得回答"不知道题库有多少题"，也不要用模型记忆里的旧数字；底稿没给出的细节说明「本机未统计」。
+12. 若提问末尾带有【黑白格转写与本地求解·本机像素识别】，那是本机对图片逐格像素转写、并用确定性规则枚举求解的结果：九宫格矩阵、选项矩阵与答案必须原样引用，禁止改写矩阵、禁止给出不同选项、禁止再自行「验证」出另一套规律；该块写明「本机无法判定」时，不得给出任何选项，只能讲可能思路并明确说明无法判定。没有该块时才按第 6、8、9 条自行分析图片。
+13. 【证据优先·独特性总则】凡出现【图形特征底稿】【资料分析本机复算】【言语/逻辑结构标记】【题库家底】【个人错题本】【时政底稿】【…方法论底稿】，都必须先引用证据再推理：
+   ① 引用时写明出处（「本机像素统计」「本机按题干标签复算」「本机规则扫描」「本机数据库」），算式、统计值、句号位置原样保留，不得改写或补算；
+   ② 只对证据覆盖的部分下确定结论，未覆盖的必须标注「以下为通用方法，非本机数据」，不得让用户误以为这些也算过；
+   ③ 禁止声称「我已核对过图片」「我已逐格验证」——没有拿到本机转写或特征统计时，直接说明无法核对，不得假装已经做过；
+   ④ 每次讲题结尾给三行自检：本题考的是什么规律/公式、下次遇到同类题先看什么、是否建议加入错题本。
+14. 【题型思考框架】若提示词末尾出现【题型思考框架·…（本机资料提炼）】，必须按它的顺序作答：先报题型与考点，再一步步走框架（每一步写清「看到什么→据此判什么」），最后给结论；不得跳过框架直接抛答案。若框架与本题明显不适配（例如题型判错），说明不适配并改用通用方法，不要硬套。
 """
 
 # 自由答疑的时政底稿：命中这些词才注入，避免每道题都多付一段输入 token
@@ -260,6 +275,27 @@ def has_image(messages: list[dict]) -> bool:
     return False
 
 
+def _last_user_image(messages: list[dict]) -> str:
+    """取最后一条用户消息里最后一张 data URL 图片；没有则空串。"""
+    for m in reversed(messages):
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if not isinstance(c, list):
+            continue
+        for part in reversed(c):
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") not in ("image_url", "input_image"):
+                continue
+            u = part.get("image_url")
+            if isinstance(u, dict):
+                u = u.get("url")
+            if isinstance(u, str) and u.startswith("data:image/"):
+                return u
+    return ""
+
+
 def ask_graph_block(max_chars: int = 2600, body_chars: int = 420) -> str:
     """图片题的图形推理底稿（手册里 7 个图形考点 ≈ 3 千字）。
 
@@ -271,8 +307,11 @@ def ask_graph_block(max_chars: int = 2600, body_chars: int = 420) -> str:
     if not group:
         return ""
     out = ["【图形推理底稿·本地《行测速查手册》】",
-           "先穷举四大类规律（位置 / 样式 / 数量 / 属性）再逐条验证；黑白方块类优先试"
-           "「同位置黑白叠加（去同存异、去异存同）」，按行或按列对齐比；只数黑块数量通常选不出唯一答案。"]
+           "按优先级排查、命中即停：组成相同→位置（平移/旋转/翻转）；组成相似→样式"
+           "（遍历/加减同异/黑白运算）；差异大→属性（对称/曲直/开闭）；仍无线索→数量"
+           "（面线点角素）；立体→展开图/截面/三视图。某一规律能解释全部已知格且唯一锁定"
+           "选项时立即停止，不再穷举第二条。黑白方块类优先试「同位置黑白叠加（去同存异、"
+           "去异存同）」，按行或按列对齐比；只数黑块数量通常选不出唯一答案。"]
     used = sum(len(s) for s in out)
     for p in group.get("points") or []:
         if "图形" not in str(p.get("title") or ""):
@@ -284,6 +323,94 @@ def ask_graph_block(max_chars: int = 2600, body_chars: int = 420) -> str:
         out.append(chunk)
         used += len(chunk)
     return "\n".join(out)
+
+
+def ask_grid_block(messages: list[dict]) -> str:
+    """黑白格九宫格：本机像素转写 + 确定性求解，作为硬证据注入。
+
+    模型看图会受压缩、随机性与先验影响（同一道黑白格题它曾按行编造验证并答错），
+    所以这类题改成「本机算、模型讲」：转写与答案由像素和枚举得出，模型只解释。
+    不是该布局、读不准或缺 Pillow/numpy 时返回空串，退回原有看图流程。
+    """
+    url = _last_user_image(messages)
+    if not url:
+        return ""
+    try:
+        from . import gridread
+        got = gridread.analyze(url)
+    except Exception:
+        return ""
+    return (got or {}).get("block") or ""
+
+
+def ask_figfeat_block(messages: list[dict]) -> str:
+    """非黑白格图推的本机像素统计（图块/墨迹/连通块/封闭区域/对称度）。
+
+    黑白格已有确定性求解；其余图推无法唯一求解，但属性可测。这里只给统计，
+    让模型依据可核对的数据去验证，而不是凭印象宣布「规律成立」。
+    """
+    url = _last_user_image(messages)
+    if not url:
+        return ""
+    try:
+        from . import figfeat
+        return figfeat.analyze(url) or ""
+    except Exception:
+        return ""
+
+
+def ask_datacalc_block(messages: list[dict]) -> str:
+    """资料分析：按题干标签做本机复算，算不出返回空串（绝不编造数字）。"""
+    text = _ask_user_text(messages)
+    if not text:
+        return ""
+    try:
+        from . import datacalc
+        return datacalc.analyze(text) or ""
+    except Exception:
+        return ""
+
+
+def ask_textmark_block(messages: list[dict]) -> str:
+    """言语/逻辑判断：标出关联词与所在句号，只做位置证据，不下语义结论。"""
+    text = _ask_user_text(messages)
+    if not text:
+        return ""
+    try:
+        from . import textmark
+        return textmark.analyze(text) or ""
+    except Exception:
+        return ""
+
+
+def ask_thinkframe(messages: list[dict]) -> dict | None:
+    """按题型注入「思考框架」（从 知识点综合/ 的整理讲义提炼）。
+
+    返回 {"title", "text"}：text 同时拼进提示词并作为 evidence 折叠块展示，
+    让用户能看到「这题按什么顺序想」，而不是只看答案。命中不了题型返回 None。
+    """
+    # 只按最后一条用户消息判题型：多轮答疑里前面可能问过别的模块，
+    # 用全量历史会把「资料分析」框架粘到后面的图推问题上。
+    last = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+    text = _ask_user_text([last]) if last else ""
+    got = None
+    if text:
+        try:
+            from . import thinkframe
+            got = thinkframe.analyze(text)
+        except Exception:
+            got = None
+    if not got:
+        if not has_image(messages):
+            return None
+        # 有图但文字没锁定题型（用户只发图或只说“这题怎么选”）：给通用图像判型顺序兜底
+        try:
+            from . import thinkframe
+            got = thinkframe.image_frame()
+        except Exception:
+            return None
+    return {"title": f"本题型思考框架·{got['name']}（本机资料提炼）",
+            "text": got["text"]}
 
 
 def ask_shizheng_block(messages: list[dict], max_periods: int = 2, per_chars: int = 700) -> str:
@@ -339,6 +466,17 @@ _SL_HINTS: dict[str, tuple[str, ...]] = {
 }
 
 
+# 六类申论/综应题的评分口径（本机固定口径，与手册考点一起注入，供批改/自评引用）
+_SL_RUBRIC = {
+    "gaikuo": "踩点给分：总括句 + 分点提炼，要点全、准、简洁；同义合并，不抄原句。",
+    "fenxi": "分析题按「观点/释义 + 分析（原因/影响/关系）+ 结论」给分，缺一层扣一层。",
+    "duice": "对策题按「针对性 + 可行性 + 具体度」给分；只喊口号不得分，需落到主体与做法。",
+    "guanche": "贯彻执行按「格式（标题/称谓/落款等）+ 内容要点 + 身份语体」给分，格式错直接降档。",
+    "zuowen": "大作文按「立意（准不准）+ 结构（分论点是否并列递进）+ 论证（材料与说理）+ 语言」四档评分。",
+    "zonggang": "总纲口径：先审题定题型，再按题型配分；字数不足、卷面潦草、偏离主题均直接降档。",
+}
+
+
 def ask_shenlun_block(messages: list[dict], max_modules: int = 2, max_points: int = 2,
                       max_chars: int = 3000, body_chars: int = 700) -> str:
     """按问题命中模块注入本地《申论速查手册》的考点正文。
@@ -375,6 +513,10 @@ def ask_shenlun_block(messages: list[dict], max_modules: int = 2, max_points: in
         desc = str(group.get("desc") or "")
         out.append(f"\n## {name}" + (f"\n{desc}" if desc else ""))
         used += len(out[-1])
+        rubric = _SL_RUBRIC.get(key)
+        if rubric:
+            out.append(f"评分口径：{rubric}")
+            used += len(out[-1])
         points = group.get("points") or []
         hints = _SL_HINTS[key]
         ranked = sorted(points,
@@ -422,6 +564,71 @@ def ask_wrong_block(messages: list[dict], limit: int = 8, max_chars: int = 1500)
         lines.append(f"- {title}" + (f"｜{mod}" if mod else ""))
     lines.append("讲薄弱环节时可以点名关联这些题；错题本里没有的不要编造。")
     return "\n".join(lines)[:max_chars]
+
+
+# 题库家底底稿：只在问「库有多大 / 收了多少题」这类元问题时注入。
+_LIB_HINTS = (
+    "题库", "多少题", "多少道", "多少篇", "几道题", "几题", "题量", "总量",
+    "家底", "收录", "库有多", "这个软件", "本应用", "离线", "数据来源",
+    "几套", "多少套", "套卷", "几卷",
+)
+
+
+def ask_library_block(messages: list[dict]) -> str:
+    """把本机题库的实时统计拼成一段底稿，供答疑回答「题库一共多少题」。
+
+    答疑此前完全不知道库的规模，被问「一共多少题」只能推托；这里命中
+    关键词时注入现查数字，问其他内容时零成本。
+    """
+    text = _ask_user_text(messages)
+    if not text or not any(k in text for k in _LIB_HINTS):
+        return ""
+    try:
+        summary = db.library_summary()
+        exam = db.exam_type_counts()
+    except Exception:
+        return ""
+    total = int(summary.get("total") or 0)
+    if not total:
+        return ""
+    by_kind = summary.get("by_kind") or {}
+    mods = {str(m.get("module") or ""): int(m.get("c") or 0)
+            for m in (summary.get("modules") or [])}
+    ordered = [m for m in db.MODULE_ORDER if m in mods]
+    ordered += [m for m in mods if m not in db.MODULE_ORDER]
+    # 只点名三个主类；总览/说明/空白这类零散行合并成「其他」，避免把
+    # 1 篇「未分类」也念给用户听。
+    main_kinds = ("真题", "考点", "材料")
+    parts = [f"{k} {by_kind[k]:,} 篇" for k in main_kinds if by_kind.get(k)]
+    rest = sum(v for k, v in by_kind.items() if k not in main_kinds)
+    if rest:
+        parts.append(f"其他 {rest:,} 篇")
+    kind_line = "，".join(parts) or "未分类"
+    mod_line = " / ".join(f"{m} {mods[m]:,}" for m in ordered) or "未统计"
+    exams = int(exam.get("total") or 0)
+    type_line = " / ".join(f"{k} {v} 套" for k, v in
+                           (exam.get("by_type") or {}).items() if v) or "未拆分"
+    papers = exam.get("guokao_papers") or {}
+    paper_line = " / ".join(f"{p} {papers[p]}" for p in
+                            ("副省级", "地市级", "行政执法") if papers.get(p))
+    lines = [
+        "【题库家底·本机数据库实时统计】",
+        f"- 入库文档总量：{total:,} 篇（{kind_line}）",
+        f"- 真题模块分布：{mod_line}",
+        f"- 可用整卷套卷：{exams} 套（{type_line}；按年份+地区+卷别归一，残卷不列出）",
+    ]
+    if paper_line:
+        lines.append(f"- 国考卷别：{paper_line}")
+    lines += [
+        "- 套卷统计范围：以上均为行测类整卷；申论/综应整卷另计，不在其中。",
+        "- 题库与作答记录都在本机 SQLite（content.db 只读、user.db 可写），"
+        "不依赖云端；只有 AI 答疑与 WebDAV 同步需要外部服务。",
+        "口径提示：说「多少题」时指真题道数；入库文档总量还包含考点、材料等非题目文档，"
+        "两者不要混为一谈。",
+        "以上数字来自本机数据库的实时统计：问题库规模、套卷套数、收录范围、离线能力时"
+        "直接引用，不要估算，也不要说「本机未统计」，更不要用模型记忆里的旧数字。",
+    ]
+    return "\n".join(lines)
 
 
 # 图片答疑输入上限：手机端压缩后单张通常 < 1 MB，这里留足余量并防止
@@ -896,19 +1103,23 @@ async def stream_chat_with_temp(messages: list[dict], temperature: float):
         return
 
 
-async def stream_chat(messages: list[dict], use_vision: bool = False):
+async def stream_chat(messages: list[dict], use_vision: bool = False,
+                      think_on: bool | None = None):
     """yield ('delta'|'think'|'error'|'done', payload)。
 
-    use_vision=True 时切换到多模态模型并**关闭思考模式**：图纸题让模型先"想"五分钟
-    再开口，用户只会以为卡死（实测图形题连续思考 5 分钟没有正文输出）。
-    非视觉问答保留思考，但整体有墙钟上限：流式只在有数据时才走循环，
-    读超时（120s）挡不住"一直在输出思考"的长时间生成，必须自己掐。
+    思考模式：入参 `think_on` 优先（答疑输入框旁的按钮按次覆盖），未传时回落到
+    设置项 `ai_thinking`（默认开）。开启时不发 `thinking`，让模型按默认深度推理；
+    关闭时显式 `disabled`，换速度。此前看图请求写死 disabled，同一道图形题模型
+    只看一眼就给结论，这正是内置 AI 与网页版表现不一致的根源之一。
+    整体仍有墙钟上限：流式只在有数据时才走循环，读超时（120s）挡不住
+    "一直在输出思考"的长时间生成，必须自己掐。
     """
     s = load_settings()
     if not s["deepseek_api_key"]:
         yield "error", "未配置 DeepSeek API Key，请到「设置」中填写。"
         return
 
+    think_on = bool(s.get("ai_thinking", True)) if think_on is None else bool(think_on)
     payload = {
         "model": vision_model(s) if use_vision else s["deepseek_model"],
         "messages": messages,
@@ -916,12 +1127,14 @@ async def stream_chat(messages: list[dict], use_vision: bool = False):
         "temperature": 0.3,
     }
     if use_vision:
-        payload["max_tokens"] = 4096
+        # 思考与正文共用输出上限，开启思考时留足额度，避免「想完了没正文」
+        payload["max_tokens"] = 8192 if think_on else 4096
+    if not think_on:
         payload["thinking"] = {"type": "disabled"}
     headers = {"Authorization": f"Bearer {s['deepseek_api_key']}"}
     url = s["deepseek_base_url"].rstrip("/") + "/chat/completions"
-    # 图形题关掉思考后正常 10~30 秒；纯文字题允许更长的推理
-    deadline = 60.0 if use_vision else 150.0
+    # 关思考的看图请求正常 10~30 秒；开思考或纯文字题允许更长的推理
+    deadline = 60.0 if (use_vision and not think_on) else 150.0
     started = time.monotonic()
     timed_out = False
     answered = False

@@ -51,6 +51,8 @@ _MOBILE_SETTINGS_DEFAULTS = {
     "deepseek_base_url": "https://api.deepseek.com",
     "deepseek_api_key": "",
     "deepseek_model": "deepseek-flash",
+    # AI 深度思考开关（与桌面 config.DEFAULTS 同口径，默认开）
+    "ai_thinking": True,
     # N3 考试倒计时：'YYYY-MM-DD'，空则首页不显示横幅
     "exam_date": "",
     # N2 学习提醒：开关 / 每日提醒时间 'HH:mm' / 仅当天计划未完成时提醒
@@ -1313,7 +1315,7 @@ class _Handler(BaseHTTPRequestHandler):
             elif path == "/api/auth/logout":
                 self._json(accounts.logout())
             elif path == "/api/paper":
-                _pn = max(1, min(30, int(b.get("n", 10)))
+                _pn = max(1, min(30, int(b.get("n", 10))))
                 ids = db.random_paper(
                     b.get("module", ""), b.get("kaodian", ""), _pn)
                 # 与桌面 /api/paper 同构：题库凑不满时 db 层已按
@@ -1569,6 +1571,8 @@ class _Handler(BaseHTTPRequestHandler):
                 patch.update(config.reminder_patch(b))
                 # G2：每日目标同样归一化（0 合法=不设目标，脏值丢弃）
                 patch.update(config.goal_patch(b))
+                # AI 深度思考开关（与桌面同口径）
+                patch.update(config.thinking_patch(b))
                 _mobile_save_settings(patch)
                 self._json({"ok": True})
             elif path == "/api/settings/test":
@@ -1826,13 +1830,40 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self._err(400, str(e))
         messages = [{"role": "system", "content": ai.ASK_SYSTEM}] + msgs
-        # 与桌面端一致的本机知识底稿：行测/申论方法论 + 时政 + 个人错题本
+        # 与桌面端一致的本机知识底稿：行测/申论方法论 + 时政 + 个人错题本 + 题库家底
         blocks = [x for x in (ai.ask_xingce_block(msgs), ai.ask_shenlun_block(msgs),
-                              ai.ask_shizheng_block(msgs), ai.ask_wrong_block(msgs)) if x]
+                              ai.ask_shizheng_block(msgs), ai.ask_wrong_block(msgs),
+                              ai.ask_library_block(msgs)) if x]
+        evidence = []
+        # 题型思考框架：与桌面同口径，先定解题顺序再给证据
+        frame = ai.ask_thinkframe(msgs)
+        if frame:
+            blocks.insert(0, frame["text"])
+            evidence.append(frame)
         if ai.has_image(msgs):
             graph = ai.ask_graph_block()
             if graph:
                 blocks.append(graph)
+            # 黑白格九宫格：本机像素转写 + 确定性求解，优先于通用特征统计
+            grid = ai.ask_grid_block(msgs)
+            if grid:
+                blocks.append(grid)
+                evidence.append({"title": "黑白格本机像素转写与求解（点开核对）",
+                                 "text": grid})
+            else:
+                feat = ai.ask_figfeat_block(msgs)
+                if feat:
+                    blocks.append(feat)
+                    evidence.append({"title": "图形特征本机像素统计（点开核对）",
+                                     "text": feat})
+        calc = ai.ask_datacalc_block(msgs)
+        if calc:
+            blocks.append(calc)
+            evidence.append({"title": "资料分析本机复算（点开核对算式）", "text": calc})
+        mark = ai.ask_textmark_block(msgs)
+        if mark:
+            blocks.append(mark)
+            evidence.append({"title": "言语/逻辑结构标记（点开核对句号）", "text": mark})
         if blocks:
             extra = "\n\n".join(blocks)
             last = messages[-1]
@@ -1842,6 +1873,8 @@ class _Handler(BaseHTTPRequestHandler):
                 last["content"] = last["content"] + [{"type": "text", "text": extra}]
 
         async def gen():
+            for ev in evidence:
+                yield "evidence", ev
             async for kind, payload in ai.stream_chat(messages, use_vision=use_vision):
                 yield kind, payload
 

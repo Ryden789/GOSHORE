@@ -2247,6 +2247,28 @@ def facets() -> dict:
     return out
 
 
+def library_summary() -> dict:
+    """题库家底：文档总量、各类占比、真题模块分布。
+
+    答疑要回答「题库一共多少题」这类关于库自身的元问题；数字必须现查，
+    不能在提示词里写死——题库一扩容，写死的数字就变成假话。
+    """
+    conn = connect()
+    total = conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
+    counts = {
+        r["kind"] or "未分类": r["c"]
+        for r in conn.execute("SELECT kind, COUNT(*) c FROM documents GROUP BY kind")
+    }
+    modules = [
+        {"module": r["module"], "c": r["c"]}
+        for r in conn.execute(
+            "SELECT module, COUNT(*) c FROM documents "
+            "WHERE kind='真题' AND module!='' GROUP BY module")
+    ]
+    conn.close()
+    return {"total": total, "by_kind": counts, "modules": modules}
+
+
 def add_answer(doc_id: int, selected: str, correct: bool | None, ms: int,
                guessed: bool = False) -> dict:
     """写入一次作答。
@@ -5581,6 +5603,34 @@ def list_exams(limit: int = 600) -> list[dict]:
     kept.sort(key=lambda r: r["exam"], reverse=True)
     return [{"exam": r["exam"], "c": r["c"], "is_ai": r["exam"].startswith("AI模拟")}
             for r in kept[:limit]]
+
+
+def exam_type_counts() -> dict:
+    """可用套卷按考试类型拆分，供答疑回答「国考几套」这类问题。
+
+    只按卷名做关键词归类，不新增字段也不改套卷本身；「选调、法检、上海
+    行政执法类」这类非国考非省考的卷归入「选调及其他」，不硬塞进省考。
+    """
+    items = list_exams()
+    by_type = {"国考": 0, "省考·联考": 0, "事业单位": 0,
+               "选调及其他": 0, "AI模拟": 0}
+    papers: dict[str, int] = {}
+    for it in items:
+        n = it["exam"]
+        if n.startswith("AI模拟"):
+            by_type["AI模拟"] += 1
+        elif "国家公务员" in n or "国考" in n:
+            by_type["国考"] += 1
+            for p in ("副省级", "地市级", "行政执法"):
+                if p in n:
+                    papers[p] = papers.get(p, 0) + 1
+        elif "事业单位" in n or "事业编" in n:
+            by_type["事业单位"] += 1
+        elif "联考" in n or "公务员" in n or "省考" in n:
+            by_type["省考·联考"] += 1
+        else:
+            by_type["选调及其他"] += 1
+    return {"total": len(items), "by_type": by_type, "guokao_papers": papers}
 
 
 MODULE_ORDER = ["常识判断", "言语理解", "数量关系", "判断推理", "资料分析", "综合分析"]

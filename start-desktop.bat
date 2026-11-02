@@ -11,7 +11,7 @@ echo   用原生窗口显示，不打开浏览器
 echo   服务仍监听 0.0.0.0，手机端 /m/ 照旧可用
 echo.
 
-rem 端口占用只提示、不结束任何进程（与 start.bat 的安全策略一致）
+rem On port conflict: only warn, never kill any process (same policy as start.bat)
 netstat -ano | findstr ":%PORT%" | findstr "LISTENING" >nul 2>&1
 if not errorlevel 1 echo [提示] 端口 %PORT% 已被占用：若是本应用的另一个窗口会自动复用；若是其它程序请先处理，或用 --port 换端口。
 

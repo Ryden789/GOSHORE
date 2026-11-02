@@ -4110,6 +4110,11 @@ async function renderSettings() {
         <input id="setModel" class="m-input" value="${esc(s.deepseek_model)}"/>
         <div class="muted">deepseek-flash（默认，快且支持看图）/ deepseek-v4-pro（更强，费用更高）</div>
       </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="setThink"
+          ${s.ai_thinking !== false ? "checked" : ""}/> AI 深度思考</label>
+        <div class="muted">默认开启：先推理再作答，图形题更稳但更慢；关闭后回复更快，复杂图更容易看走眼。</div>
+      </div>
       <div class="key-guide">
         <b>${UiIcon.html("key", 15)}免费申请 DeepSeek Key（约 2 分钟）</b>
         <ol class="guide-steps">
@@ -4441,6 +4446,7 @@ async function renderSettings() {
     const patch = {
       deepseek_base_url: $("#setBase").value.trim(),
       deepseek_model: $("#setModel").value.trim(),
+      ai_thinking: $("#setThink").checked,
     };
     const k = $("#setKey").value.trim();
     if (k && !k.startsWith("***")) patch.deepseek_api_key = k;
@@ -6551,7 +6557,11 @@ async function renderAiAsk() {
 
     let full = "";
     let think = "";
+    let evid = [];
     const b = bubble("ai", "");
+    const evidHtml = () => evid.length
+      ? evid.map(e => `<details style="margin:0 0 8px"><summary style="cursor:pointer;font-size:calc(12px * var(--fs));color:var(--ink-2,#999)">${esc(e.title)}</summary><pre style="white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:calc(11px * var(--fs));line-height:1.6;color:var(--ink-2,#999);margin:6px 0 0">${esc(e.text)}</pre></details>`).join("")
+      : "";
     const t0 = Date.now();
     const paintWait = () => {
       if (full) return;
@@ -6585,22 +6595,24 @@ async function renderAiAsk() {
           // 界面只有一句「思考中…」，用户会以为卡死（这是本页之前最像"卡住"的地方）
           if (ev.type === "think") {
             think += ev.text;
+          } else if (ev.type === "evidence") {
+            evid.push({ title: ev.title || "本机证据（点开核对）", text: ev.text || "" });
           } else if (ev.type === "delta") {
             full += ev.text;
-            b.innerHTML = md(full);
+            b.innerHTML = evidHtml() + md(full);
           } else if (ev.type === "error") {
             full += `\n\n⚠ ${aiErrorHint(ev.text)}`;
-            b.innerHTML = md(full);
+            b.innerHTML = evidHtml() + md(full);
           }
         }
       }
     } catch (e) {
       if (e.name === "AbortError") {
         // 主动停止：保留已生成的部分，不再提示"去设置"（那是失败才给的指引）
-        b.innerHTML = md(full ? full + "\n\n（已停止生成）" : "（已停止生成）");
+        b.innerHTML = evidHtml() + md(full ? full + "\n\n（已停止生成）" : "（已停止生成）");
       } else {
         full += `\n\n⚠ ${aiErrorHint(e.message)}`;
-        b.innerHTML = md(full) +
+        b.innerHTML = evidHtml() + md(full) +
           `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
       }
     } finally {

@@ -75,6 +75,7 @@ from .config import (
     reminder_patch,
     save_settings,
     sync_patch,
+    thinking_patch,
 )
 from .logging_setup import get_logger
 
@@ -925,6 +926,8 @@ async def api_explain(b: ExplainIn, request: Request):
 
 class AskIn(BaseModel):
     messages: list[dict] = []
+    # 答疑输入框旁的「深度思考」按钮：按次覆盖设置项，None = 沿用设置
+    think: bool | None = None
 
 
 # 含 3 张压缩图的 JSON 通常 < 6 MB；这里挡住超大请求体，避免在解析阶段
@@ -948,14 +951,41 @@ async def api_ai_ask(b: AskIn, request: Request):
     messages = [{"role": "system", "content": ai.ASK_SYSTEM}] + msgs
 
     # 本机知识底稿：行测/申论方法论（按模块路由）+ 时政（命中关键词才给）
-    # + 个人错题本（命中关键词才给）。拼在最后一条用户消息尾部，不动 system
-    # 前缀，系统提示的缓存命中不受影响。
+    # + 个人错题本（命中关键词才给）+ 题库家底（问库规模时才给）。拼在最后一条
+    # 用户消息尾部，不动 system 前缀，系统提示的缓存命中不受影响。
     blocks = [x for x in (ai.ask_xingce_block(msgs), ai.ask_shenlun_block(msgs),
-                          ai.ask_shizheng_block(msgs), ai.ask_wrong_block(msgs)) if x]
+                          ai.ask_shizheng_block(msgs), ai.ask_wrong_block(msgs),
+                          ai.ask_library_block(msgs)) if x]
+    # 本机证据：既拼进提示词（模型必须引用），又推给前端折叠块（用户能核对）。
+    # 与方法论底稿分开收集——底稿是方法，证据是可核对的实测值。
+    evidence: list[dict] = []
+    # 题型思考框架：从 知识点综合/ 的整理讲义提炼，放在最前面，先定解题顺序
+    frame = ai.ask_thinkframe(msgs)
+    if frame:
+        blocks.insert(0, frame["text"])
+        evidence.append(frame)
     if ai.has_image(msgs):
         graph = ai.ask_graph_block()
         if graph:
             blocks.append(graph)
+        # 黑白格九宫格：本机像素转写 + 确定性求解，优先于通用特征统计
+        grid = ai.ask_grid_block(msgs)
+        if grid:
+            blocks.append(grid)
+            evidence.append({"title": "黑白格本机像素转写与求解（点开核对）", "text": grid})
+        else:
+            feat = ai.ask_figfeat_block(msgs)
+            if feat:
+                blocks.append(feat)
+                evidence.append({"title": "图形特征本机像素统计（点开核对）", "text": feat})
+    calc = ai.ask_datacalc_block(msgs)
+    if calc:
+        blocks.append(calc)
+        evidence.append({"title": "资料分析本机复算（点开核对算式）", "text": calc})
+    mark = ai.ask_textmark_block(msgs)
+    if mark:
+        blocks.append(mark)
+        evidence.append({"title": "言语/逻辑结构标记（点开核对句号）", "text": mark})
     if blocks:
         extra = "\n\n".join(blocks)
         last = messages[-1]
@@ -965,7 +995,12 @@ async def api_ai_ask(b: AskIn, request: Request):
             last["content"] = last["content"] + [{"type": "text", "text": extra}]
 
     async def gen():
-        async for kind, payload in ai.stream_chat(messages, use_vision=use_vision):
+        # 证据先于回答推送：用户可在模型开口前核对本机算出的东西
+        for ev in evidence:
+            payload = {"type": "evidence", "title": ev["title"], "text": ev["text"]}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        async for kind, payload in ai.stream_chat(messages, use_vision=use_vision,
+                                                  think_on=b.think):
             # 用户点「停止」断开后立刻收手（见 api_explain 同款说明）
             if await request.is_disconnected():
                 break
@@ -1938,6 +1973,7 @@ class SettingsIn(BaseModel):
     deepseek_base_url: str | None = None
     deepseek_api_key: str | None = None
     deepseek_model: str | None = None
+    ai_thinking: bool | None = None   # AI 深度思考开关（默认开）
     exam_date: str | None = None    # N3 考试日期 'YYYY-MM-DD'，空串=清除
     # N2 学习提醒
     reminder_on: bool | None = None
@@ -1967,6 +2003,9 @@ def api_settings_set(b: SettingsIn):
     for k in GOAL_KEYS:
         patch.pop(k, None)
     patch.update(goal_patch(raw))
+    # AI 深度思考开关：与手机端共用同一归一化（非法值丢弃）
+    patch.pop("ai_thinking", None)
+    patch.update(thinking_patch(raw))
     save_settings(patch)
     return {"ok": True}
 

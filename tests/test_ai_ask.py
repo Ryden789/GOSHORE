@@ -84,7 +84,7 @@ def test_normalize_ask_requires_user_last():
 def test_ask_endpoint_passes_image_and_vision(client, monkeypatch):
     sink: dict = {}
 
-    async def fake_stream(messages, use_vision=False):
+    async def fake_stream(messages, use_vision=False, think_on=None):
         sink["messages"] = messages
         sink["use_vision"] = use_vision
         yield "delta", "看到了图片"
@@ -114,6 +114,60 @@ def test_ask_endpoint_rejects_remote_image(client):
     ]})
     assert r.status_code == 400
     assert "base64" in r.text
+
+
+def test_library_block_reports_live_counts(monkeypatch):
+    monkeypatch.setattr(ai.db, "library_summary", lambda: {
+        "total": 71229,
+        "by_kind": {"真题": 60131, "考点": 10375, "材料": 717},
+        "modules": [{"module": "判断推理", "c": 16923},
+                    {"module": "言语理解", "c": 16441}],
+    })
+    monkeypatch.setattr(ai.db, "exam_type_counts", lambda: {
+        "total": 521,
+        "by_type": {"国考": 28, "省考·联考": 421, "事业单位": 0,
+                    "选调及其他": 69, "AI模拟": 3},
+        "guokao_papers": {"副省级": 11, "地市级": 12, "行政执法": 5},
+    })
+    block = ai.ask_library_block([{"role": "user", "content": "题库一共多少题？"}])
+    assert "题库家底" in block
+    assert "71,229" in block and "60,131" in block
+    assert "判断推理 16,923" in block
+    assert "521 套" in block and "国考 28 套" in block
+    assert "副省级 11 / 地市级 12 / 行政执法 5" in block
+    assert "题库家底" in ai.ASK_SYSTEM
+
+
+def test_library_block_skips_unrelated_question(monkeypatch):
+    monkeypatch.setattr(ai.db, "library_summary", lambda: {"total": 1,
+                                                           "by_kind": {},
+                                                           "modules": []})
+    monkeypatch.setattr(ai.db, "exam_type_counts", lambda: {"total": 0,
+                                                            "by_type": {},
+                                                            "guokao_papers": {}})
+    assert ai.ask_library_block([{"role": "user", "content": "排列组合怎么算？"}]) == ""
+
+
+def test_ask_endpoint_injects_library_block(client, monkeypatch):
+    sink: dict = {}
+
+    async def fake_stream(messages, use_vision=False, think_on=None):
+        sink["messages"] = messages
+        yield "done", ""
+
+    monkeypatch.setattr(ai, "stream_chat", fake_stream)
+    monkeypatch.setattr(ai.db, "library_summary", lambda: {
+        "total": 438, "by_kind": {"真题": 240},
+        "modules": [{"module": "判断推理", "c": 120}],
+    })
+    monkeypatch.setattr(ai.db, "exam_type_counts", lambda: {
+        "total": 438, "by_type": {"国考": 28}, "guokao_papers": {"副省级": 11},
+    })
+    r = client.post("/api/ai/ask", json={"messages": [
+        {"role": "user", "content": "这个软件题库一共多少题？"},
+    ]})
+    assert r.status_code == 200
+    assert "题库家底" in sink["messages"][-1]["content"]
 
 
 def test_mobile_page_has_direct_camera_capture():

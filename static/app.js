@@ -103,9 +103,9 @@ function dangerConfirm(title, desc) {
   });
 }
 
-async function api(path, body) {
+async function api(path, body, method) {
   const opt = body
-    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    ? { method: method || "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
     : {};
   if (abortCtl) opt.signal = abortCtl.signal;
   let r;
@@ -4008,6 +4008,10 @@ async function renderSettings() {
           <input id="model" value="${esc(s.deepseek_model)}"/>
           <div class="hint">deepseek-flash（默认，快且支持看图）/ deepseek-v4-pro（更强，费用更高）</div>
         </div>
+        <div class="field">
+          <label class="cb"><input type="checkbox" id="thinkOn" ${s.ai_thinking !== false ? "checked" : ""}/> AI 深度思考</label>
+          <div class="hint">默认开启：模型先推理再作答，图形题与长材料更稳，但等待更久；关闭后回复更快，复杂题更容易看走眼。改动保存后对下一次提问生效。</div>
+        </div>
       </div>
     </div>
     <div class="panel rise rise-2" id="sec-learn">
@@ -4260,6 +4264,7 @@ async function renderSettings() {
       vault_path: $("#vault").value.trim(),
       deepseek_base_url: $("#baseurl").value.trim(),
       deepseek_model: $("#model").value.trim(),
+      ai_thinking: $("#thinkOn").checked,
     };
     const k = $("#key").value.trim();
     if (k) patch.deepseek_api_key = k;
@@ -6532,6 +6537,9 @@ async function renderReport() {
 // ---------------- AI 答疑（不做题也能问） ----------------
 
 const AI_ASK_KEY = "goshor_ai_ask";
+// 答疑输入框旁的「深度思考」按钮状态：null = 还没初始化，首次进入按设置取值；
+// 之后在本页生命周期内沿用用户的选择（设置页的开关仍是持久化的默认值）。
+let aiAskThink = null;
 
 // 旧版本地把对话存 localStorage；升级后只用于一次性迁移，随后清空
 function aiAskLoad() {
@@ -6578,6 +6586,13 @@ async function renderAiAsk() {
       msgs = s.messages || [];
     } catch (e) {}
   }
+  // 深度思考按钮首次进入时按设置初始化；读失败按默认开，不挡答疑主流程
+  if (aiAskThink === null) {
+    try {
+      const cfg = await api("/api/settings");
+      aiAskThink = cfg.ai_thinking !== false;
+    } catch (e) { aiAskThink = true; }
+  }
 
   view.innerHTML = `
     <div class="ai-ask-shell">
@@ -6613,6 +6628,8 @@ async function renderAiAsk() {
             <input type="file" accept="image/*,.txt,.text,.md,.markdown,.csv,.json,.docx,.pdf" multiple style="display:none" id="aiAskFile">
           </label>
           <textarea id="aiAskInput" rows="2" placeholder="随便问点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button type="button" class="ai-ask-think" id="aiAskThink" aria-pressed="true"
+            title="深度思考：开（点一下切换，对后续提问生效）">深度思考</button>
           <button class="btn btn-primary" id="aiAskGo">发送</button>
         </div>
         <p class="ai-ask-foot">内容由 AI 生成，仅供参考</p>
@@ -6624,10 +6641,21 @@ async function renderAiAsk() {
   const list = $("#aiAskList");
   const input = $("#aiAskInput");
   const goBtn = $("#aiAskGo");
+  const thinkBtn = $("#aiAskThink");
   const newBtn = $("#aiAskNew");
   const fileInput = $("#aiAskFile");
   const previewBox = $("#aiAskPreviews");
   const sessList = $("#aiSessList");
+
+  // 输入框旁的深度思考按钮：与按次状态同步；不写设置，避免一次点击改掉默认值
+  const paintThink = () => {
+    thinkBtn.setAttribute("aria-pressed", String(aiAskThink));
+    thinkBtn.title = aiAskThink
+      ? "深度思考：开（点一下切换，对后续提问生效）"
+      : "深度思考：关（点一下切换，对后续提问生效）";
+  };
+  paintThink();
+  thinkBtn.onclick = () => { aiAskThink = !aiAskThink; paintThink(); };
 
   // ---------- 会话列表 / 落库 ----------
   const sessionTitle = () => {
@@ -6686,7 +6714,7 @@ async function renderAiAsk() {
         currentId = s.id;
         sessions.unshift({ id: s.id, title: s.title, updated_at: s.updated_at, count: s.count });
       } else {
-        const s = await api(`/api/ai/sessions/${currentId}`, { title: "", messages: msgs });
+        const s = await api(`/api/ai/sessions/${currentId}`, { title: "", messages: msgs }, "PUT");
         const row = { id: s.id, title: s.title, updated_at: s.updated_at, count: s.count };
         const i = sessions.findIndex(x => x.id === s.id);
         if (i >= 0) sessions[i] = row; else sessions.unshift(row);
@@ -6844,8 +6872,13 @@ async function renderAiAsk() {
     // 附件与提问一定在窗口内，丢的是更早的历史，符合用户预期。
     his = his.slice(-ASK_MAX_MESSAGES);
 
-    let thinkBox = null, think = "", full = "";
+    let thinkBox = null, think = "", full = "", evid = [];
     const b = bubble("ai", "");
+    // 本机证据块（黑白格转写、图形特征统计、资料复算、结构标记）先于回答推送，
+    // 统一用折叠块展示：用户可以先核对本机算出的东西，再看模型怎么讲。
+    const evidHtml = () => evid.length
+      ? evid.map(e => `<details style="margin:0 0 8px"><summary style="cursor:pointer;font-size:calc(12px * var(--fs));color:var(--ink-2)">${esc(e.title)}</summary><pre style="white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:calc(11.5px * var(--fs));line-height:1.6;color:var(--ink-2);margin:6px 0 0">${esc(e.text)}</pre></details>`).join("")
+      : "";
     const t0 = Date.now();
     // 秒数必须动起来：模型长时间只在推理时，界面若只写「思考中…」不动，
     // 用户会以为程序卡死。有了秒数 + 下面的 think 正文，等待是可见的。
@@ -6860,7 +6893,7 @@ async function renderAiAsk() {
     try {
       const r = await fetch("/api/ai/ask", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: his }),
+        body: JSON.stringify({ messages: his, think: aiAskThink }),
         signal: abortCtl.signal,
       });
       if (!r.ok) throw new Error(await r.text());
@@ -6885,23 +6918,26 @@ async function renderAiAsk() {
             }
             think += ev.text;
             thinkBox.textContent = `思考中 ${Math.round((Date.now() - t0) / 1000)}s：` + think;
+          } else if (ev.type === "evidence") {
+            // 本机证据：先于回答推送，供用户展开核对
+            evid.push({ title: ev.title || "本机证据（点开核对）", text: ev.text || "" });
           } else if (ev.type === "delta") {
             full += ev.text;
-            b.innerHTML = md(full);
+            b.innerHTML = evidHtml() + md(full);
             b.classList.add("cursor-blink");
           } else if (ev.type === "error") {
             full += `\n\n**⚠ ${aiErrorHint(ev.text)}**`;
-            b.innerHTML = md(full);
+            b.innerHTML = evidHtml() + md(full);
           }
         }
       }
     } catch (e) {
       if (e.name === "AbortError") {
         // 主动停止：保留已生成的部分，不给"去设置"这种失败指引
-        b.innerHTML = md(full ? full + "\n\n（已停止生成）" : "（已停止生成）");
+        b.innerHTML = evidHtml() + md(full ? full + "\n\n（已停止生成）" : "（已停止生成）");
       } else {
         full += `\n\n**⚠ ${aiErrorHint(e.message)}**`;
-        b.innerHTML = md(full) +
+        b.innerHTML = evidHtml() + md(full) +
           `<div style="margin-top:8px"><a class="btn btn-sm" href="#/settings">去设置检查 Key / 模型</a></div>`;
       }
     } finally {
@@ -6947,7 +6983,7 @@ async function renderAiAsk() {
     const name = t.trim();
     if (!name) return;
     try {
-      const s = await api(`/api/ai/sessions/${currentId}`, { title: name, messages: msgs });
+      const s = await api(`/api/ai/sessions/${currentId}`, { title: name, messages: msgs }, "PUT");
       const i = sessions.findIndex(x => x.id === s.id);
       if (i >= 0) sessions[i] = { ...sessions[i], title: s.title };
       drawSessions();
