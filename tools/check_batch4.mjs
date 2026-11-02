@@ -249,6 +249,20 @@ ok(sharedSrc.includes(BLOCK_START), `${SHARED_REL} 必须包含 G2 每日目标�
   eq(H.list().length, 0, "clear 应清空");
   eq(H.html(), "", "清空后不再渲染");
 
+  // 清空竞态：搜索是异步的，清空**之前**发出的那次搜索可能在清空之后才返回。
+  // 若不拦，它会把关键词写回 localStorage 并重绘标签行 —— 用户看到「刚清空，
+  // 标签又冒出来」，e2e 的 G6 桌面用例正是撞上这个时序才偶发红灯。
+  const staleAt = Date.now() - 50;
+  H.add("清空前");
+  eq(H.list()[0], "清空前", "前置：清空前应有一条历史");
+  H.clear();
+  eq(H.add("清空前", staleAt), false, "清空之前发起的搜索不该把历史写回");
+  eq(H.list().length, 0, "清空后历史应保持为空");
+  eq(H.html(), "", "清空后不应再渲染标签行");
+  eq(H.add("清空后", Date.now() + 1000), true, "清空之后的新搜索应正常记录");
+  eq(H.list()[0], "清空后", "新搜索应入档");
+  eq(H.add("不带时间戳"), true, "不传 startedAt 时保持原行为（纯记录）");
+
   // html 转义
   const H3 = buildSandbox(IMPLS["移动 m.js"], { storage: makeStorage() }).SearchHistory;
   H3.add('<img src=x onerror=1>');

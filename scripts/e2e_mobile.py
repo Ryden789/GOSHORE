@@ -1304,9 +1304,17 @@ def check_browser():
             pg3.wait_for_selector("#q", timeout=20000)
             pg3.fill("#q", "的")
             pg3.click("#go")
-            pg3.wait_for_timeout(1400)
+            # 题库涨到 7 万题后，计数查询明显变慢（实测「增长」5.3s），
+            # 固定 sleep 会让这条用例假红。与移动端同口径：等文案落定再断言。
             try:
-                pg3.wait_for_selector("#shWrap .sh-tag", timeout=8000)
+                pg3.wait_for_function(
+                    "() => { const e = document.getElementById('rcount');"
+                    " return !!e && !/正在检索/.test(e.textContent); }",
+                    timeout=30000)
+            except Exception:
+                pass
+            try:
+                pg3.wait_for_selector("#shWrap .sh-tag", timeout=15000)
             except Exception:
                 problems.append("桌面端有结果搜索后应出现历史标签")
             d_tags = pg3.locator("#shWrap .sh-tag").count()

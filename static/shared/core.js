@@ -532,14 +532,22 @@ const GoalRing = {
 const SearchHistory = {
   KEY: "searchhist",
   MAX: 20,
+  /* 最近一次「清空」的时间戳。用途：搜索是异步的——用户点了清空，而清空
+     之前发出的那一次搜索可能才回来，它会把历史重新写回去（界面上表现为
+     「清空后标签又冒出来」）。add() 拿到本次搜索的发起时刻，早于这个戳就
+     直接丢弃。 */
+  _clearAt: 0,
   list() {
     const v = Pref.get(this.KEY, []);
     return Array.isArray(v) ? v.filter(x => typeof x === "string" && x) : [];
   },
-  /** 记录一次有效搜索（q 为非空且当次确实有结果）；返回是否真的入档 */
-  add(q) {
+  /** 记录一次有效搜索（q 为非空且当次确实有结果）
+   *  @param startedAt 本次搜索的发起时间戳（毫秒），早于最近一次清空则不记
+   *  @returns 是否真的入档 */
+  add(q, startedAt = 0) {
     const s = String(q == null ? "" : q).trim();
     if (!s) return false;
+    if (startedAt && startedAt < this._clearAt) return false;
     const cur = this.list().filter(x => x !== s);
     cur.unshift(s);
     Pref.set(this.KEY, cur.slice(0, this.MAX));
@@ -548,7 +556,7 @@ const SearchHistory = {
   remove(q) {
     Pref.set(this.KEY, this.list().filter(x => x !== q));
   },
-  clear() { Pref.set(this.KEY, []); },
+  clear() { this._clearAt = Date.now(); Pref.set(this.KEY, []); },
   /** 历史标签 HTML；空则返回 '' */
   html() {
     const items = this.list();
@@ -1146,8 +1154,14 @@ function aiErrorHint(raw) {
     return "请求过于频繁，请等几十秒再试。";
   if (/timeout|超时|failed to fetch|networkerror|网络/i.test(s))
     return "网络连接失败，请检查网络后重试。";
+  if (/API 返回 5\d\d|bad gateway|service unavailable|overloaded|server error/i.test(s))
+    return "AI 服务端临时异常（5xx），通常几分钟内恢复，请稍后重试。";
   if (/400/.test(s))
     return "请求被拒绝：可能是模型名或参数不兼容，请到设置重选模型。";
+  // 服务端已经写清了原因与下一步（推理超时、输出额度被思考吃光、没生成正文），
+  // 原样透出；否则会被下面那句「服务暂时不可用」盖掉，用户只看到「思考了一会就失败」。
+  if (/超过\s*\d+\s*秒|自动停止|一直在推理|输出长度.{0,8}思考|没有生成正文/i.test(s))
+    return s;
   return "AI 服务暂时不可用，请稍后重试；若持续失败，请检查 Key 与模型设置。";
 }
 

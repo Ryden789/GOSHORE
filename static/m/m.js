@@ -3546,12 +3546,13 @@ async function renderSearch() {
   const doSearch = async (page = 1) => {
     st.page = page;
     const seq = ++reqSeq;
+    const startedAt = Date.now();
     $("#srCount").textContent = "正在检索…";
     const res = await api("/api/search", { ...st, page, page_size: 20 });
     if (seq !== reqSeq) return;  // 已被更新的搜索取代（防竞态覆盖）
     $("#srCount").textContent = `找到 ${res.total} 条结果`;
-    // G6 搜题历史：仅有结果时记录关键词
-    if (res.total > 0 && st.q) recordSearchHistory(st.q);
+    // G6 搜题历史：仅有结果时记录关键词（startedAt 用于排除「清空前发出的搜索」）
+    if (res.total > 0 && st.q) recordSearchHistory(st.q, startedAt);
     const ids = res.items.map(it => it.id);
     $("#srList").innerHTML = res.items.length
       ? res.items.map(it => `
@@ -3580,8 +3581,8 @@ async function renderSearch() {
   };
 
   // G6 搜题历史：记录 + 就地刷新标签行
-  const recordSearchHistory = q => {
-    if (!SearchHistory.add(q)) return;
+  const recordSearchHistory = (q, startedAt = 0) => {
+    if (!SearchHistory.add(q, startedAt)) return;
     const card = $("#srCard");
     if (!card) return;
     const old = $("#shWrap");

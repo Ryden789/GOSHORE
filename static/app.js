@@ -756,14 +756,21 @@ async function renderSearch() {
     <div class="doc-list rise rise-2" id="list"></div>
     <div class="pager" id="pager"></div>`;
 
+  let searchSeq = 0;
   const doSearch = async (page = 1) => {
     if (!$("#rcount")) return;   // 已离开搜索页，丢弃过期结果
     searchState.page = page;
+    // 防竞态（与移动端 m.js 同口径）：输入防抖和点「搜索」会各发一次，
+    // 先发后到的那次不该覆盖后发的结果，也不该把历史写成过期的关键词。
+    const seq = ++searchSeq;
+    const startedAt = Date.now();
     $("#rcount").textContent = "正在检索…";
     const res = await api("/api/search", { ...searchState, page, page_size: 20 });
+    if (seq !== searchSeq) return;   // 已被更新的搜索取代
+    if (!$("#rcount")) return;       // 等待期间切走了页面
     $("#rcount").textContent = `找到 ${res.total} 条结果`;
     // G6 搜题历史：仅有结果时记录关键词（去重置顶，最多 20 条）
-    if (res.total > 0 && searchState.q) recordSearchHistory(searchState.q);
+    if (res.total > 0 && searchState.q) recordSearchHistory(searchState.q, startedAt);
     $("#searchPageMeta").textContent = res.total ? `第 ${page} 页 · 每页 20 条` : "";
     $("#list").innerHTML = res.items.length
       ? res.items.map(it => `
@@ -795,8 +802,8 @@ async function renderSearch() {
   };
 
   // G6 搜题历史：记录 + 就地刷新标签行（避免整页重渲染丢焦点）
-  const recordSearchHistory = q => {
-    if (!SearchHistory.add(q)) return;
+  const recordSearchHistory = (q, startedAt = 0) => {
+    if (!SearchHistory.add(q, startedAt)) return;
     const card = $(".search-card");
     if (!card) return;
     const old = $("#shWrap");

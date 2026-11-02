@@ -121,3 +121,81 @@ def test_checker_runs_green(node_exe):
                        encoding="utf-8", errors="replace")
     assert r.returncode == 0, f"校验器失败：\n{r.stdout}\n{r.stderr}"
     assert "通过" in (r.stdout or "")
+
+
+# ---------------- 清空竞态（e2e G6 桌面偶发红灯的根因） ----------------
+
+def test_clear_guard_exists_in_shared_block():
+    """SearchHistory 必须记住清空时刻并据此丢弃过期搜索，否则「清空后标签
+    又冒出来」。行为验证在 tools/check_batch4.mjs，这里守源码形态。"""
+    blk = _sh_block(SHARED_CORE)
+    assert "_clearAt" in blk, "缺少清空时间戳，清空后旧搜索会把历史写回"
+    assert re.search(r"add\(q,\s*startedAt\s*=\s*0\)", blk), "add() 应接收发起时刻"
+    assert re.search(r"startedAt\s*&&\s*startedAt\s*<\s*this\._clearAt", blk), \
+        "add() 未按清空时刻丢弃过期搜索"
+    assert re.search(r"clear\(\)\s*\{\s*this\._clearAt\s*=\s*Date\.now\(\)", blk), \
+        "clear() 应记录清空时刻"
+
+
+def test_both_ends_pass_started_at_to_record():
+    """两端 doSearch 都要把发起时刻传下去，否则时间戳恒为 0、守卫失效。"""
+    for p in (APP_JS, M_JS):
+        s = p.read_text(encoding="utf-8")
+        assert re.search(r"const startedAt = Date\.now\(\);", s), \
+            f"{p.name} 的 doSearch 没有记录发起时刻"
+        assert re.search(r"recordSearchHistory\([^)]*startedAt\)", s), \
+            f"{p.name} 没把 startedAt 传给 recordSearchHistory"
+        assert re.search(r"const recordSearchHistory = \(q, startedAt = 0\)", s), \
+            f"{p.name} 的 recordSearchHistory 签名没跟上"
+
+
+def test_both_ends_discard_superseded_search():
+    """输入防抖（300ms）和点「搜索」会各发一次请求，先发后到的不该覆盖新结果
+    —— 移动端早有 reqSeq，桌面端原先没有，属于双端行为不一致。"""
+    for p in (APP_JS, M_JS):
+        s = p.read_text(encoding="utf-8")
+        i = s.find("const doSearch = async")
+        assert i >= 0, f"{p.name} 找不到 doSearch"
+        body = s[i:i + 1600]
+        assert re.search(r"\+\+(searchSeq|reqSeq)", body), f"{p.name} 缺请求序号"
+        assert re.search(r"if \(seq !== (searchSeq|reqSeq)\) return;", body), \
+            f"{p.name} 没有丢弃过期响应"
+
+
+# ---------------- 清空竞态（e2e G6 桌面偶发红灯的根因） ----------------
+
+def test_clear_guard_exists_in_shared_block():
+    """SearchHistory 必须记住清空时刻并据此丢弃过期搜索，否则「清空后标签
+    又冒出来」。行为验证在 tools/check_batch4.mjs，这里守源码形态。"""
+    blk = _sh_block(SHARED_CORE)
+    assert "_clearAt" in blk, "缺少清空时间戳，清空后旧搜索会把历史写回"
+    assert re.search(r"add\(q,\s*startedAt\s*=\s*0\)", blk), "add() 应接收发起时刻"
+    assert re.search(r"startedAt\s*&&\s*startedAt\s*<\s*this\._clearAt", blk), \
+        "add() 未按清空时刻丢弃过期搜索"
+    assert re.search(r"clear\(\)\s*\{\s*this\._clearAt\s*=\s*Date\.now\(\)", blk), \
+        "clear() 应记录清空时刻"
+
+
+def test_both_ends_pass_started_at_to_record():
+    """两端 doSearch 都要把发起时刻传下去，否则时间戳恒为 0、守卫失效。"""
+    for p in (APP_JS, M_JS):
+        s = p.read_text(encoding="utf-8")
+        assert re.search(r"const startedAt = Date\.now\(\);", s), \
+            f"{p.name} 的 doSearch 没有记录发起时刻"
+        assert re.search(r"recordSearchHistory\([^)]*startedAt\)", s), \
+            f"{p.name} 没把 startedAt 传给 recordSearchHistory"
+        assert re.search(r"const recordSearchHistory = \(q, startedAt = 0\)", s), \
+            f"{p.name} 的 recordSearchHistory 签名没跟上"
+
+
+def test_both_ends_discard_superseded_search():
+    """输入防抖（300ms）和点「搜索」会各发一次请求，先发后到的不该覆盖新结果
+    —— 移动端早有 reqSeq，桌面端原先没有，属于双端行为不一致。"""
+    for p in (APP_JS, M_JS):
+        s = p.read_text(encoding="utf-8")
+        i = s.find("const doSearch = async")
+        assert i >= 0, f"{p.name} 找不到 doSearch"
+        body = s[i:i + 1600]
+        assert re.search(r"\+\+(searchSeq|reqSeq)", body), f"{p.name} 缺请求序号"
+        assert re.search(r"if \(seq !== (searchSeq|reqSeq)\) return;", body), \
+            f"{p.name} 没有丢弃过期响应"
