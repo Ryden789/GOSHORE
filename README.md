@@ -4,7 +4,7 @@
 
 - 纯本地运行，学习记录不上传第三方（多设备同步为**端到端加密**的可选功能，见下）
 - 桌面端 `http://127.0.0.1:8765`；手机访问需显式 `--lan` 开启，并用启动日志里的**访问令牌**登录
-- Android 源码保留；公开示例 APK `goshor-sample-20261026-p1.apk`（约 32 MB，release 签名，仅 arm64 / 示例题库）已随 [v2026.10.28 Release](https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.28) 分发
+- Android 源码保留；公开示例 APK `goshor-sample-20261115-v17.apk`（33,516,066 B / 32.0 MiB，versionCode 8 / 1.7，仅 arm64 / 示例题库 438 篇 / 543 张图）已构建在 `dist/`，待上传到新的 Release
 
 ## 功能特性
 
@@ -141,8 +141,8 @@ HttpOnly Cookie（30 天），之后直接访问 `http://<电脑IP>:8765/m/` 即
 
 ### 桌面软件版（单文件 exe，免装 Python）
 
-不想装 Python、也不想开浏览器，可以直接下载 Release 里的 `GOSHORE-desktop.exe`（约 70.3 MB），
-或使用本机打包的 `dist\GOSHORE上岸工作台.exe`：
+不想装 Python、也不想开浏览器，可以直接下载 Release 里的 `GOSHORE-desktop.exe`（约 70.3 MB，CI 构建），
+或使用本机打包的 `dist\GOSHORE上岸工作台.exe`（136,245,377 B / 129.9 MB，版本 1.7.0.0）：
 
 > 下载页：<https://github.com/Ryden789/GOSHORE/releases/tag/v2026.10.28>
 > 早期提交与历史版本：[Release 历史与推送顺序](docs/03-开发/2026-10-21-Release%20历史与推送顺序.md)
@@ -185,7 +185,7 @@ python tools/build_desktop_exe.py --keep   # 复用构建缓存，快一些
 ```
 
 > 打包配置里**刻意不包含 `data/`**：那是用户的学习库（动辄几百 MB），打进 exe 会让安装包膨胀、用户数据随版本被覆盖，也无法把软件单独发给别人。
-> exe 体积：GitHub Actions 构建约 **70.3 MB**（v2026.10.28 为 70,295,921 B）；本机开发环境因依赖版本不同约 96 MB，属正常差异。
+> exe 体积：GitHub Actions 构建约 **70.3 MB**（v2026.10.28 为 70,295,921 B）；本机开发环境 **129.9 MB**（2026-11-15，版本 1.7.0.0），差异来自 numpy 2.3.5（未压缩 35 MB）/ pandas 3.0.5（67 MB）随环境升级变大——这两个库用于导入 PDF/Word 题库，属必收依赖，不能排除。
 > `--onefile` 每次启动要解包，机械盘 + 杀软实时扫描下首次双击可能等几秒。若要更快的启动，可把 `--onefile` 换成 `--onedir`。
 
 ### 安卓 APP（源码保留，需自行构建）
