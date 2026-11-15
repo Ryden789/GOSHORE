@@ -79,11 +79,12 @@ from .config import (
 )
 from .logging_setup import get_logger
 
+# PDF 导出：把上面拼好的打印页交给 Chromium 渲染（可选依赖，缺失时返回 501）
+from .pdf_export import PdfUnavailable, html_to_pdf
+
 # 可打印导出页（G5）：与手机端 goshor_server.py 共用同一份拼装逻辑。
 # esc/rich_text 也从这里引入，别再在本模块另写一份（会漂移）。
 from .print_export import render_html
-# PDF 导出：把上面拼好的打印页交给 Chromium 渲染（可选依赖，缺失时返回 501）
-from .pdf_export import PdfUnavailable, html_to_pdf
 
 log = get_logger(__name__)
 
@@ -1004,6 +1005,10 @@ async def api_ai_ask(b: AskIn, request: Request):
             # 用户点「停止」断开后立刻收手（见 api_explain 同款说明）
             if await request.is_disconnected():
                 break
+            if kind == "error":
+                # 失败原因落盘：前端只显示一句提示，排查「想了很久然后失败」看日志
+                log.warning("答疑失败（看图=%s，深度思考=%s）：%s",
+                            use_vision, b.think, str(payload)[:300])
             yield f"data: {json.dumps({'type': kind, 'text': payload}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")

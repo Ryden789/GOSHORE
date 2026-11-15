@@ -210,6 +210,15 @@ def test_sample_apk_build_switches_to_sample_assets_and_arm64():
     assert "GOSHORE_ASSETS" in gradle
     assert 'abiFilters "arm64-v8a"' in gradle
 
+
+def test_ai_error_hint_passes_through_server_reason():
+    """服务端已写明的失败原因要原样给用户看，不能被通用兜底文案盖掉。"""
+    root = Path(__file__).resolve().parent.parent
+    core = (root / "static" / "shared" / "core.js").read_text(encoding="utf-8")
+    assert "一直在推理" in core
+    assert "5\\d\\d" in core and "AI 服务端临时异常" in core
+
+
 def test_ai_errors_are_actionable_in_both_frontends():
     root = Path(__file__).resolve().parent.parent
     core = (root / "static" / "shared" / "core.js").read_text(encoding="utf-8")

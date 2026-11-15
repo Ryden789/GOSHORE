@@ -111,6 +111,115 @@ def test_stream_chat_thinking_flag(monkeypatch):
     assert "thinking" not in run(False, override=True)
 
 
+def test_stream_chat_retries_vision_without_thinking(monkeypatch):
+    """看图 + 深度思考只出思考不出正文时，自动关思考重跑一次并给出正文。"""
+    import asyncio
+
+    import httpx
+
+    payloads = []
+    passes = [
+        # 第一次：只有推理，finish_reason=length（输出额度被思考吃光）
+        ['data: {"choices":[{"delta":{"reasoning_content":"先看对称性"},"finish_reason":null}]}',
+         'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+         "data: [DONE]"],
+        # 第二次（关思考）：正文
+        ['data: {"choices":[{"delta":{"content":"答案：D"},"finish_reason":null}]}',
+         "data: [DONE]"],
+    ]
+
+    class FakeResp:
+        status_code = 200
+
+        def __init__(self, lines):
+            self.lines = lines
+
+        async def aread(self):
+            return b""
+
+        async def aiter_lines(self):
+            for line in self.lines:
+                yield line
+
+    class FakeStream:
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def __aenter__(self):
+            payloads.append(self.payload)
+            return FakeResp(passes[len(payloads) - 1])
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(httpx.AsyncClient, "stream",
+                        lambda self, method, url, **kw: FakeStream(kw.get("json")))
+    monkeypatch.setattr(ai, "load_settings",
+                        lambda: {**DEFAULTS, "deepseek_api_key": "sk-x",
+                                 "deepseek_vision_model": "vm", "ai_thinking": True})
+
+    async def go():
+        out = []
+        async for kind, text in ai.stream_chat(
+                [{"role": "user", "content": "看这道图推"}], use_vision=True):
+            out.append((kind, text))
+        return out
+
+    out = asyncio.run(go())
+    assert len(payloads) == 2
+    assert payloads[0]["max_tokens"] == 8192 and "thinking" not in payloads[0]
+    assert payloads[1]["thinking"] == {"type": "disabled"}
+    assert payloads[1]["max_tokens"] == 4096
+    # 前端能在思考区看到「已自动重试」，然后拿到正文
+    assert any(k == "think" and "重试" in t for k, t in out)
+    assert ("delta", "答案：D") in out
+    assert out[-1] == ("done", "")
+
+
+def test_stream_chat_does_not_retry_text_failure(monkeypatch):
+    """纯文字题不做降级重试：换参数也救不回来，只会多花一次调用。"""
+    import asyncio
+
+    import httpx
+
+    payloads = []
+
+    class FakeResp:
+        status_code = 200
+
+        async def aread(self):
+            return b""
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}'
+            yield "data: [DONE]"
+
+    class FakeStream:
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def __aenter__(self):
+            payloads.append(self.payload)
+            return FakeResp()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(httpx.AsyncClient, "stream",
+                        lambda self, method, url, **kw: FakeStream(kw.get("json")))
+    monkeypatch.setattr(ai, "load_settings",
+                        lambda: {**DEFAULTS, "deepseek_api_key": "sk-x"})
+
+    async def go():
+        return [x async for x in ai.stream_chat([{"role": "user", "content": "hi"}])]
+
+    out = asyncio.run(go())
+    assert len(payloads) == 1
+    kinds = [k for k, _ in out]
+    assert "delta" not in kinds and kinds[-1] == "error"
+    assert "思考" in out[-1][1]
+
+
 def test_ask_system_graph_framework_order():
     """图推要有固定排查顺序与「命中即停」，不能只写「穷举」把模型逼成无限思考。"""
     for kw in ("图形推理思考框架", "命中即停", "组成完全相同", "组成不同但相似",
@@ -191,6 +300,7 @@ def test_textmark_no_flag_or_not_verbal():
 def test_ask_injects_all_blocks(temp_db, monkeypatch):
     """带图 + 带标签文本 + 言语题时，三类证据都落到最后一条 user 消息。"""
     from fastapi.testclient import TestClient
+
     from app import main
 
     monkeypatch.setattr(temp_db, "reindex", lambda: None)

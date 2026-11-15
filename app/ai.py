@@ -1103,43 +1103,14 @@ async def stream_chat_with_temp(messages: list[dict], temperature: float):
         return
 
 
-async def stream_chat(messages: list[dict], use_vision: bool = False,
-                      think_on: bool | None = None):
-    """yield ('delta'|'think'|'error'|'done', payload)。
+async def _stream_once(url: str, headers: dict, payload: dict, deadline: float,
+                       res: dict):
+    """跑一次流式请求，产出 ('think'|'delta', 文本)；结果登记到 res。
 
-    思考模式：入参 `think_on` 优先（答疑输入框旁的按钮按次覆盖），未传时回落到
-    设置项 `ai_thinking`（默认开）。开启时不发 `thinking`，让模型按默认深度推理；
-    关闭时显式 `disabled`，换速度。此前看图请求写死 disabled，同一道图形题模型
-    只看一眼就给结论，这正是内置 AI 与网页版表现不一致的根源之一。
-    整体仍有墙钟上限：流式只在有数据时才走循环，读超时（120s）挡不住
-    "一直在输出思考"的长时间生成，必须自己掐。
+    res: answered / timed_out / finish / error。拆成单次执行是为了让调用方在
+    「只出思考、没出正文」时可以换参数重跑一次，而不是直接把失败甩给用户。
     """
-    s = load_settings()
-    if not s["deepseek_api_key"]:
-        yield "error", "未配置 DeepSeek API Key，请到「设置」中填写。"
-        return
-
-    think_on = bool(s.get("ai_thinking", True)) if think_on is None else bool(think_on)
-    payload = {
-        "model": vision_model(s) if use_vision else s["deepseek_model"],
-        "messages": messages,
-        "stream": True,
-        "temperature": 0.3,
-    }
-    if use_vision:
-        # 思考与正文共用输出上限，开启思考时留足额度，避免「想完了没正文」
-        payload["max_tokens"] = 8192 if think_on else 4096
-    if not think_on:
-        payload["thinking"] = {"type": "disabled"}
-    headers = {"Authorization": f"Bearer {s['deepseek_api_key']}"}
-    url = s["deepseek_base_url"].rstrip("/") + "/chat/completions"
-    # 关思考的看图请求正常 10~30 秒；开思考或纯文字题允许更长的推理
-    deadline = 60.0 if (use_vision and not think_on) else 150.0
     started = time.monotonic()
-    timed_out = False
-    answered = False
-    finish = None
-
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
             async with client.stream(
@@ -1147,7 +1118,8 @@ async def stream_chat(messages: list[dict], use_vision: bool = False,
             ) as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
-                    yield "error", f"API 返回 {resp.status_code}：{body.decode('utf-8','ignore')[:500]}"
+                    res["error"] = (f"API 返回 {resp.status_code}："
+                                    f"{body.decode('utf-8', 'ignore')[:500]}")
                     return
                 async for line in resp.aiter_lines():
                     if line.startswith("data:"):
@@ -1160,31 +1132,96 @@ async def stream_chat(messages: list[dict], use_vision: bool = False,
                             continue
                         choice = chunk.get("choices", [{}])[0]
                         delta = choice.get("delta", {})
-                        finish = choice.get("finish_reason") or finish
+                        res["finish"] = choice.get("finish_reason") or res["finish"]
                         if delta.get("reasoning_content"):
                             yield "think", delta["reasoning_content"]
                         if delta.get("content"):
-                            answered = True
+                            res["answered"] = True
                             yield "delta", delta["content"]
                     # 只在「还没开始出正文」时掐：正文一旦开始就让它讲完，
                     # 避免把一份正常的长解析从中间截断
-                    if not answered and time.monotonic() - started > deadline:
-                        timed_out = True
+                    if not res["answered"] and time.monotonic() - started > deadline:
+                        res["timed_out"] = True
                         break
     except httpx.HTTPError as e:
-        yield "error", f"网络请求失败：{e}"
+        res["error"] = f"网络请求失败：{e}"
+
+
+async def stream_chat(messages: list[dict], use_vision: bool = False,
+                      think_on: bool | None = None):
+    """yield ('delta'|'think'|'error'|'done', payload)。
+
+    思考模式：入参 `think_on` 优先（答疑输入框旁的按钮按次覆盖），未传时回落到
+    设置项 `ai_thinking`（默认开）。开启时不发 `thinking`，让模型按默认深度推理；
+    关闭时显式 `disabled`，换速度。此前看图请求写死 disabled，同一道图形题模型
+    只看一眼就给结论，这正是内置 AI 与网页版表现不一致的根源之一。
+    整体仍有墙钟上限：流式只在有数据时才走循环，读超时（120s）挡不住
+    "一直在输出思考"的长时间生成，必须自己掐。
+
+    看图 + 深度思考一旦「思考超时」或「思考吃光输出额度」，这里自动关思考
+    重跑一次：这类题用户要的是答案，不是一句「服务不可用」。
+    """
+    s = load_settings()
+    if not s["deepseek_api_key"]:
+        yield "error", "未配置 DeepSeek API Key，请到「设置」中填写。"
         return
-    if timed_out:
+
+    think_on = bool(s.get("ai_thinking", True)) if think_on is None else bool(think_on)
+    headers = {"Authorization": f"Bearer {s['deepseek_api_key']}"}
+    url = s["deepseek_base_url"].rstrip("/") + "/chat/completions"
+
+    def build(thinking: bool) -> dict:
+        payload = {
+            "model": vision_model(s) if use_vision else s["deepseek_model"],
+            "messages": messages,
+            "stream": True,
+            "temperature": 0.3,
+        }
+        if use_vision:
+            # 思考与正文共用输出上限，开启思考时留足额度，避免「想完了没正文」
+            payload["max_tokens"] = 8192 if thinking else 4096
+        if not thinking:
+            payload["thinking"] = {"type": "disabled"}
+        return payload
+
+    # 关思考的看图请求正常 10~30 秒；开思考或纯文字题允许更长的推理
+    deadline = 60.0 if (use_vision and not think_on) else 150.0
+    res = {"answered": False, "timed_out": False, "finish": None, "error": None}
+    async for item in _stream_once(url, headers, build(think_on), deadline, res):
+        yield item
+    if res["error"]:
+        yield "error", res["error"]
+        return
+    if res["answered"]:
+        yield "done", ""
+        return
+
+    # 一个字正文都没出就结束了：先按「思考超时 / 额度被思考吃光」的常规思路
+    # 降级重试一次；纯文字题不做重试（可能是提问本身有问题，重跑也白跑）。
+    first = ("length" if res["finish"] == "length"
+             else "timeout" if res["timed_out"] else "empty")
+    if use_vision and think_on:
+        yield "think", ("\n\n【本机】深度思考这次没有给出正文（"
+                        + ("输出额度被思考用光" if first == "length" else "推理超时")
+                        + "），已自动关掉深度思考重试一次。")
+        retry = {"answered": False, "timed_out": False, "finish": None, "error": None}
+        async for item in _stream_once(url, headers, build(False), 60.0, retry):
+            yield item
+        if retry["error"]:
+            yield "error", retry["error"]
+            return
+        if retry["answered"]:
+            yield "done", ""
+            return
+        yield "error", ("深度思考超时或额度被思考用光后，已自动关思考重试一次，仍没有生成正文。"
+                        "请把截图缩小到只含题干与选项，或缩短提问后重试。")
+        return
+    if first == "timeout":
         yield "error", (f"本次生成超过 {int(deadline)} 秒，已自动停止（模型一直在推理，"
                         f"迟迟没有给出正文）。可以换个更具体的问法，或把题目中的关键区域单独截图再问。")
-        return
-    # 一个字正文都没出就结束了：思考把输出额度吃光（finish_reason=length）是最常见的
-    # 情况，界面若只挂着「思考中…」用户会以为卡死，这里必须给出明确结论。
-    if not answered:
-        if finish == "length":
-            yield "error", ("模型这次把输出长度全用在思考上了，没来得及给正文（思考+正文共用同一个"
-                            "输出上限）。把提问缩短、或只截关键图形再问会好很多。")
-        else:
-            yield "error", "本次没有生成正文（模型提前结束），请重试或换个问法。"
-        return
-    yield "done", ""
+    elif first == "length":
+        yield "error", ("模型这次把输出长度全用在思考上了，没来得及给正文（思考+正文共用同一个"
+                        "输出上限）。把提问缩短、或只截关键图形再问会好很多。")
+    else:
+        yield "error", "本次没有生成正文（模型提前结束），请重试或换个问法。"
+
