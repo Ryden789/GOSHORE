@@ -41,8 +41,14 @@ function extractFn(src, name) {
 const ESC_SRC = `function esc(s){return String(s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}`;
 
+function readSource(rel) {
+  // Windows 检出（core.autocrlf=true）是 CRLF，而编辑器/脚本保存可能变成 LF。
+  // 双端同源比的是逻辑内容，先统一行尾，避免仅因行尾差异误报「源码已漂移」。
+  return fs.readFileSync(path.join(ROOT, rel), "utf8").replace(/\r\n/g, "\n");
+}
+
 function loadBanner(rel) {
-  const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
+  const src = readSource(rel);
   const code = extractFn(src, "countdownBanner");
   if (!code) throw new Error(`${rel} 里找不到 countdownBanner（可能被重命名，请同步更新本校验）`);
   // eslint-disable-next-line no-new-func
@@ -137,15 +143,15 @@ for (const [label, banner] of Object.entries(IMPLS)) {
     eq(results[a][`cls${days}`], results[b][`cls${days}`],
       `双端同源：${a} 与 ${b} 在「${days} 天」上的输出不一致`);
   }
-  const srcA = extractFn(fs.readFileSync(path.join(ROOT, "static/app.js"), "utf8"), "countdownBanner");
-  const srcB = extractFn(fs.readFileSync(path.join(ROOT, "static/m/m.js"), "utf8"), "countdownBanner");
+  const srcA = extractFn(readSource("static/app.js"), "countdownBanner");
+  const srcB = extractFn(readSource("static/m/m.js"), "countdownBanner");
   eq(srcA, srcB, "双端同源：两处 countdownBanner 的源码已漂移，请同步（N3 要求双端口径一致）");
 }
 
 // 7) 样式：两端都要有 .countdown 与区间 class，移动端补上缺失的 --indigo 变量
 {
-  const desk = fs.readFileSync(path.join(ROOT, "static/styles.css"), "utf8");
-  const mob = fs.readFileSync(path.join(ROOT, "static/m/m.css"), "utf8");
+  const desk = readSource("static/styles.css");
+  const mob = readSource("static/m/m.css");
   for (const [label, css] of [["桌面 styles.css", desk], ["移动 m.css", mob]]) {
     for (const sel of [".countdown", ".countdown .cd-n", ".countdown.cd-mid", ".countdown.cd-soon",
       ".countdown.cd-today", ".countdown.cd-over"]) {

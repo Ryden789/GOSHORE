@@ -1038,10 +1038,10 @@ for _g in NOTES["groups"]:
 # 由 app/xingce_content_*.py 提供：资料分析 / 数量关系 / 判断推理 / 言语理解
 # 四模块每点的加厚正文（300—600 字）、易错提示与配套题目（quizzes）在这里合并，
 # 与政治理论走 xingce_kb_notes.py 的路子是同一套做法：内容独立成文件，正文断言一一对应。
-from app import xingce_content_ziliao as _ziliao_content  # noqa: E402
-from app import xingce_content_shuliang as _shuliang_content  # noqa: E402
 from app import xingce_content_panduan as _panduan_content  # noqa: E402
+from app import xingce_content_shuliang as _shuliang_content  # noqa: E402
 from app import xingce_content_yanyu as _yanyu_content  # noqa: E402
+from app import xingce_content_ziliao as _ziliao_content  # noqa: E402
 
 _CONTENT = {
     "ziliao": _ziliao_content.POINTS,

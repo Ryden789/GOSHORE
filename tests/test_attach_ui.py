@@ -237,18 +237,3 @@ def test_message_window_matches_backend(path):
     assert m, f"{path.name} 缺 ASK_MAX_MESSAGES 常量"
     assert int(m.group(1)) == ASK_MAX_MESSAGES, f"{path.name} 与后端 {ASK_MAX_MESSAGES} 不一致"
     assert "his = his.slice(-ASK_MAX_MESSAGES);" in text, f"{path.name} 没按窗口截断"
-
-
-@pytest.mark.parametrize("path", [APP_JS, M_JS])
-def test_message_window_matches_backend(path):
-    """附件块会占用消息位。后端只取最后 ASK_MAX_MESSAGES 条，前端必须用同一个
-    数值先截断，否则被切掉的是最早的对话而不是附件。"""
-    import re
-
-    from app.ai import ASK_MAX_MESSAGES
-
-    text = path.read_text(encoding="utf-8")
-    m = re.search(r"const ASK_MAX_MESSAGES = (\d+);", text)
-    assert m, f"{path.name} 缺 ASK_MAX_MESSAGES 常量"
-    assert int(m.group(1)) == ASK_MAX_MESSAGES, f"{path.name} 与后端 {ASK_MAX_MESSAGES} 不一致"
-    assert "his = his.slice(-ASK_MAX_MESSAGES);" in text, f"{path.name} 没按窗口截断"

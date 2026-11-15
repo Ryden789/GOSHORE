@@ -312,11 +312,11 @@ node tools/check_appearance.mjs    # 夜间模式 + 字号四档
 node tools/check_md_parity.mjs     # 桌面 / 移动两端 Markdown 渲染一致性
 # …共 16 个，全部退出码 0
 
-# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，33 条路由 / 88 项断言）
+# 移动端端到端回归（HTTP 冒烟 + 无头浏览器全路由，42 条路由）
 python scripts/e2e_mobile.py
 ```
 
-当前基线：**pytest 1440 passed**、**`ruff check .` 全绿**、**覆盖率 60%**、**AI 评测 33 条全过（100.00 分）**、**16 个静态校验器全 EXIT=0**、**E2E 88 项断言全通过**。
+当前基线：**pytest 1483 passed**、**`ruff check .` 全绿**、**覆盖率 60%**、**AI 评测 33 条全过（100.00 分）**、**18 个校验器全 EXIT=0**（16 个 `tools/check_*.mjs` + `check_content.py` + `check_license_guard.py`）、**E2E 42 条路由全通过**。
 
 ## 常见问题
 

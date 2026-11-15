@@ -18,11 +18,11 @@
 - tips 与 tip_kinds 等长，tip_kinds ∈ {易错, 采分, 时间}（C-4）。
 """
 
-from app import shenlun_content_zonggang as _zonggang  # noqa: E402
-from app import shenlun_content_gaikuo as _gaikuo  # noqa: E402
-from app import shenlun_content_fenxi as _fenxi  # noqa: E402
 from app import shenlun_content_duice as _duice  # noqa: E402
+from app import shenlun_content_fenxi as _fenxi  # noqa: E402
+from app import shenlun_content_gaikuo as _gaikuo  # noqa: E402
 from app import shenlun_content_guanche as _guanche  # noqa: E402
+from app import shenlun_content_zonggang as _zonggang  # noqa: E402
 from app import shenlun_content_zuowen as _zuowen  # noqa: E402
 
 _GROUPS = [
@@ -42,7 +42,8 @@ NOTES = {
 # ---------------------------------------------------------------- 真题范例（C-3）
 # 题干摘要 + 参考答案要点，键为「模块 key|考点标题」，标题对不上直接报错，
 # 避免范例静默挂到别的考点上。
-from app.shenlun_examples import EXAMPLES as _EXAMPLES, NOTE as _EXAMPLE_NOTE  # noqa: E402
+from app.shenlun_examples import EXAMPLES as _EXAMPLES  # noqa: E402
+from app.shenlun_examples import NOTE as _EXAMPLE_NOTE  # noqa: E402
 
 _BY_KEY = {f"{_g['key']}|{_p['title']}": _p for _g in _GROUPS for _p in _g["points"]}
 _orphans = [k for k in _EXAMPLES if k not in _BY_KEY]

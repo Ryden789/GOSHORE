@@ -5,13 +5,16 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const ctx=vm.createContext({});
+// layout.js 的 cards() 会调 UiIcon.route() 取图标；图标本身由 core.js 提供，
+// 而 core.js 顶层直接摸 window，不能塞进这个裸 vm。这里只校验导航清单，
+// 图标给桩即可（图标映射由 check_appearance.mjs 守）。
+const ctx=vm.createContext({UiIcon:{route:()=>'',svg:()=>'',html:()=>''}});
 vm.runInContext(fs.readFileSync(path.join(root,'static/shared/layout.js'),'utf8'),ctx);
 const layout=ctx.StudyLayout;
-const original=['home','report','time','history','ai-ask','paper','logic','formula','wordfill','speed','cube','essay','argument','wenxian','zy-notes','shizheng','grade','interview','review','mastery','plan','wrong','marks','notes','cards','xc-notes','share','search','doubts','import','settings'];
+const original=['home','report','time','history','ai-ask','paper','logic','formula','wordfill','speed','cube','essay','argument','wenxian','zy-notes','sl-notes','shizheng','grade','interview','review','mastery','plan','wrong','marks','notes','cards','xc-notes','share','search','doubts','import','settings'];
 const routes=Array.from(layout.groups.flatMap(g=>g.items.map(i=>i.route)));
 assert.equal(new Set(routes).size,routes.length,'Each original entry has one primary category');
-assert.deepEqual([...routes].sort(),[...original].sort(),'All 31 original entries must remain');
+assert.deepEqual([...routes].sort(),[...original].sort(),'All 32 original entries must remain');
 for(const route of original) assert.ok(['home','practice','review-center','knowledge','reports','ai-ask','manage','settings'].includes(layout.sectionFor(route)),`${route}: desktop active category`);
 assert.equal(layout.mobileTabFor('training'),'training');
 assert.equal(layout.mobileTabFor('formula'),'training');
@@ -24,11 +27,13 @@ assert.ok(layout.cards('xingce',true).includes('href="/#/cube"'),'Mobile keeps a
 assert.ok(!layout.cards('xingce',false,['paper']).includes('href="#/paper"'),'Specialty grid does not duplicate the main paper form');
 for(const page of ['static/index.html','static/m/index.html']){
   const html=fs.readFileSync(path.join(root,page),'utf8');
+  const core=html.indexOf('/shared/core.js');
   const shared=html.indexOf('/shared/layout.js');
   const app=html.indexOf(page.includes('/m/')?'/m/m.js':'/app.js');
   assert.ok(shared>=0 && shared<app,`${page}: load catalogue before frontend`);
+  assert.ok(core>=0 && core<shared,`${page}: core.js must load before layout.js (UiIcon)`);
   assert.ok(html.includes('/shared/layout.css'),`${page}: shared responsive styles`);
 }
 const sw=fs.readFileSync(path.join(root,'static/sw.js'),'utf8');
 assert.ok(sw.includes('"/shared/layout.js"') && sw.includes('"/shared/layout.css"'),'Offline shell includes new assets');
-console.log('PASS layout: all 31 original entries, category activation, mobile navigation, specialty links and offline assets');
+console.log('PASS layout: all 32 original entries, category activation, mobile navigation, specialty links and offline assets');

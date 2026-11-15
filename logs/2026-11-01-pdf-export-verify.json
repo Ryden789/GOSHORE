@@ -1,0 +1,21 @@
+{
+  "exam": "2021年国家公务员录用考试《行测》题（副省级网友回忆版）",
+  "results": [
+    {
+      "case": "整卷-2021副省级",
+      "bytes": 7553847,
+      "mb": 7.2,
+      "seconds": 36.1,
+      "pages": 167,
+      "sha256": "a8eba9ed6bd4b3cdef7dc8bc51812df914770f1322786ee321cbf3365be37f3d"
+    },
+    {
+      "case": "资料分析-50题",
+      "bytes": 3435886,
+      "mb": 3.28,
+      "seconds": 6.8,
+      "pages": 71,
+      "sha256": "132c8d36e33b12fbfc077ba34e44daac18271a7d2751fd41bc80daf254d66667"
+    }
+  ]
+}

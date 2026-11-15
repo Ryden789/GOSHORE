@@ -353,8 +353,7 @@ def test_four_modules_points_have_quizzes():
 
 def test_content_files_match_point_titles():
     """内容文件的键必须与考点标题逐字一致、顺序一致，否则正文与题目会静默错位。"""
-    from app import (xingce_content_ziliao, xingce_content_shuliang,
-                     xingce_content_panduan, xingce_content_yanyu)
+    from app import xingce_content_panduan, xingce_content_shuliang, xingce_content_yanyu, xingce_content_ziliao
 
     pairs = {
         "资料分析": xingce_content_ziliao.POINTS,

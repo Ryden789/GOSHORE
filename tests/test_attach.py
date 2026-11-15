@@ -105,7 +105,7 @@ def test_text_mime_without_extension():
 
 
 def test_crlf_and_extra_blank_lines_normalized():
-    r = attach.extract("a.md", _url("甲\r\n\r\n\r\n\r\n乙".encode("utf-8")))
+    r = attach.extract("a.md", _url("甲\r\n\r\n\r\n\r\n乙".encode()))
     assert r["text"] == "甲\n\n乙"
 
 
