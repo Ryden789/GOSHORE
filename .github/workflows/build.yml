@@ -53,7 +53,11 @@ jobs:
   # 避免 Playwright 安装拖慢主测试；任一失败都让 CI 变红。
   quality:
     needs: test
-    runs-on: ubuntu-latest
+    # 钉死 24.04，不用 ubuntu-latest：后者自 2026-10-19 起迁移到 Ubuntu 26，
+    # 而 playwright 1.60 的 `install --with-deps` 按发行版选 apt 包名，
+    # 在 26 上装不上系统库，导致「安装依赖」步骤整步失败（2026-11-15 两次红都栽在这）。
+    # 升级 playwright 或换 runner 前，先在本地把 E2E 完整跑通再改这里。
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       PYTHONUTF8: "1"
@@ -62,13 +66,23 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: 安装依赖与 Playwright Chromium
+      - name: 安装 Python 依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest==9.1.1 playwright==1.60.0
-          python -m playwright install --with-deps chromium
-      - name: 移动端 E2E（仓库示例库，88 项断言）
+      - name: 安装 Playwright Chromium 与系统依赖
+        run: |
+          # 拆成独立步骤并打印发行版/磁盘：这一步失败时要一眼看出是
+          # 「apt 装不上系统库」还是「下载超时」，不必再去翻整段日志。
+          (lsb_release -a || cat /etc/os-release) 2>/dev/null | head -4
+          df -h / | tail -1
+          python -m playwright install --with-deps chromium || {
+            echo "::warning::首次安装失败，10 秒后重试一次"
+            sleep 10
+            python -m playwright install --with-deps chromium
+          }
+      - name: 移动端 E2E（仓库示例库，42 条路由）
         run: |
           # 失败自动重试一次：这套 E2E 在 CI 上偶发 20s 超时（340a285 这种纯文档提交
           # 也红过）。重试逻辑在 scripts/ci_e2e_retry.py（本机没有 bash，放 Python 里
