@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import io
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 from app import ai, gridread
@@ -108,6 +109,49 @@ def test_analyze_returns_none_for_non_grid_image():
     assert gridread.analyze("http://example.com/a.png") is None
 
 
+def test_analyze_adapts_to_gray_background_and_noise():
+    """灰底 + 噪点（模拟截图压缩/暗色主题）仍按基准转写并答 D。"""
+    im = _render(PANELS, OPTIONS)
+    arr = np.asarray(im, dtype=np.int16)
+    bg = arr > 200
+    rng = np.random.default_rng(20261102)
+    arr[bg] = 205 + rng.integers(-9, 10, size=int(bg.sum()))
+    noisy = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+    got = gridread.analyze(_data_url(noisy))
+    assert got is not None
+    assert got["answer"] == "D"
+    assert got["panels"][0][0] == PANELS[0][0]
+
+
+def test_analyze_upscales_small_screenshot():
+    """短边 <300px 的缩略图先放大，再走同一套线检测。"""
+    small = _render(PANELS, OPTIONS).resize((286, 245), Image.LANCZOS)
+    got = gridread.analyze(_data_url(small))
+    assert got is not None
+    for r in range(3):
+        for c in range(2 if r == 2 else 3):
+            assert got["panels"][r][c] == PANELS[r][c], (r, c)
+    assert got["answer"] == "D"
+
+
+def test_block_reports_confidence():
+    got = gridread.analyze(_data_url(_render(PANELS, OPTIONS)))
+    assert got["conf"] >= gridread.CONF_MIN
+    assert "转写置信度：" in got["block"]
+    block = gridread._block(PANELS, OPTIONS, None, "置信度不足", conf=0.2)
+    assert "转写置信度：20%" in block
+    assert "本机无法判定" in block
+
+
+def test_low_confidence_refuses_answer(monkeypatch):
+    """置信度低于阈值时必须拒答，不得输出选项。"""
+    monkeypatch.setattr(gridread, "CONF_MIN", 1.01)
+    got = gridread.analyze(_data_url(_render(PANELS, OPTIONS)))
+    assert got["answer"] is None
+    assert "置信度不足" in got["block"]
+    assert "禁止给出任何选项" in got["block"]
+
+
 NO_RULE_PANELS = [
     [[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
      [[1, 1, 1], [0, 0, 1], [1, 0, 0]],
@@ -153,6 +197,7 @@ def test_prompt_hard_constraint_on_grid_block():
 
 def test_ask_endpoint_injects_grid_block(temp_db, monkeypatch):
     from fastapi.testclient import TestClient
+
     from app import main
 
     monkeypatch.setattr(temp_db, "reindex", lambda: None)

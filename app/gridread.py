@@ -14,9 +14,12 @@ import numpy as np
 
 _DATA_RE = re.compile(r"^data:image/(?:jpeg|jpg|png|webp);base64,(.+)$", re.I)
 
-DARK = 110            # 二值化阈值：截图是纯黑白，110 足够
+DARK = 110            # 兜底二值化阈值：Otsu 判不出时用它
+CONF_MIN = 0.55       # 单格最低置信度；低于此值整题拒绝作答
 MIN_LINE_COVER = 0.78 # 线在区域内的覆盖率下限（黑块整列只有约 1/3）
 MAX_LINE_WIDTH = 7    # 线宽上限；黑块整列/整行厚约 25~35px，会被排除
+MIN_SHORT_SIDE = 300  # 短边低于此值先放大，小图直接判不准
+MAX_LONG_SIDE = 1600  # 长边超过此值先缩小，避免超大截图线宽被误判
 
 
 # -------------------------- 图像解码 --------------------------
@@ -38,7 +41,66 @@ def _decode_gray(url: str):
         im = ImageOps.exif_transpose(im).convert("L")
     except Exception:
         return None
+    gray = _trim(np.asarray(im, dtype=np.uint8))
+    return _rescale(gray)
+
+
+def _trim(gray, pad: float = 0.03):
+    """裁掉四周空白，让九宫格在缩放后仍占满画面。
+
+    整图没有留白（或本身是深色底）时原样返回，不做任何猜测。
+    """
+    h, w = gray.shape
+    ink = gray < 250
+    if not ink.any():
+        return gray
+    ys = np.flatnonzero(ink.any(axis=1))
+    xs = np.flatnonzero(ink.any(axis=0))
+    y0, y1, x0, x1 = int(ys[0]), int(ys[-1]), int(xs[0]), int(xs[-1])
+    if y0 <= 2 and x0 <= 2 and y1 >= h - 3 and x1 >= w - 3:
+        return gray
+    py = max(4, int((y1 - y0 + 1) * pad))
+    px = max(4, int((x1 - x0 + 1) * pad))
+    return gray[max(0, y0 - py):min(h, y1 + py + 1),
+                max(0, x0 - px):min(w, x1 + px + 1)]
+
+
+def _rescale(gray):
+    """短边放大到 300px、长边压到 1600px：线宽落在可检测区间。"""
+    from PIL import Image
+    h, w = gray.shape
+    short, long_ = min(h, w), max(h, w)
+    scale = 1.0
+    if short < MIN_SHORT_SIDE:
+        scale = MIN_SHORT_SIDE / float(short)
+    elif long_ > MAX_LONG_SIDE:
+        scale = MAX_LONG_SIDE / float(long_)
+    if abs(scale - 1.0) < 0.05:
+        return gray
+    size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
+    im = Image.fromarray(gray).resize(size, Image.LANCZOS)
     return np.asarray(im, dtype=np.uint8)
+
+
+def _binarize(gray):
+    """Otsu 自适应阈值；深色底截图（黑底白图）自动反相。"""
+    hist = np.bincount(gray.ravel(), minlength=256).astype(np.float64)
+    total = hist.sum()
+    if total <= 0:
+        return np.zeros(gray.shape, dtype=bool)
+    omega = np.cumsum(hist)
+    mu = np.cumsum(hist * np.arange(256))
+    denom = omega * (total - omega)
+    sigma = np.zeros(256, dtype=np.float64)
+    ok = denom > 0
+    sigma[ok] = ((mu[-1] * omega[ok] / total) - mu[ok]) ** 2 / denom[ok]
+    t = int(np.argmax(sigma))
+    if t < 20 or t > 235:          # 近乎纯白/纯黑：直方图没有双峰，退回固定阈值
+        t = DARK
+    dark = gray <= t
+    if dark.mean() > 0.65:         # 黑底白图：反相后仍是「墨迹=1」
+        dark = ~dark
+    return dark
 
 
 # -------------------------- 线检测 --------------------------
@@ -110,7 +172,10 @@ def _even_fill(lines, total: int):
 
 
 def _read_mini(dark, x0: int, x1: int, y0: int, y1: int, inset: int = 4):
-    """读一个「3×3 黑白小格」图形，返回 3×3 的 0/1 矩阵；读不准返回 None。"""
+    """读一个「3×3 黑白小格」，返回 (3×3 矩阵, 置信度)；读不准返回 None。
+
+    置信度 = 最弱那一格离「黑/白各半」的距离（1=纯黑或纯白，0=对半）。
+    """
     xa, xb = x0 + inset, x1 - inset + 1
     ya, yb = y0 + inset, y1 - inset + 1
     if xb - xa < 24 or yb - ya < 24:
@@ -131,6 +196,7 @@ def _read_mini(dark, x0: int, x1: int, y0: int, y1: int, inset: int = 4):
         if min(gaps) < 12 or max(gaps) > min(gaps) * 1.6:
             return None
     mat = []
+    conf = 1.0
     for r in range(3):
         row = []
         for c in range(3):
@@ -138,11 +204,11 @@ def _read_mini(dark, x0: int, x1: int, y0: int, y1: int, inset: int = 4):
             cy = (ys[r] + ys[r + 1]) // 2
             patch = sub[cy - 2:cy + 3, cx - 2:cx + 3]
             frac = float(patch.mean())      # sub 已是二值暗色掩码，1=黑
-            if 0.18 < frac < 0.82:
-                return None          # 灰度模糊/压线，判不准
-            row.append(1 if frac >= 0.82 else 0)
+            if not 0.12 < frac < 0.88:
+                conf = min(conf, abs(frac - 0.5) * 2)
+            row.append(1 if frac >= 0.5 else 0)
         mat.append(row)
-    return mat
+    return mat, conf
 
 
 # -------------------------- 整图转写 --------------------------
@@ -179,7 +245,7 @@ def _pick_uniform(lines, gap_min: int = 40, ratio: float = 1.35):
 
 
 def _read_mini_any(dark, x0: int, x1: int, y0: int, y1: int):
-    """在候选框里找一个 3×3 小格。
+    """在候选框里找一个 3×3 小格，返回 (矩阵, 置信度)。
 
     选项框有两种可能：整框外边框（内缩 10px 才是小格）或小格自身的边框
     （不需要内缩）。逐个内缩量试，取第一个读得准的。
@@ -191,8 +257,29 @@ def _read_mini_any(dark, x0: int, x1: int, y0: int, y1: int):
     return None
 
 
+def _estimate_grid(dark):
+    """外框线缺失时的兜底：按上方题面墨迹的外接框等分 3×3。
+
+    只在长线检测失败时启用，且调用方仍要求 9 格逐格读准；选项区在下方
+    （约占 3/4 之后），所以只取上方 0.72 高度，避免把选项框并进题面。
+    """
+    h, w = dark.shape
+    top = dark[:max(1, int(0.72 * h))]
+    ys = np.flatnonzero(top.any(axis=1))
+    xs = np.flatnonzero(top.any(axis=0))
+    if not len(ys) or not len(xs):
+        return None
+    x0, x1 = int(xs[0]), int(xs[-1])
+    y0, y1 = int(ys[0]), int(ys[-1])
+    if x1 - x0 < 150 or y1 - y0 < 150:
+        return None
+    vc = [x0 + (x1 - x0) * i // 3 for i in range(4)]
+    hc = [y0 + (y1 - y0) * i // 3 for i in range(4)]
+    return vc, hc
+
+
 def _read_panels_and_options(gray):
-    dark = gray < DARK
+    dark = _binarize(gray)
     h, w = dark.shape
     if h < 260 or w < 260:
         return None
@@ -206,14 +293,23 @@ def _read_panels_and_options(gray):
              if any(b - a + 1 >= min_v for a, b in _runs(dark[:, x], 1))]
     hc = _pick_uniform(_group(hrows))
     vc = _pick_uniform(_group(vcols))
+    estimated = False
     if hc is None or vc is None:
-        return None
+        est = _estimate_grid(dark)
+        if est is None:
+            return None
+        vc, hc = est
+        estimated = True
 
     panels = []
+    confs = []
     for r in range(3):
         row = []
         for c in range(3):
-            row.append(_read_mini(dark, vc[c], vc[c + 1], hc[r], hc[r + 1]))
+            got = _read_mini(dark, vc[c], vc[c + 1], hc[r], hc[r + 1])
+            row.append(got[0] if got else None)
+            if got:
+                confs.append(got[1])
         panels.append(row)
     # 只允许「右下角问号位」缺一格；缺在别处说明布局不是本题型
     missing = [(r, c) for r in range(3) for c in range(3) if panels[r][c] is None]
@@ -231,7 +327,8 @@ def _read_panels_and_options(gray):
     if len(bands) < 2:
         return None
     yt, yb = bands[0], bands[-1]
-    if yb - yt < 60:
+    # 选项框高度随分辨率变化，门槛按图高比例给，避免缩略图被判太矮
+    if yb - yt < max(36, int(0.08 * h)):
         return None
     # 选项框上边界所在行：取该组中间一行，找四段等宽横线
     rows = [y for y in range(yt - 4, yt + 5)
@@ -247,10 +344,16 @@ def _read_panels_and_options(gray):
         return None
     options = {}
     for name, (x0, x1) in zip("ABCD", segs):
-        options[name] = _read_mini_any(dark, x0, x1, yt, yb)
-    if any(m is None for m in options.values()):
+        got = _read_mini_any(dark, x0, x1, yt, yb)
+        if not got:
+            return None
+        options[name] = got[0]
+        confs.append(got[1])
+    conf = min(confs) if confs else 0.0
+    # 等分本就是猜出来的外框，置信度不够就不认，避免把别的表格当黑白格
+    if estimated and conf < 0.85:
         return None
-    return panels, options
+    return panels, options, conf, estimated
 
 
 # -------------------------- 求解 --------------------------
@@ -336,7 +439,8 @@ def solve(panels, options):
 
 # -------------------------- 输出底稿 --------------------------
 
-def _block(panels, options, rule, reason: str) -> str:
+def _block(panels, options, rule, reason: str,
+           conf: float | None = None, estimated: bool = False) -> str:
     lines = ["【黑白格转写与本地求解·本机像素识别】",
              "九宫格（■黑 □白，逐格转写；? 为题面问号格）："]
     for r in range(3):
@@ -347,6 +451,9 @@ def _block(panels, options, rule, reason: str) -> str:
     lines.append("选项：")
     for k in "ABCD":
         lines.append(f"  {k} {_fmt(options[k])}")
+    if conf is not None:
+        tag = "；题面外框缺失，按内容区等分推定" if estimated else ""
+        lines.append(f"转写置信度：{conf:.0%}{tag}")
     if rule:
         how = ("按列" if rule["axis"] == "col" else "按行")
         move = "同位置叠加"
@@ -367,7 +474,7 @@ def _block(panels, options, rule, reason: str) -> str:
     else:
         lines += [
             "",
-            f"【本机求解】{reason}（按行/按列 × 6 种运算 × 8 种对称均未通过两组独立验证）。",
+            f"【本机求解】{reason}。",
             "本机无法判定。禁止给出任何选项；只讲可能的思路，并明确说明无法判定。",
         ]
     return "\n".join(lines)
@@ -381,7 +488,20 @@ def analyze(url: str):
     got = _read_panels_and_options(gray)
     if not got:
         return None
-    panels, options = got
+    panels, options, conf, estimated = got
+    if conf < CONF_MIN:
+        reason = (f"转写置信度不足（最低 {conf:.0%} < {CONF_MIN:.0%}），"
+                  "某格墨迹接近黑白各半，本机拒绝据此作答")
+        return {
+            "panels": panels,
+            "options": options,
+            "answer": None,
+            "rule": None,
+            "reason": reason,
+            "conf": conf,
+            "estimated": estimated,
+            "block": _block(panels, options, None, reason, conf, estimated),
+        }
     rule, reason = solve(panels, options)
     return {
         "panels": panels,
@@ -389,5 +509,7 @@ def analyze(url: str):
         "answer": rule["answers"][0] if rule else None,
         "rule": rule,
         "reason": reason,
-        "block": _block(panels, options, rule, reason),
+        "conf": conf,
+        "estimated": estimated,
+        "block": _block(panels, options, rule, reason, conf, estimated),
     }
