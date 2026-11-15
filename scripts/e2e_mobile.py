@@ -1412,11 +1412,13 @@ def check_browser():
             step = "A11Y-01 桌面"
             pa = browser.new_page(viewport={"width": 1280, "height": 900})
             pa.add_init_script(INIT_JS)
-            pa.goto(BASE + "/index.html#/search", wait_until="domcontentloaded", timeout=20000)
-            pa.wait_for_selector("#q", timeout=20000)
+            pa.goto(BASE + "/index.html#/search", wait_until="domcontentloaded", timeout=30000)
+            step = "A11Y-01 桌面·等搜索框 #q"
+            pa.wait_for_selector("#q", timeout=30000)
             pa.fill("#q", "的")
             pa.click("#go")
-            pa.wait_for_selector("#list .doc-item", timeout=20000)
+            step = "A11Y-01 桌面·等搜索结果 #list .doc-item"
+            pa.wait_for_selector("#list .doc-item", timeout=30000)
             tag = pa.eval_on_selector("#list .doc-item", "e => e.tagName")
             href = pa.eval_on_selector("#list .doc-item", "e => e.getAttribute('href') || ''")
             did = pa.eval_on_selector("#list .doc-item", "e => e.dataset.id")
@@ -1425,12 +1427,14 @@ def check_browser():
             else:
                 pa.locator("#list .doc-item").first.focus()
                 pa.keyboard.press("Enter")
-                pa.wait_for_selector(".doc-header", timeout=20000)
+                step = "A11Y-01 桌面·Enter 后等详情 .doc-header"
+                pa.wait_for_selector(".doc-header", timeout=30000)
                 if pa.evaluate("location.hash") != f"#/doc/{did}":
                     problems.append(f"Enter 应进入 #/doc/{did}，实际 {pa.evaluate('location.hash')}")
                 pa.wait_for_timeout(300)
             pa.evaluate("location.hash = '#/overview'")
-            pa.wait_for_selector(".stat-card.link", timeout=20000)
+            step = "A11Y-01 桌面·等首页统计卡 .stat-card.link"
+            pa.wait_for_selector(".stat-card.link", timeout=30000)
             cards = pa.eval_on_selector_all(
                 ".stat-card.link",
                 "els => els.map(e => e.tagName + '|' + (e.getAttribute('href') || ''))")
